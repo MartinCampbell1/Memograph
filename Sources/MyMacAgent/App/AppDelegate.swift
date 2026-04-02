@@ -16,12 +16,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var ocrPipeline: OCRPipeline?
     private var policyEngine: CapturePolicyEngine?
     private var captureScheduler: CaptureScheduler?
+    // Phase 3
+    private var contextFusionEngine: ContextFusionEngine?
+    private var dailySummarizer: DailySummarizer?
+    private var obsidianExporter: ObsidianExporter?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("MyMacAgent launched")
         initializeDatabase()
         initializeMonitors()
         initializePhase2()
+        initializePhase3()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -95,16 +100,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logger.info("Phase 2 components initialized (AX, OCR, adaptive capture)")
     }
 
+    private func initializePhase3() {
+        guard let db = databaseManager else { return }
+        contextFusionEngine = ContextFusionEngine()
+        dailySummarizer = DailySummarizer(db: db)
+        let vaultPath = UserDefaults.standard.string(forKey: "obsidianVaultPath")
+            ?? NSHomeDirectory() + "/Documents/MyMacAgentVault"
+        obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
+        logger.info("Phase 3 components initialized (fusion, summary, export)")
+    }
+
     private func performCapture(mode: UncertaintyMode) {
         guard let appInfo = appMonitor?.currentAppInfo,
               let sessionManager, let sessionId = sessionManager.currentSessionId,
               let captureEngine, let imageProcessor, let db = databaseManager else { return }
 
-        // Capture Phase 2 components by value to avoid self capture across isolation boundary
+        // Capture Phase 2 + Phase 3 components by value to avoid self capture across isolation boundary
         let axEngine = accessibilityEngine
         let ocrPipe = ocrPipeline
         let policy = policyEngine
         let scheduler = captureScheduler
+        let fusionEngine = contextFusionEngine
         let pid = appInfo.pid
 
         Task {
@@ -139,10 +155,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 // 5. AX snapshot
                 var axTextLen = 0
+                var axSnapshot: AXSnapshotRecord?
                 if let axEngine {
-                    if let axSnapshot = axEngine.extract(pid: pid, sessionId: sessionId, captureId: captureId) {
-                        try axEngine.persist(snapshot: axSnapshot, db: db)
-                        axTextLen = axSnapshot.textLen
+                    if let snapshot = axEngine.extract(pid: pid, sessionId: sessionId, captureId: captureId) {
+                        try axEngine.persist(snapshot: snapshot, db: db)
+                        axTextLen = snapshot.textLen
+                        axSnapshot = snapshot
                         try sessionManager.recordEvent(sessionId: sessionId, type: .axSnapshotTaken, payload: nil)
                     }
                 }
@@ -150,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // 6. OCR (if policy says to)
                 var ocrConfidence = 0.0
                 var ocrTextLen = 0
+                var ocrSnapshot: OCRSnapshotRecord?
                 let visualDiff: Double = hash != nil ? 0.5 : 0.5 // default: assume change
 
                 if let policy, policy.shouldRunOCR(visualDiffScore: visualDiff, mode: mode) {
@@ -160,8 +179,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                         ocrConfidence = ocrResult.confidence
                         ocrTextLen = ocrResult.normalizedText?.count ?? 0
+                        ocrSnapshot = ocrResult
                         try sessionManager.recordEvent(sessionId: sessionId, type: .ocrCompleted, payload: nil)
                     }
+                }
+
+                // 6.5 Context fusion
+                if let fusionEngine, let db = databaseManager {
+                    let readScore = ReadabilityScorer.score(ReadabilityInput(
+                        axTextLen: axTextLen, ocrConfidence: ocrConfidence, ocrTextLen: ocrTextLen,
+                        visualChangeScore: visualDiff, isCanvasLike: false
+                    ))
+                    let ctxSnapshot = fusionEngine.fuse(
+                        sessionId: sessionId, captureId: captureId,
+                        appName: appInfo.appName, bundleId: appInfo.bundleId,
+                        windowTitle: self.windowMonitor?.currentWindowTitle,
+                        ax: axSnapshot, ocr: ocrSnapshot,
+                        readableScore: readScore, uncertaintyScore: 1.0 - readScore
+                    )
+                    try fusionEngine.persist(snapshot: ctxSnapshot, db: db)
                 }
 
                 // 7. Update readability score and mode
@@ -178,6 +214,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             } catch {
                 Logger.app.error("Capture failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func generateDailySummary(for date: String, apiKey: String) {
+        Task { @MainActor in
+            do {
+                let client = LLMClient(apiKey: apiKey)
+                guard let summarizer = dailySummarizer else { return }
+                let summary = try await summarizer.summarize(for: date, using: client)
+                if let exporter = obsidianExporter {
+                    let path = try exporter.exportDailyNote(summary: summary)
+                    logger.info("Daily note exported to \(path)")
+                }
+            } catch {
+                logger.error("Daily summary failed: \(error.localizedDescription)")
             }
         }
     }
