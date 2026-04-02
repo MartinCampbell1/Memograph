@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Phase 5 — Vision + Audio
     private var visionAnalyzer: VisionAnalyzer?
     private var audioTranscriber: AudioTranscriber?
+    private var audioCaptureEngine: AudioCaptureEngine?
     private var retentionTimer: Timer?
     private var autoSummaryTimer: Timer?
     private var captureHashTracker = CaptureHashTracker()
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMonitor?.stop()
         windowMonitor?.stop()
         idleDetector?.stop()
+        audioCaptureEngine?.stop()
         if let sessionId = sessionManager?.currentSessionId {
             try? sessionManager?.endSession(sessionId)
         }
@@ -160,8 +162,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? transcriber.ensureTable()
         audioTranscriber = transcriber
         visionAnalyzer = VisionAnalyzer(db: db)
-        logger.info("Phase 5 initialized (vision analyzer, audio transcriber)")
+
+        // Start audio capture
+        if let sessionMgr = sessionManager {
+            let audioEngine = AudioCaptureEngine(transcriber: transcriber, sessionManager: sessionMgr)
+            audioEngine.start()
+            audioCaptureEngine = audioEngine
+        }
+
+        logger.info("Phase 5 initialized (vision analyzer, audio transcriber, audio capture)")
     }
+
+    func toggleAudioCapture() {
+        if let engine = audioCaptureEngine {
+            if engine.recording {
+                engine.stop()
+            } else {
+                engine.start()
+            }
+        }
+    }
+
+    var isAudioRecording: Bool { audioCaptureEngine?.recording ?? false }
 
     private func autoGenerateSummaryIfActive() {
         // Only generate if user was active (not idle) and we have an API key

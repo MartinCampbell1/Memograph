@@ -24,6 +24,8 @@
     <string>MyMacAgent needs screen recording to capture window contents for activity logging and OCR.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>MyMacAgent needs accessibility access to read window titles and focused UI elements.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MyMacAgent records audio for transcription and activity logging.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright 2026 Martin</string>
 </dict>
