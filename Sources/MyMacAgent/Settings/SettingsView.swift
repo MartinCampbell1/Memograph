@@ -1,8 +1,93 @@
 import AppKit
 import SwiftUI
 
+struct SettingsPreviewState {
+    let operatingMode: AppOperatingMode
+    let externalProviderName: String
+    let externalBaseURL: String
+    let externalAPIKey: String
+    let summaryProvider: SummaryProvider
+    let summaryExternalModel: String
+    let summaryLocalModel: String
+    let visionProvider: VisionProvider
+    let visionModel: String
+    let visionExternalModel: String
+    let ocrProvider: OCRProviderKind
+    let ollamaModel: String
+    let ollamaBaseURL: String
+    let vaultPath: String
+    let dataDirectoryPath: String
+    let startPaused: Bool
+    let globalPause: Bool
+    let retentionDays: String
+    let summaryInterval: String
+    let maxPromptChars: String
+    let maxCapturesPerSession: String
+    let normalCaptureInterval: String
+    let degradedCaptureInterval: String
+    let highUncertaintyCaptureInterval: String
+    let storageProfile: StorageProfile
+    let captureRetentionMode: CaptureRetentionMode
+    let blacklistedBundleIds: String
+    let metadataOnlyBundleIds: String
+    let blacklistedWindowPatterns: String
+    let microphoneCaptureEnabled: Bool
+    let systemAudioCaptureEnabled: Bool
+    let audioPythonCommand: String
+    let audioModelName: String
+    let audioRuntimeStatus: String
+    let systemPrompt: String
+    let userPromptSuffix: String
+    let screenRecordingGranted: Bool
+    let accessibilityGranted: Bool
+    let microphoneGranted: Bool
+
+    static let marketing = SettingsPreviewState(
+        operatingMode: .hybrid,
+        externalProviderName: "OpenRouter-compatible",
+        externalBaseURL: "https://openrouter.ai/api/v1",
+        externalAPIKey: "sk-or-demo****************",
+        summaryProvider: .external,
+        summaryExternalModel: "google/gemini-2.5-flash-preview",
+        summaryLocalModel: "hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M",
+        visionProvider: .ollama,
+        visionModel: "qwen3.5:4b",
+        visionExternalModel: "google/gemini-2.5-flash-preview",
+        ocrProvider: .ollamaWithVisionFallback,
+        ollamaModel: "glm-ocr",
+        ollamaBaseURL: "http://localhost:11434",
+        vaultPath: "~/Documents/Obsidian/Vault",
+        dataDirectoryPath: "~/Library/Application Support/MyMacAgent",
+        startPaused: false,
+        globalPause: false,
+        retentionDays: "30",
+        summaryInterval: "60",
+        maxPromptChars: "300000",
+        maxCapturesPerSession: "500",
+        normalCaptureInterval: "60",
+        degradedCaptureInterval: "10",
+        highUncertaintyCaptureInterval: "3",
+        storageProfile: .balanced,
+        captureRetentionMode: .thumbnails,
+        blacklistedBundleIds: "com.apple.keychainaccess\ncom.1password.1password\ncom.bitwarden.desktop",
+        metadataOnlyBundleIds: "com.apple.MobileSMS\ncom.apple.mail\nru.keepcoder.Telegram",
+        blacklistedWindowPatterns: "password\nincognito\nseed phrase\nwallet",
+        microphoneCaptureEnabled: false,
+        systemAudioCaptureEnabled: false,
+        audioPythonCommand: ".venv/bin/python",
+        audioModelName: "mlx-community/whisper-large-v3-turbo",
+        audioRuntimeStatus: "ready (demo)",
+        systemPrompt: AppSettings.defaultSystemPrompt,
+        userPromptSuffix: AppSettings.defaultUserPromptSuffix,
+        screenRecordingGranted: true,
+        accessibilityGranted: true,
+        microphoneGranted: false
+    )
+}
+
 struct SettingsView: View {
     @StateObject private var permissionsManager = PermissionsManager()
+    private let previewState: SettingsPreviewState?
 
     @State private var selectedTab = 0
     @State private var saved = false
@@ -49,6 +134,11 @@ struct SettingsView: View {
     @State private var systemPrompt = ""
     @State private var userPromptSuffix = ""
 
+    init(initialTab: Int = 0, previewState: SettingsPreviewState? = nil) {
+        _selectedTab = State(initialValue: initialTab)
+        self.previewState = previewState
+    }
+
     var body: some View {
         TabView(selection: $selectedTab) {
             generalTab
@@ -78,8 +168,12 @@ struct SettingsView: View {
         .padding()
         .frame(minWidth: 760, minHeight: 660)
         .onAppear {
-            loadSettings()
-            permissionsManager.checkAll()
+            if let previewState {
+                applyPreviewState(previewState)
+            } else {
+                loadSettings()
+                permissionsManager.checkAll()
+            }
         }
         .alert("Delete all local data?", isPresented: $showDeleteDataAlert) {
             Button("Delete", role: .destructive) { deleteAllData() }
@@ -245,7 +339,8 @@ struct SettingsView: View {
     private var privacyTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                PermissionsView(manager: permissionsManager)
+                PermissionsView(manager: permissionsManager, autoRefresh: previewState == nil)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 GroupBox("Blacklisted bundle IDs") {
                     listEditor(text: $blacklistedBundleIds)
@@ -383,6 +478,50 @@ struct SettingsView: View {
 
         systemPrompt = settings.systemPrompt
         userPromptSuffix = settings.userPromptSuffix
+    }
+
+    private func applyPreviewState(_ preview: SettingsPreviewState) {
+        operatingMode = preview.operatingMode
+        externalProviderName = preview.externalProviderName
+        externalBaseURL = preview.externalBaseURL
+        externalAPIKey = preview.externalAPIKey
+        summaryProvider = preview.summaryProvider
+        summaryExternalModel = preview.summaryExternalModel
+        summaryLocalModel = preview.summaryLocalModel
+        visionProvider = preview.visionProvider
+        visionModel = preview.visionModel
+        visionExternalModel = preview.visionExternalModel
+        ocrProvider = preview.ocrProvider
+        ollamaModel = preview.ollamaModel
+        ollamaBaseURL = preview.ollamaBaseURL
+        vaultPath = preview.vaultPath
+        dataDirectoryPath = preview.dataDirectoryPath
+        startPaused = preview.startPaused
+        globalPause = preview.globalPause
+        retentionDays = preview.retentionDays
+        summaryInterval = preview.summaryInterval
+        maxPromptChars = preview.maxPromptChars
+        maxCapturesPerSession = preview.maxCapturesPerSession
+        normalCaptureInterval = preview.normalCaptureInterval
+        degradedCaptureInterval = preview.degradedCaptureInterval
+        highUncertaintyCaptureInterval = preview.highUncertaintyCaptureInterval
+        storageProfile = preview.storageProfile
+        captureRetentionMode = preview.captureRetentionMode
+        blacklistedBundleIds = preview.blacklistedBundleIds
+        metadataOnlyBundleIds = preview.metadataOnlyBundleIds
+        blacklistedWindowPatterns = preview.blacklistedWindowPatterns
+        microphoneCaptureEnabled = preview.microphoneCaptureEnabled
+        systemAudioCaptureEnabled = preview.systemAudioCaptureEnabled
+        audioPythonCommand = preview.audioPythonCommand
+        audioModelName = preview.audioModelName
+        audioRuntimeStatus = preview.audioRuntimeStatus
+        systemPrompt = preview.systemPrompt
+        userPromptSuffix = preview.userPromptSuffix
+        permissionsManager.setPreviewStatus(
+            screenRecordingGranted: preview.screenRecordingGranted,
+            accessibilityGranted: preview.accessibilityGranted,
+            microphoneGranted: preview.microphoneGranted
+        )
     }
 
     private func saveSettings() {

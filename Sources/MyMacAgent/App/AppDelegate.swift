@@ -34,6 +34,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var privacyGuard = PrivacyGuard.fromSettings()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--render-marketing-assets") {
+            logger.info("Running marketing asset renderer")
+            do {
+                try MarketingAssetRenderer.run()
+            } catch {
+                logger.error("Marketing asset renderer failed: \(error.localizedDescription)")
+                NSApp.terminate(nil)
+                exit(1)
+            }
+            NSApp.terminate(nil)
+            return
+        }
+
         logger.info("MyMacAgent launched")
         registerObservers()
         initializeDatabase()

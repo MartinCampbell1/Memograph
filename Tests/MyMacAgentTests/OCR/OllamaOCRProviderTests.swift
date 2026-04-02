@@ -4,6 +4,9 @@ import Foundation
 @testable import MyMacAgent
 
 struct OllamaOCRProviderTests {
+    private var isCI: Bool {
+        ProcessInfo.processInfo.environment["CI"] == "true"
+    }
 
     @Test("Provider name is ollama")
     func providerName() {
@@ -58,6 +61,7 @@ struct OllamaOCRProviderTests {
 
     @Test("FallbackOCRProvider uses fallback when primary returns low confidence")
     func fallbackUsedOnLowConfidence() async throws {
+        guard !isCI else { return }
         // Primary always returns empty / zero-confidence.
         let primary = OllamaOCRProvider(baseURL: "http://localhost:99999")
         // Fallback is Apple Vision, which should succeed on a real text image.

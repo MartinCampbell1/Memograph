@@ -2,6 +2,12 @@ import SwiftUI
 
 struct PermissionsView: View {
     @ObservedObject var manager: PermissionsManager
+    let autoRefresh: Bool
+
+    init(manager: PermissionsManager, autoRefresh: Bool = true) {
+        self.manager = manager
+        self.autoRefresh = autoRefresh
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -61,7 +67,11 @@ struct PermissionsView: View {
         }
         .padding(24)
         .frame(width: 420)
-        .onAppear { manager.checkAll() }
+        .onAppear {
+            if autoRefresh {
+                manager.checkAll()
+            }
+        }
     }
 
     private func permissionRow(

@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <strong>Free, local-first memory for macOS.</strong><br />
-  Search what you saw, capture context privately, and export your day to Obsidian.
+  <strong>Turn your Mac into a searchable memory layer.</strong><br />
+  Memograph captures screen context locally, builds a timeline of your day, and exports it to Obsidian.
 </p>
 
 <p align="center">
@@ -16,31 +16,32 @@
   <img alt="Audio" src="https://img.shields.io/badge/Audio-experimental-B84C2D" />
 </p>
 
-![Memograph hero](docs/media/hero.svg)
+<p align="center">
+  <img src="docs/screenshots/timeline.png" alt="Memograph timeline screenshot" width="100%" />
+</p>
+
+<p align="center">
+  Rendered from the actual Memograph build.
+</p>
 
 ## Why Memograph
 
-Screen memory tools are getting broader, heavier, and more commercial. Memograph goes in the opposite direction: one Mac, one local database, one focused workflow.
+Memograph is built for one very specific job: give MacBook users a fast, private, local-first memory layer without turning the product into a giant cross-platform platform.
 
-- Free desktop app in this repo, with no paid gate for the core experience
+- Free repo-first desktop app with no paid gate for the core experience
 - Native Swift + SwiftUI + SQLite stack for Apple Silicon Macs
-- Local-first defaults: network providers are optional, audio is off by default
 - Searchable timeline, daily summaries, and Obsidian export in one app
-- Privacy controls that are visible from day one: pause, blacklists, metadata-only mode, delete-all-data
+- Local-first defaults: external providers are optional, audio is off by default
+- Privacy controls are first-class: pause, app blacklists, metadata-only mode, delete-all-data
 
-## Why someone picks this over ScreenPipe
+## Positioning
 
-Memograph is not trying to be a cross-platform agent platform. It is the focused MacBook build for people who want a leaner, free, macOS-native memory tool.
+If you are evaluating tools like ScreenPipe, the difference is straightforward: Memograph is the focused, free, macOS-native path.
 
-| Dimension | Memograph | ScreenPipe |
-| --- | --- | --- |
-| Desktop app access | Free in this repo | Paid prebuilt desktop app on the official site |
-| Product focus | macOS-first, Apple Silicon, local workflow | Cross-platform platform and agent ecosystem |
-| Stack | Swift, SwiftUI, SQLite | Multi-language cross-platform stack |
-| Defaults | Audio off, external providers optional, privacy controls surfaced in Settings | Local-first, but official product also sells paid desktop and Pro layers |
-| Best fit | MacBook users who want a simpler local setup | Users who want wider platform coverage and a larger ecosystem |
-
-If you want a free, opinionated, native macOS alternative, that is the lane Memograph is built for.
+- Memograph is macOS-first instead of cross-platform-first
+- Memograph is Swift-native instead of a heavier multi-runtime desktop stack
+- Memograph is repo-first and free to try directly from source, release assets, or Homebrew
+- Memograph is aimed at people who want a lean local workflow, not a broader agent ecosystem
 
 ## Install With Homebrew
 
@@ -107,12 +108,13 @@ Current storage location:
 - `Hybrid`: capture stays local, summaries can use an external provider
 - `Cloud-assisted`: external providers allowed for summaries and screenshot analysis
 
-## Preview
+## Real Screenshots
+
+The images below are rendered from the actual Memograph UI, not hand-drawn placeholders.
 
 <p align="center">
-  <img src="docs/media/timeline-preview.svg" alt="Timeline preview" width="31%" />
-  <img src="docs/media/settings-preview.svg" alt="Settings preview" width="31%" />
-  <img src="docs/media/privacy-preview.svg" alt="Privacy preview" width="31%" />
+  <img src="docs/screenshots/settings-providers.png" alt="Providers settings screenshot" width="48%" />
+  <img src="docs/screenshots/settings-privacy.png" alt="Privacy settings screenshot" width="48%" />
 </p>
 
 ## Privacy Model

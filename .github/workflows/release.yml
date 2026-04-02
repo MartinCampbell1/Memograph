@@ -8,6 +8,7 @@ on:
 jobs:
   draft-release:
     runs-on: macos-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:

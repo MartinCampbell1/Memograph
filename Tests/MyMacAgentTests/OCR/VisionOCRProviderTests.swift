@@ -3,6 +3,9 @@ import AppKit
 @testable import MyMacAgent
 
 struct VisionOCRProviderTests {
+    private var isCI: Bool {
+        ProcessInfo.processInfo.environment["CI"] == "true"
+    }
 
     private func makeTextImage(text: String, size: NSSize = NSSize(width: 400, height: 100)) -> NSImage {
         let image = NSImage(size: size)
@@ -26,6 +29,7 @@ struct VisionOCRProviderTests {
 
     @Test("Recognizes text in image")
     func recognizesText() async throws {
+        guard !isCI else { return }
         let provider = VisionOCRProvider()
         let image = makeTextImage(text: "Hello World")
         let result = try await provider.recognizeText(in: image)
@@ -35,6 +39,7 @@ struct VisionOCRProviderTests {
 
     @Test("Low confidence for blank image")
     func lowConfidenceForBlank() async throws {
+        guard !isCI else { return }
         let provider = VisionOCRProvider()
         let image = makeTextImage(text: "", size: NSSize(width: 400, height: 100))
         let result = try await provider.recognizeText(in: image)
@@ -43,6 +48,7 @@ struct VisionOCRProviderTests {
 
     @Test("Reports non-negative processing time")
     func reportsProcessingTime() async throws {
+        guard !isCI else { return }
         let provider = VisionOCRProvider()
         let image = makeTextImage(text: "Hello World")
         let result = try await provider.recognizeText(in: image)

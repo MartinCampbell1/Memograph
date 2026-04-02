@@ -50,4 +50,14 @@ final class PermissionsManager: ObservableObject {
         }
         NSWorkspace.shared.open(url)
     }
+
+    func setPreviewStatus(
+        screenRecordingGranted: Bool,
+        accessibilityGranted: Bool,
+        microphoneGranted: Bool
+    ) {
+        self.screenRecordingGranted = screenRecordingGranted
+        self.accessibilityGranted = accessibilityGranted
+        self.microphoneGranted = microphoneGranted
+    }
 }
