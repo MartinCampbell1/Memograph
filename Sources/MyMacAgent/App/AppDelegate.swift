@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var retentionTimer: Timer?
     private var autoSummaryTimer: Timer?
     private var captureHashTracker = CaptureHashTracker()
+    private let captureGate = CaptureGate(maxConcurrent: 1)
+    private var privacyGuard = PrivacyGuard.withDefaults()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("MyMacAgent launched")
@@ -175,6 +177,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let sessionManager, let sessionId = sessionManager.currentSessionId,
               let captureEngine, let imageProcessor, let db = databaseManager else { return }
 
+        guard privacyGuard.shouldCapture(
+            bundleId: appInfo.bundleId,
+            windowTitle: windowMonitor?.currentWindowTitle
+        ) else {
+            logger.info("Skipping capture: blocked by privacy rules (\(appInfo.bundleId))")
+            return
+        }
+
         // Capture Phase 2 + Phase 3 components by value to avoid self capture across isolation boundary
         let axEngine = accessibilityEngine
         let ocrPipe = ocrPipeline
@@ -183,8 +193,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fusionEngine = contextFusionEngine
         let pid = appInfo.pid
         let hashTracker = captureHashTracker
+        let gate = captureGate
+        let privGuard = privacyGuard
 
         Task {
+            guard await gate.tryAcquire() else {
+                Logger.capture.info("Skipping capture: previous still in progress")
+                return
+            }
+            defer { Task { await gate.release() } }
+
             do {
                 // 1. Take screenshot
                 let captureResult = try await captureEngine.captureWindow(pid: pid)
@@ -232,7 +250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var ocrSnapshot: OCRSnapshotRecord?
                 let visualDiff: Double = hash.map { hashTracker.computeDiff(currentHash: $0, sessionId: sessionId) } ?? 1.0
 
-                if let policy, policy.shouldRunOCR(visualDiffScore: visualDiff, mode: mode) {
+                if let policy, policy.shouldRunOCR(visualDiffScore: visualDiff, mode: mode),
+                   privGuard.shouldOCR(bundleId: appInfo.bundleId) {
                     try sessionManager.recordEvent(sessionId: sessionId, type: .ocrRequested, payload: nil)
                     if let ocrPipe {
                         let ocrResult = try await ocrPipe.process(
