@@ -24,6 +24,9 @@ final class DailySummarizer: @unchecked Sendable {
     private let db: DatabaseManager
     nonisolated(unsafe) private let logger = Logger.summary
 
+    /// Max total characters for all context text in prompt (~4 chars per token, 100K token budget)
+    private let maxPromptChars = 300_000
+
     init(db: DatabaseManager) {
         self.db = db
     }
@@ -44,6 +47,7 @@ final class DailySummarizer: @unchecked Sendable {
                   let bundleId = row["bundle_id"]?.textValue,
                   let startedAt = row["started_at"]?.textValue else { return nil }
 
+            // Get ALL context text — full OCR + AX merged text, not truncated
             let contexts = try db.query("""
                 SELECT window_title, merged_text FROM context_snapshots
                 WHERE session_id = ? ORDER BY timestamp
@@ -65,46 +69,130 @@ final class DailySummarizer: @unchecked Sendable {
         }
     }
 
+    /// Load the previous summary for compressed memory (so the model knows what happened before)
+    func loadPreviousSummary(before date: String) throws -> String? {
+        let rows = try db.query("""
+            SELECT date, summary_text, top_topics_json, suggested_notes_json
+            FROM daily_summaries
+            WHERE date < ?
+            ORDER BY date DESC
+            LIMIT 1
+        """, params: [.text(date)])
+
+        guard let row = rows.first,
+              let prevDate = row["date"]?.textValue else { return nil }
+
+        var memory = "Previous day (\(prevDate)):\n"
+        if let summary = row["summary_text"]?.textValue {
+            memory += summary + "\n"
+        }
+        if let topics = row["top_topics_json"]?.textValue {
+            memory += "Topics: \(topics)\n"
+        }
+        if let notes = row["suggested_notes_json"]?.textValue {
+            memory += "Notes suggested: \(notes)\n"
+        }
+        return memory
+    }
+
+    /// Load the current day's earlier summary (for hourly updates — build on previous hour)
+    func loadCurrentDaySummary(for date: String) throws -> String? {
+        let rows = try db.query("""
+            SELECT summary_text, top_topics_json, generated_at
+            FROM daily_summaries
+            WHERE date = ?
+        """, params: [.text(date)])
+
+        guard let row = rows.first,
+              let summary = row["summary_text"]?.textValue else { return nil }
+
+        let generatedAt = row["generated_at"]?.textValue ?? "unknown"
+        return "Earlier summary today (generated at \(generatedAt)):\n\(summary)"
+    }
+
     func buildDailyPrompt(for date: String) throws -> String {
         let sessions = try collectSessionData(for: date)
 
-        var prompt = "Generate a daily activity summary for \(date).\n\n"
-        prompt += "## Sessions\n\n"
+        var prompt = ""
+
+        // 1. Compressed memory — previous day + earlier today
+        if let prevDay = try loadPreviousSummary(before: date) {
+            prompt += "## Previous context (compressed memory)\n\(prevDay)\n\n"
+        }
+        if let earlierToday = try loadCurrentDaySummary(for: date) {
+            prompt += "## Earlier today\n\(earlierToday)\n\n"
+        }
+
+        // 2. Today's sessions with FULL text
+        prompt += "## Today's sessions (\(date))\n\n"
+
+        var totalChars = prompt.count
+        let charBudgetPerSession = max(1000, (maxPromptChars - totalChars) / max(sessions.count, 1))
 
         for session in sessions {
             let durationMin = session.durationMs / 60000
             prompt += "### \(session.appName) (\(durationMin) min)\n"
             prompt += "Time: \(session.startedAt) — \(session.endedAt ?? "ongoing")\n"
+
             if !session.windowTitles.isEmpty {
                 prompt += "Windows: \(session.windowTitles.joined(separator: ", "))\n"
             }
+
             if session.uncertaintyMode != "normal" {
-                prompt += "Note: content was \(session.uncertaintyMode) (visual tracking)\n"
+                prompt += "Note: content was \(session.uncertaintyMode) (visual tracking, OCR may be incomplete)\n"
             }
-            let textPreview = session.contextTexts
-                .prefix(3)
-                .map { String($0.prefix(200)) }
-                .joined(separator: "\n")
-            if !textPreview.isEmpty {
-                prompt += "Content preview:\n\(textPreview)\n"
+
+            // Full context text — deduplicated, with smart budget
+            if !session.contextTexts.isEmpty {
+                prompt += "Content:\n"
+                let deduped = deduplicateTexts(session.contextTexts)
+                var sessionChars = 0
+                for text in deduped {
+                    if sessionChars + text.count > charBudgetPerSession {
+                        let remaining = charBudgetPerSession - sessionChars
+                        if remaining > 100 {
+                            prompt += String(text.prefix(remaining)) + "...[truncated]\n"
+                        }
+                        break
+                    }
+                    prompt += text + "\n"
+                    sessionChars += text.count
+                }
             }
+
             prompt += "\n"
+            totalChars = prompt.count
         }
 
+        // 3. Instructions
         prompt += """
-        Respond with these sections exactly:
+
+        ---
+        Based on ALL the data above (app names, window titles, full OCR text, code, documents):
 
         ## Summary
-        (1-3 sentence summary of the day)
+        Write 2-4 sentences about what the user accomplished today. Be specific — mention actual code, documents, topics they worked on. Reference the content you can see.
 
         ## Main topics
-        (bullet list of main topics/activities)
+        - List every distinct topic/project/task (bullet list)
+        - Include programming languages, frameworks, tools used
+        - Note if the user was in AI chats (ChatGPT, Claude, etc.)
+
+        ## AI sessions
+        - List any AI assistant interactions detected (ChatGPT, Claude, Copilot, etc.)
+        - What were they asking about?
+
+        ## Distractions
+        - Note any context-switching patterns (rapid app switches, short sessions)
+        - Social media or messaging breaks
 
         ## Suggested notes
-        (bullet list of [[wiki-link]] notes worth creating)
+        - [[Wiki Link Name]] for each topic worth creating a note about
+        - Focus on knowledge worth preserving, not trivial activity
 
         ## Continue tomorrow
-        (what to continue working on)
+        - What was the user working on when the day ended?
+        - Any unfinished tasks visible in the content?
         """
 
         return prompt
@@ -114,13 +202,22 @@ final class DailySummarizer: @unchecked Sendable {
         let prompt = try buildDailyPrompt(for: date)
 
         let systemPrompt = """
-        You are a personal productivity assistant. Analyze the user's computer activity
-        and produce a concise, insightful daily summary. Focus on what they accomplished,
-        what topics they explored, and what they should continue tomorrow. Be specific
-        about the actual content they worked on based on window titles and text excerpts.
+        You are a personal knowledge management assistant analyzing computer activity logs.
+        You receive timestamped sessions with full OCR text extracted from screenshots,
+        window titles, and app metadata.
+
+        Your job:
+        1. Understand what the user actually DID based on the content (code, documents, chats)
+        2. Extract topics and knowledge worth preserving
+        3. Identify patterns (focus blocks, distractions, AI usage)
+        4. Build on previous context — don't repeat what was already summarized
+        5. Create useful [[wiki-links]] that connect to concepts, not just app names
+
+        Be specific and evidence-based. Quote actual content when relevant.
+        Write in the user's language (Russian if their content is in Russian).
         """
 
-        logger.info("Generating daily summary for \(date)")
+        logger.info("Generating daily summary for \(date), prompt length: \(prompt.count) chars")
 
         let response = try await client.complete(
             systemPrompt: systemPrompt,
@@ -167,7 +264,7 @@ final class DailySummarizer: @unchecked Sendable {
         )
 
         try persistSummary(summary)
-        logger.info("Daily summary saved for \(date)")
+        logger.info("Daily summary saved for \(date), tokens: \(response.promptTokens)+\(response.completionTokens)")
 
         return summary
     }
@@ -211,18 +308,11 @@ final class DailySummarizer: @unchecked Sendable {
                 summaryText = lines.replacingOccurrences(of: "Summary\n", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             } else if lines.hasPrefix("Main topics") {
-                topics = lines.split(separator: "\n")
-                    .dropFirst()
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : String($0) }
-                    .filter { !$0.isEmpty }
+                topics = extractBullets(from: lines)
             } else if lines.hasPrefix("Suggested notes") {
-                suggestedNotes = lines.split(separator: "\n")
-                    .dropFirst()
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : String($0) }
-                    .map { $0.replacingOccurrences(of: "[[", with: "").replacingOccurrences(of: "]]", with: "") }
-                    .filter { !$0.isEmpty }
+                suggestedNotes = extractBullets(from: lines)
+                    .map { $0.replacingOccurrences(of: "[[", with: "")
+                           .replacingOccurrences(of: "]]", with: "") }
             } else if lines.hasPrefix("Continue tomorrow") {
                 continueTomorrow = lines.replacingOccurrences(of: "Continue tomorrow\n", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -235,5 +325,30 @@ final class DailySummarizer: @unchecked Sendable {
             suggestedNotes: suggestedNotes,
             continueTomorrow: continueTomorrow
         )
+    }
+
+    // MARK: - Private
+
+    /// Remove near-duplicate texts (same content captured multiple times)
+    private func deduplicateTexts(_ texts: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for text in texts {
+            // Use first 100 chars as dedup key
+            let key = String(text.prefix(100))
+            if !seen.contains(key) {
+                seen.insert(key)
+                result.append(text)
+            }
+        }
+        return result
+    }
+
+    private static func extractBullets(from section: String) -> [String] {
+        section.split(separator: "\n")
+            .dropFirst()
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : String($0) }
+            .filter { !$0.isEmpty }
     }
 }
