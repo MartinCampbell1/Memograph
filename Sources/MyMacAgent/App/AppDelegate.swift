@@ -22,6 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var obsidianExporter: ObsidianExporter?
     // Phase 4
     private var retentionWorker: RetentionWorker?
+    // Phase 5 — Vision + Audio
+    private var visionAnalyzer: VisionAnalyzer?
+    private var audioTranscriber: AudioTranscriber?
     private var retentionTimer: Timer?
     private var autoSummaryTimer: Timer?
     private var captureHashTracker = CaptureHashTracker()
@@ -35,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         initializePhase2()
         initializePhase3()
         initializePhase4()
+        initializePhase5()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -148,6 +152,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         logger.info("Phase 4 initialized (retention, hourly auto-summary)")
+    }
+
+    private func initializePhase5() {
+        guard let db = databaseManager else { return }
+        let transcriber = AudioTranscriber(db: db)
+        try? transcriber.ensureTable()
+        audioTranscriber = transcriber
+        visionAnalyzer = VisionAnalyzer(db: db)
+        logger.info("Phase 5 initialized (vision analyzer, audio transcriber)")
     }
 
     private func autoGenerateSummaryIfActive() {
@@ -302,11 +315,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func generateDailySummary(for date: String, apiKey: String? = nil) {
+        let analyzer = visionAnalyzer
         Task { @MainActor in
             do {
                 let settings = AppSettings()
                 let key = apiKey ?? settings.openRouterApiKey
-                let client = LLMClient(apiKey: key, model: settings.llmModel)
+                let client: LLMClient
+                if settings.hasApiKey {
+                    client = LLMClient(apiKey: key, model: settings.llmModel)
+                } else {
+                    client = LLMClient(apiKey: "", baseURL: "http://localhost:11434/v1", model: "hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M")
+                }
+                if let analyzer {
+                    let count = try await analyzer.analyzeAllLowReadability(for: date)
+                    if count > 0 {
+                        logger.info("Analyzed \(count) low-readability screenshots before summary")
+                    }
+                }
                 guard let summarizer = dailySummarizer else { return }
                 let summary = try await summarizer.summarize(for: date, using: client)
                 if let exporter = obsidianExporter {

@@ -164,6 +164,37 @@ final class DailySummarizer: @unchecked Sendable {
             totalChars = prompt.count
         }
 
+        // 2.5 Audio transcripts
+        let audioTranscriber = AudioTranscriber(db: db)
+        if let transcripts = try? audioTranscriber.getTranscriptsForDate(date), !transcripts.isEmpty {
+            prompt += "## Audio Transcripts\n\n"
+            for transcript in transcripts {
+                let time = String(transcript.timestamp.prefix(16))
+                let lang = transcript.language ?? "?"
+                prompt += "[\(time)] (\(lang)): \(transcript.text)\n"
+            }
+            prompt += "\n"
+        }
+
+        // 2.6 Vision analysis of unreadable screenshots
+        let visionSnapshots = try db.query("""
+            SELECT timestamp, app_name, window_title, merged_text
+            FROM context_snapshots
+            WHERE timestamp LIKE ? AND text_source = 'vision' AND merged_text IS NOT NULL
+            ORDER BY timestamp
+        """, params: [.text("\(date)%")])
+
+        if !visionSnapshots.isEmpty {
+            prompt += "## Vision Analysis (screenshots that couldn't be OCR'd)\n\n"
+            for row in visionSnapshots {
+                let time = row["timestamp"]?.textValue.map { String($0.prefix(16)) } ?? ""
+                let app = row["app_name"]?.textValue ?? ""
+                let text = row["merged_text"]?.textValue ?? ""
+                prompt += "[\(time)] \(app): \(text)\n"
+            }
+            prompt += "\n"
+        }
+
         // 3. Instructions (user-editable via Settings → Prompts)
         prompt += "\n---\n" + AppSettings().userPromptSuffix
 
