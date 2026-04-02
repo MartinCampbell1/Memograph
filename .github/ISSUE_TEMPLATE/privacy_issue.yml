@@ -1,0 +1,25 @@
+name: Privacy or security concern
+description: Report a privacy-sensitive issue or default that feels unsafe
+title: "[Privacy]: "
+labels: ["privacy", "security"]
+body:
+  - type: markdown
+    attributes:
+      value: "If the issue is a true vulnerability, prefer GitHub private vulnerability reporting instead of a public issue."
+  - type: textarea
+    id: concern
+    attributes:
+      label: Concern
+      description: Describe the behavior and why it feels unsafe.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Data involved
+      description: Screenshots, OCR text, summaries, audio, credentials, etc.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include the narrowest reliable repro you have.

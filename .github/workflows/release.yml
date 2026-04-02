@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  draft-release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Build release app
+        run: ./scripts/build_release.sh
+      - name: Package DMG
+        run: ./scripts/package_dmg.sh
+      - name: Zip app bundle
+        run: ditto -c -k --keepParent dist/Memograph.app dist/Memograph.zip
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/Memograph.dmg
+            dist/Memograph.zip

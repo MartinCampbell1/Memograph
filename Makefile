@@ -1,32 +1,49 @@
-# Build helpers for MyMacAgent (Swift 6.2 + CLT-only environment)
-#
-# Problem: system Swift 5.8 + SPM has a PlatformPath bug with CLT-only installs.
-# Solution: use Homebrew Swift 6.2 (swift build/test) + an ld wrapper that
-#           strips -no_warn_duplicate_libraries (unsupported by CLT ld64-857).
-#
-# Usage:  make build  /  make test  /  make clean
+SWIFT ?= swift
+PYTHON ?= python3
+VENV ?= .venv
+OLLAMA ?= ollama
+DIST_DIR ?= dist
+APP_NAME ?= Memograph
+SWIFT_TARGET ?= MyMacAgent
 
-SWIFT     := /opt/homebrew/opt/swift/bin/swift
-BUILD_BIN := $(shell pwd)/.build-tools
-PATH_FIX  := $(BUILD_BIN):/opt/homebrew/opt/swift/bin
+.PHONY: setup setup-audio setup-models build test clean run release package notarize verify
 
-.PHONY: build test clean
+setup: setup-audio setup-models
+
+setup-audio:
+	$(PYTHON) -m venv $(VENV)
+	$(VENV)/bin/pip install --upgrade pip
+	$(VENV)/bin/pip install mlx-whisper
+
+setup-models:
+	if command -v $(OLLAMA) >/dev/null 2>&1; then \
+		$(OLLAMA) pull glm-ocr; \
+		$(OLLAMA) pull qwen3.5:4b; \
+		$(OLLAMA) pull hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M; \
+	else \
+		echo "Ollama not found. Install Ollama first, then run 'make setup-models'."; \
+	fi
 
 build:
-	PATH="$(PATH_FIX):$$PATH" $(SWIFT) build
+	$(SWIFT) build
 
 test:
-	PATH="$(PATH_FIX):$$PATH" $(SWIFT) test
+	$(SWIFT) test
+
+run:
+	$(SWIFT) run $(SWIFT_TARGET)
+
+release:
+	./scripts/build_release.sh
+
+package:
+	./scripts/package_dmg.sh
+
+notarize:
+	./scripts/notarize.sh
+
+verify:
+	./scripts/verify_release.sh
 
 clean:
-	rm -rf .build
-
-install: build
-	cp .build/arm64-apple-macosx/debug/MyMacAgent build/MyMacAgent.app/Contents/MacOS/MyMacAgent
-	codesign --force --sign - build/MyMacAgent.app
-
-run: install
-	open build/MyMacAgent.app
-
-kill:
-	pkill -f "MyMacAgent" 2>/dev/null || true
+	rm -rf .build $(DIST_DIR)
