@@ -12,4 +12,7 @@ extension Logger {
     nonisolated(unsafe) static let accessibility = Logger(subsystem: subsystem, category: "accessibility")
     nonisolated(unsafe) static let ocr = Logger(subsystem: subsystem, category: "ocr")
     nonisolated(unsafe) static let policy = Logger(subsystem: subsystem, category: "policy")
+    nonisolated(unsafe) static let fusion = Logger(subsystem: subsystem, category: "fusion")
+    nonisolated(unsafe) static let summary = Logger(subsystem: subsystem, category: "summary")
+    nonisolated(unsafe) static let export = Logger(subsystem: subsystem, category: "export")
 }
