@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-struct Migration {
+struct Migration: @unchecked Sendable {
     let version: Int
     let name: String
     let migrate: (DatabaseManager) throws -> Void
