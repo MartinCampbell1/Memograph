@@ -1,6 +1,7 @@
 import SwiftUI
 
 @main
+@MainActor
 struct MyMacAgentApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
