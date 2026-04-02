@@ -74,7 +74,19 @@ struct CaptureSchedulerTests {
         #expect(scheduler.currentInterval == 3)
     }
 
-    // 4. Recovery mode when readability improves from highUncertainty
+    // 4. resetToNormal sets mode to normal
+    @Test("resetToNormal sets mode to normal")
+    func resetToNormal() {
+        let scheduler = CaptureScheduler(policyEngine: CapturePolicyEngine())
+        let badInput = ReadabilityInput(axTextLen: 0, ocrConfidence: 0, ocrTextLen: 0, visualChangeScore: 0.8, isCanvasLike: true)
+        scheduler.updateReadability(badInput)
+        #expect(scheduler.currentMode == .highUncertainty)
+        scheduler.resetToNormal()
+        #expect(scheduler.currentMode == .normal)
+        #expect(scheduler.currentInterval >= 30)
+    }
+
+    // 5. Recovery mode when readability improves from highUncertainty
     @Test("Recovery mode when readability improves from highUncertainty")
     func recoveryModeWhenReadabilityImproves() {
         let engine = CapturePolicyEngine()

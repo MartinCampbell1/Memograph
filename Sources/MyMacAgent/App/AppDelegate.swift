@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var retentionWorker: RetentionWorker?
     private var retentionTimer: Timer?
     private var autoSummaryTimer: Timer?
+    private var captureHashTracker = CaptureHashTracker()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("MyMacAgent launched")
@@ -181,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let scheduler = captureScheduler
         let fusionEngine = contextFusionEngine
         let pid = appInfo.pid
+        let hashTracker = captureHashTracker
 
         Task {
             do {
@@ -228,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var ocrConfidence = 0.0
                 var ocrTextLen = 0
                 var ocrSnapshot: OCRSnapshotRecord?
-                let visualDiff: Double = hash != nil ? 0.5 : 0.5 // default: assume change
+                let visualDiff: Double = hash.map { hashTracker.computeDiff(currentHash: $0, sessionId: sessionId) } ?? 1.0
 
                 if let policy, policy.shouldRunOCR(visualDiffScore: visualDiff, mode: mode) {
                     try sessionManager.recordEvent(sessionId: sessionId, type: .ocrRequested, payload: nil)
@@ -308,11 +310,7 @@ extension AppDelegate: @preconcurrency AppMonitorDelegate {
                 windowMonitor?.updateApp(appId: appId, pid: pid)
             }
             // Reset capture scheduler to normal mode for new app
-            let normalInput = ReadabilityInput(
-                axTextLen: 0, ocrConfidence: 0, ocrTextLen: 0,
-                visualChangeScore: 0, isCanvasLike: false
-            )
-            captureScheduler?.updateReadability(normalInput)
+            captureScheduler?.resetToNormal()
         } catch {
             logger.error("Failed to handle app switch: \(error.localizedDescription)")
         }
@@ -336,8 +334,15 @@ extension AppDelegate: @preconcurrency WindowMonitorDelegate {
 extension AppDelegate: @preconcurrency IdleDetectorDelegate {
     func idleDetector(_ detector: IdleDetector, didChangeIdleState isIdle: Bool) {
         guard let sessionManager, let sessionId = sessionManager.currentSessionId else { return }
-        let eventType: SessionEventType = isIdle ? .idleStarted : .idleEnded
-        try? sessionManager.recordEvent(sessionId: sessionId, type: eventType, payload: nil)
+        do {
+            if isIdle {
+                try sessionManager.markIdle(sessionId: sessionId)
+            } else {
+                try sessionManager.markActive(sessionId: sessionId)
+            }
+        } catch {
+            logger.error("Failed to update idle state: \(error.localizedDescription)")
+        }
     }
 }
 

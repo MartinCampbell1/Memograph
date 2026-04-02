@@ -89,4 +89,41 @@ struct SessionManagerTests {
         let oldRows = try db.query("SELECT ended_at FROM sessions WHERE id = ?", params: [.text(oldId)])
         #expect(oldRows[0]["ended_at"]?.textValue != nil)
     }
+
+    @Test("endSession calculates active_duration_ms")
+    func endSessionCalculatesDuration() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let sm = SessionManager(db: db)
+
+        let sessionId = try sm.startSession(appId: 1, windowId: nil)
+
+        let rows1 = try db.query("SELECT active_duration_ms FROM sessions WHERE id = ?",
+            params: [.text(sessionId)])
+        #expect(rows1[0]["active_duration_ms"]?.intValue == 0)
+
+        try sm.endSession(sessionId)
+
+        let rows2 = try db.query("SELECT active_duration_ms, ended_at, started_at FROM sessions WHERE id = ?",
+            params: [.text(sessionId)])
+        let duration = rows2[0]["active_duration_ms"]?.intValue ?? -1
+        #expect(duration >= 0)
+        #expect(rows2[0]["ended_at"]?.textValue != nil)
+    }
+
+    @Test("markIdle and markActive track idle duration")
+    func idleDurationTracking() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let sm = SessionManager(db: db)
+
+        let sessionId = try sm.startSession(appId: 1, windowId: nil)
+        try sm.markIdle(sessionId: sessionId)
+        try sm.markActive(sessionId: sessionId)
+
+        let rows = try db.query("SELECT idle_duration_ms FROM sessions WHERE id = ?",
+            params: [.text(sessionId)])
+        let idle = rows[0]["idle_duration_ms"]?.intValue ?? -1
+        #expect(idle >= 0)
+    }
 }

@@ -30,6 +30,19 @@ final class CaptureScheduler {
         timer = nil
     }
 
+    func resetToNormal() {
+        let oldMode = currentMode
+        currentMode = .normal
+        if oldMode != .normal {
+            delegate?.captureScheduler(self, didChangeMode: .normal)
+        }
+        if timer != nil {
+            stop()
+            scheduleNextCapture()
+        }
+        logger.info("Scheduler reset to normal mode")
+    }
+
     func updateReadability(_ input: ReadabilityInput) {
         let decision = policyEngine.evaluatePolicy(readability: input, previousMode: currentMode)
         if decision.mode != currentMode {

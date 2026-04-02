@@ -93,3 +93,42 @@ final class ImageProcessor {
         return path
     }
 }
+
+/// Tracks visual hashes across captures to compute real diff scores
+final class CaptureHashTracker {
+    private var lastHash: String?
+    private var lastSessionId: String?
+
+    /// Returns the diff score between current and previous capture.
+    /// Returns 1.0 for first capture in a session (treat as changed).
+    func computeDiff(currentHash: String, sessionId: String) -> Double {
+        // New session — reset tracking
+        if sessionId != lastSessionId {
+            lastHash = currentHash
+            lastSessionId = sessionId
+            return 1.0
+        }
+
+        guard let prev = lastHash else {
+            lastHash = currentHash
+            return 1.0
+        }
+
+        // Character-level diff (same logic as ImageProcessor.diffScore)
+        let chars1 = Array(prev)
+        let chars2 = Array(currentHash)
+        guard chars1.count == chars2.count, !chars1.isEmpty else {
+            lastHash = currentHash
+            return 1.0
+        }
+
+        var diffCount = 0
+        for i in 0..<chars1.count {
+            if chars1[i] != chars2[i] { diffCount += 1 }
+        }
+
+        let score = Double(diffCount) / Double(chars1.count)
+        lastHash = currentHash
+        return score
+    }
+}
