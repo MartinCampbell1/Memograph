@@ -106,7 +106,10 @@ final class ObsidianExporter {
         let dailyDir = (vaultPath as NSString).appendingPathComponent("Daily")
         try FileManager.default.createDirectory(atPath: dailyDir, withIntermediateDirectories: true)
 
-        let filename = "\(summary.date).md"
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH-mm"
+        let timeStr = timeFormatter.string(from: Date())
+        let filename = "\(summary.date)_\(timeStr).md"
         let filePath = (dailyDir as NSString).appendingPathComponent(filename)
 
         try markdown.write(toFile: filePath, atomically: true, encoding: .utf8)

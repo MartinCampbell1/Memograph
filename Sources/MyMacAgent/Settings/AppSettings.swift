@@ -78,19 +78,12 @@ struct AppSettings {
     // MARK: - Prompts (editable by user)
 
     static let defaultSystemPrompt = """
-    You are a personal knowledge management assistant analyzing computer activity logs.
-    You receive timestamped sessions with full OCR text extracted from screenshots,
-    window titles, and app metadata.
-
-    Your job:
-    1. Understand what the user actually DID based on the content (code, documents, chats)
-    2. Extract topics and knowledge worth preserving
-    3. Identify patterns (focus blocks, distractions, AI usage)
-    4. Build on previous context — don't repeat what was already summarized
-    5. Create useful [[wiki-links]] that connect to concepts, not just app names
-
-    Be specific and evidence-based. Quote actual content when relevant.
-    Write in the user's language (Russian if their content is in Russian).
+    You are an expert personal knowledge management analyst creating EXTREMELY detailed \
+    daily reports with extensive [[wiki-links]] for Obsidian knowledge graph. \
+    Every project, tool, technology, person, AI model, concept MUST be wrapped in [[double brackets]]. \
+    The more [[wiki-links]] the better — the knowledge graph must grow with every report. \
+    Be specific and evidence-based. Quote actual screen content. \
+    Write in the user's language (Russian if content is in Russian).
     """
 
     var systemPrompt: String {
@@ -99,30 +92,35 @@ struct AppSettings {
     }
 
     static let defaultUserPromptSuffix = """
-    Based on ALL the data above (app names, window titles, full OCR text, code, documents):
+    CRITICAL: Wrap EVERY mention of projects, tools, technologies, people, AI models in [[wiki-links]].
 
     ## Summary
-    Write 2-4 sentences about what the user accomplished today. Be specific — mention actual code, documents, topics they worked on.
+    (5-7 detailed sentences with [[wiki-links]], specifically WHAT was done, what code, what settings)
 
-    ## Main topics
-    - List every distinct topic/project/task (bullet list)
-    - Include programming languages, frameworks, tools used
-    - Note if the user was in AI chats (ChatGPT, Claude, etc.)
+    ## Детальный таймлайн
+    (every 10-20 min block, with [[wiki-links]], quote screen content)
 
-    ## AI sessions
-    - List any AI assistant interactions detected
-    - What were they asking about?
+    ## Проекты и код
+    (each project separately, what was done, files, commands, with [[wiki-links]])
 
-    ## Distractions
-    - Note any context-switching patterns
-    - Social media or messaging breaks
+    ## Инструменты и технологии
+    (full list of everything used, each as [[wiki-link]])
 
-    ## Suggested notes
-    - [[Wiki Link Name]] for each topic worth creating a note about
+    ## Что изучал / читал
+    (specific topics, sites, docs, with [[wiki-links]])
 
-    ## Continue tomorrow
-    - What was the user working on when the day ended?
-    - Any unfinished tasks visible in the content?
+    ## AI-взаимодействие
+    (which AI models, which tasks, with [[wiki-links]])
+
+    ## Граф связей
+    (how topics/projects/tools are connected: [[A]] → [[B]] → [[C]])
+
+    ## Предлагаемые заметки
+    - [[Topic]] — specific reason to create a note
+    (minimum 10 notes)
+
+    ## Продолжить завтра
+    (unfinished tasks with [[wiki-links]])
     """
 
     var userPromptSuffix: String {
