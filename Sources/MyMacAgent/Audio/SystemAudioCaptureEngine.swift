@@ -13,7 +13,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private let audioDir: String
     private let transcriber: AudioTranscriber
     private let sessionManager: SessionManager
-    nonisolated(unsafe) private let logger = Logger.app
+    private let logger = Logger.app
     private var isRecording = false
     private var audioFormat: AVAudioFormat?
 
@@ -25,8 +25,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
         if let dir = audioDir {
             self.audioDir = dir
         } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            self.audioDir = appSupport.appendingPathComponent("MyMacAgent/system_audio").path
+            self.audioDir = AppPaths.systemAudioDirectoryURL().path
         }
         super.init()
     }
@@ -158,7 +157,8 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
                         sessionId: sessionId,
                         text: text,
                         language: result.language,
-                        durationSeconds: result.durationSeconds
+                        durationSeconds: result.durationSeconds,
+                        source: source
                     )
                     Logger.app.info("SystemAudio: transcribed \(text.count) chars")
                 }

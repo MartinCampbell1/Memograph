@@ -117,13 +117,14 @@ struct Phase4IntegrationTests {
     func settingsPersist() {
         let suiteName = "test_\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
+        let store = InMemoryCredentialsStore()
 
-        var settings = AppSettings(defaults: defaults)
+        var settings = AppSettings(defaults: defaults, credentialsStore: store)
         settings.openRouterApiKey = "sk-test-key"
         settings.obsidianVaultPath = "/test/vault"
         settings.retentionDays = 7
 
-        let loaded = AppSettings(defaults: defaults)
+        let loaded = AppSettings(defaults: defaults, credentialsStore: store)
         #expect(loaded.openRouterApiKey == "sk-test-key")
         #expect(loaded.obsidianVaultPath == "/test/vault")
         #expect(loaded.retentionDays == 7)

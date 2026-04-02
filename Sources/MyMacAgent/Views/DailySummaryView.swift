@@ -53,18 +53,15 @@ struct DailySummaryView: View {
     @MainActor
     private func regenerateSummary() async {
         let settings = AppSettings()
-        guard settings.hasApiKey else {
-            errorMessage = "No API key configured. Set it in Settings."
+        guard let client = LLMClient.client(for: settings) else {
+            errorMessage = "Summary provider is disabled or incomplete in Settings."
             return
         }
         isGenerating = true
         errorMessage = nil
         let capturedDB = db
         let targetDate = date
-        let apiKey = settings.openRouterApiKey
-        let model = settings.llmModel
         do {
-            let client = LLMClient(apiKey: apiKey, model: model)
             let summarizer = DailySummarizer(db: capturedDB)
             summary = try await summarizer.summarize(for: targetDate, using: client)
         } catch {

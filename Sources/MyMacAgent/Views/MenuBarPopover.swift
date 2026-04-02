@@ -7,12 +7,20 @@ struct MenuBarPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("MyMacAgent")
+            Text("Memograph")
                 .font(.headline)
 
             if isPaused {
                 Label("Paused", systemImage: "pause.circle.fill")
                     .foregroundStyle(.orange)
+                    .font(.caption)
+            } else if !permissionsManager.screenRecordingGranted && !permissionsManager.accessibilityGranted {
+                Label("No permissions", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                    .font(.caption)
+            } else if !permissionsManager.screenRecordingGranted || !permissionsManager.accessibilityGranted {
+                Label("Degraded", systemImage: "eye.slash")
+                    .foregroundStyle(.yellow)
                     .font(.caption)
             } else {
                 Label("Running", systemImage: "checkmark.circle.fill")
@@ -24,8 +32,10 @@ struct MenuBarPopover: View {
 
             Button(isPaused ? "Resume Tracking" : "Pause Tracking") {
                 isPaused.toggle()
-                UserDefaults.standard.set(isPaused, forKey: "captureGlobalPause")
+                var settings = AppSettings()
+                settings.globalPause = isPaused
                 NotificationCenter.default.post(name: .captureToggled, object: nil)
+                NotificationCenter.default.post(name: .settingsDidChange, object: nil)
             }
 
             Button("Open Timeline") {
@@ -47,11 +57,14 @@ struct MenuBarPopover: View {
         .padding()
         .frame(width: 230)
         .onAppear {
-            isPaused = UserDefaults.standard.bool(forKey: "captureGlobalPause")
+            permissionsManager.checkAll()
+            isPaused = AppSettings().globalPause
         }
     }
 }
 
 extension Notification.Name {
     static let captureToggled = Notification.Name("captureToggled")
+    static let settingsDidChange = Notification.Name("settingsDidChange")
+    static let deleteAllLocalDataRequested = Notification.Name("deleteAllLocalDataRequested")
 }

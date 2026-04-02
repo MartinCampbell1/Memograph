@@ -6,7 +6,7 @@ final class OllamaOCRProvider: OCRProvider {
     let name = "ollama"
     private let modelName: String
     private let baseURL: String
-    nonisolated(unsafe) private let logger = Logger.ocr
+    private let logger = Logger.ocr
 
     init(modelName: String = "glm-ocr", baseURL: String = "http://localhost:11434") {
         self.modelName = modelName

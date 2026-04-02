@@ -5,7 +5,7 @@ protocol WindowMonitorDelegate: AnyObject {
     func windowMonitor(_ monitor: WindowMonitor, didSwitchTo windowId: Int64, title: String?)
 }
 
-final class WindowMonitor {
+final class WindowMonitor: @unchecked Sendable {
     weak var delegate: WindowMonitorDelegate?
     private let db: DatabaseManager
     private let logger = Logger.monitor

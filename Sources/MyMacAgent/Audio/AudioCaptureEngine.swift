@@ -3,22 +3,25 @@ import CoreAudio
 import os
 
 /// Captures mic audio ONLY when another app is using the microphone
-/// (Zoom, Telegram, Spokenly, WhatsApp, etc.)
-/// Uses CoreAudio's kAudioDevicePropertyDeviceIsRunningSomewhere to detect this.
+/// (Zoom, Telegram, Spokenly, WhatsApp, etc.).
+/// It inspects CoreAudio client process objects so we do not mistake our own
+/// AVAudioEngine input tap for external microphone usage.
 final class AudioCaptureEngine: @unchecked Sendable {
     private let audioEngine = AVAudioEngine()
     private var currentFile: AVAudioFile?
     private var currentFilePath: String?
     private var segmentTimer: Timer?
+    private var statePollTimer: Timer?
+    private var pendingStopWorkItem: DispatchWorkItem?
     private let segmentDuration: TimeInterval
     private let audioDir: String
     private let transcriber: AudioTranscriber
     private let sessionManager: SessionManager
-    nonisolated(unsafe) private let logger = Logger.app
+    private let logger = Logger.app
     private var isMonitoring = false
     private var isCapturing = false
-    private var micInUseListener: AudioObjectPropertyListenerBlock?
     private var inputDeviceID: AudioDeviceID = 0
+    private let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
 
     init(transcriber: AudioTranscriber, sessionManager: SessionManager,
          segmentDuration: TimeInterval = 300, audioDir: String? = nil) {
@@ -28,8 +31,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
         if let dir = audioDir {
             self.audioDir = dir
         } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            self.audioDir = appSupport.appendingPathComponent("MyMacAgent/audio").path
+            self.audioDir = AppPaths.audioDirectoryURL().path
         }
     }
 
@@ -61,25 +63,12 @@ final class AudioCaptureEngine: @unchecked Sendable {
         }
         inputDeviceID = deviceID
 
-        // Listen for "device is running somewhere" changes
-        var runningAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            guard let self else { return }
-            DispatchQueue.main.async {
-                self.checkMicState()
-            }
+        statePollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.checkMicState()
         }
-        micInUseListener = listener
-
-        AudioObjectAddPropertyListenerBlock(deviceID, &runningAddress, DispatchQueue.main, listener)
 
         isMonitoring = true
-        logger.info("AudioCapture: monitoring mic usage (device: \(deviceID))")
+        logger.info("AudioCapture: monitoring external mic usage (device: \(deviceID))")
 
         // Check initial state
         checkMicState()
@@ -90,15 +79,10 @@ final class AudioCaptureEngine: @unchecked Sendable {
             stopCapture()
         }
 
-        // Remove listener
-        if inputDeviceID != 0, let listener = micInUseListener {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            AudioObjectRemovePropertyListenerBlock(inputDeviceID, &address, DispatchQueue.main, listener)
-        }
+        pendingStopWorkItem?.cancel()
+        pendingStopWorkItem = nil
+        statePollTimer?.invalidate()
+        statePollTimer = nil
 
         isMonitoring = false
         logger.info("AudioCapture: monitoring stopped")
@@ -109,19 +93,39 @@ final class AudioCaptureEngine: @unchecked Sendable {
     // MARK: - Mic state monitoring
 
     private func checkMicState() {
-        let running = isMicRunning()
-        if running && !isCapturing {
+        let externalMicInUse = isExternalProcessUsingMic()
+        if externalMicInUse {
+            pendingStopWorkItem?.cancel()
+            pendingStopWorkItem = nil
+        }
+
+        if externalMicInUse && !isCapturing {
             startCapture()
-        } else if !running && isCapturing {
-            // Small delay — apps sometimes briefly release mic
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                guard let self, !self.isMicRunning() else { return }
+        } else if !externalMicInUse && isCapturing && pendingStopWorkItem == nil {
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, !self.isExternalProcessUsingMic() else { return }
                 self.stopCapture()
             }
+            pendingStopWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
         }
     }
 
-    private func isMicRunning() -> Bool {
+    private func isExternalProcessUsingMic() -> Bool {
+        let processes = fetchAudioProcesses()
+        if !processes.isEmpty {
+            return MicrophoneUsageEvaluator.hasExternalProcessUsingInputDevice(
+                processes,
+                inputDeviceID: inputDeviceID,
+                currentPID: currentPID
+            )
+        }
+
+        // Fallback for environments where process inspection is unavailable.
+        return !isCapturing && isMicRunningSomewhere()
+    }
+
+    private func isMicRunningSomewhere() -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -131,6 +135,81 @@ final class AudioCaptureEngine: @unchecked Sendable {
         var size = UInt32(MemoryLayout<UInt32>.size)
         let status = AudioObjectGetPropertyData(inputDeviceID, &address, 0, nil, &size, &isRunning)
         return status == noErr && isRunning != 0
+    }
+
+    private func fetchAudioProcesses() -> [AudioProcessInfo] {
+        let processObjectIDs = readObjectIDArray(
+            objectID: AudioObjectID(kAudioObjectSystemObject),
+            selector: kAudioHardwarePropertyProcessObjectList,
+            scope: kAudioObjectPropertyScopeGlobal
+        )
+
+        return processObjectIDs.compactMap { processObjectID in
+            guard let pid = readUInt32(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyPID
+            ) else {
+                return nil
+            }
+
+            let inputDevices = readObjectIDArray(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyDevices,
+                scope: kAudioObjectPropertyScopeInput
+            )
+            let isRunningInput = readUInt32(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyIsRunningInput
+            ) ?? 0
+
+            return AudioProcessInfo(
+                pid: pid_t(pid),
+                inputDeviceIDs: inputDevices,
+                isRunningInput: isRunningInput != 0
+            )
+        }
+    }
+
+    private func readUInt32(
+        objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &value)
+        return status == noErr ? value : nil
+    }
+
+    private func readObjectIDArray(
+        objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var propertySize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &propertySize)
+        guard sizeStatus == noErr, propertySize > 0 else {
+            return []
+        }
+
+        let count = Int(propertySize) / MemoryLayout<AudioObjectID>.size
+        var values = Array(repeating: AudioObjectID(0), count: count)
+        let readStatus = AudioObjectGetPropertyData(objectID, &address, 0, nil, &propertySize, &values)
+        guard readStatus == noErr else {
+            return []
+        }
+        return values
     }
 
     // MARK: - Capture control
@@ -223,7 +302,8 @@ final class AudioCaptureEngine: @unchecked Sendable {
                         sessionId: sessionId,
                         text: text,
                         language: result.language,
-                        durationSeconds: result.durationSeconds
+                        durationSeconds: result.durationSeconds,
+                        source: "microphone"
                     )
                     Logger.app.info("AudioCapture: transcribed \(text.count) chars from mic")
                 }

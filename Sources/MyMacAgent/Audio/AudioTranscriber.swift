@@ -8,32 +8,36 @@ struct AudioTranscript {
     let durationSeconds: Double
     let text: String
     let language: String?
+    let source: String?
 }
 
-final class AudioTranscriber {
+final class AudioTranscriber: @unchecked Sendable {
     private let db: DatabaseManager
     let venvPath: String
     private let scriptPath: String
-    nonisolated(unsafe) private let logger = Logger.app
+    private let runtimeStatus: AudioRuntimeStatus
+    private let logger = Logger.app
 
     init(db: DatabaseManager,
          venvPath: String = "",
-         scriptPath: String = "") {
+         scriptPath: String = "",
+         runtimeStatus: AudioRuntimeStatus? = nil) {
         self.db = db
+        self.runtimeStatus = runtimeStatus ?? AudioRuntimeResolver.resolve()
 
-        // Default paths
         if venvPath.isEmpty {
-            let projectDir = Bundle.main.bundlePath
-                .components(separatedBy: "/build/").first ?? NSHomeDirectory() + "/mymacagent"
-            self.venvPath = projectDir + "/.venv"
+            self.venvPath = FileManager.default.currentDirectoryPath + "/.venv"
         } else {
             self.venvPath = venvPath
         }
 
         if scriptPath.isEmpty {
-            let projectDir = Bundle.main.bundlePath
-                .components(separatedBy: "/build/").first ?? NSHomeDirectory() + "/mymacagent"
-            self.scriptPath = projectDir + "/Sources/MyMacAgent/Audio/whisper_transcribe.py"
+            switch self.runtimeStatus {
+            case .ready(let environment):
+                self.scriptPath = environment.scriptPath
+            case .missingPython, .missingScript:
+                self.scriptPath = ""
+            }
         } else {
             self.scriptPath = scriptPath
         }
@@ -55,33 +59,48 @@ final class AudioTranscriber {
     }
 
     func transcribeFile(audioPath: String, language: String? = nil) async throws -> AudioTranscript {
-        let pythonPath = venvPath + "/bin/python3"
-
-        guard FileManager.default.fileExists(atPath: pythonPath) else {
-            throw AudioError.venvNotFound(venvPath)
+        let environment: AudioRuntimeEnvironment
+        switch runtimeStatus {
+        case .ready(let resolvedEnvironment):
+            environment = resolvedEnvironment
+        case .missingPython(let details):
+            throw AudioError.pythonNotFound(details)
+        case .missingScript(let details):
+            throw AudioError.scriptNotFound(details)
         }
-        guard FileManager.default.fileExists(atPath: scriptPath) else {
-            throw AudioError.scriptNotFound(scriptPath)
-        }
 
-        var args = [scriptPath, audioPath]
+        var args = environment.launchArgumentsPrefix + [environment.scriptPath, audioPath]
         if let lang = language { args.append(lang) }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.executableURL = environment.executableURL
         process.arguments = args
+        process.environment = ProcessInfo.processInfo.environment.merging(
+            ["MEMOGRAPH_WHISPER_MODEL": environment.modelName]
+        ) { _, newValue in newValue }
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
 
         try process.run()
         process.waitUntilExit()
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = json["text"] as? String else {
-            throw AudioError.transcriptionFailed("Failed to parse whisper output")
+        let stdoutData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard let json = try? JSONSerialization.jsonObject(with: stdoutData) as? [String: Any] else {
+            throw AudioError.transcriptionFailed(stderr.isEmpty ? "Failed to parse whisper output" : stderr)
+        }
+
+        if let error = json["error"] as? String {
+            throw AudioError.transcriptionFailed(error)
+        }
+
+        guard let text = json["text"] as? String else {
+            throw AudioError.transcriptionFailed("Whisper output did not contain text")
         }
 
         let detectedLang = json["language"] as? String
@@ -92,30 +111,38 @@ final class AudioTranscriber {
             timestamp: ISO8601DateFormatter().string(from: Date()),
             durationSeconds: 0,
             text: text,
-            language: detectedLang ?? language
+            language: detectedLang ?? language,
+            source: nil
         )
     }
 
-    func persistTranscript(sessionId: String?, text: String, language: String?, durationSeconds: Double) throws {
+    func persistTranscript(
+        sessionId: String?,
+        text: String,
+        language: String?,
+        durationSeconds: Double,
+        source: String = "system"
+    ) throws {
         let id = UUID().uuidString
         let now = ISO8601DateFormatter().string(from: Date())
 
         try db.execute("""
-            INSERT INTO audio_transcripts (id, session_id, timestamp, duration_seconds, transcript, language)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO audio_transcripts (id, session_id, timestamp, duration_seconds, transcript, language, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, params: [
             .text(id),
             sessionId.map { .text($0) } ?? .null,
             .text(now),
             .real(durationSeconds),
             .text(text),
-            language.map { .text($0) } ?? .null
+            language.map { .text($0) } ?? .null,
+            .text(source)
         ])
     }
 
     func getTranscriptsForDate(_ date: String) throws -> [AudioTranscript] {
         let rows = try db.query("""
-            SELECT id, session_id, timestamp, duration_seconds, transcript, language
+            SELECT id, session_id, timestamp, duration_seconds, transcript, language, source
             FROM audio_transcripts
             WHERE timestamp LIKE ?
             ORDER BY timestamp
@@ -131,20 +158,21 @@ final class AudioTranscriber {
                 timestamp: timestamp,
                 durationSeconds: row["duration_seconds"]?.realValue ?? 0,
                 text: text,
-                language: row["language"]?.textValue
+                language: row["language"]?.textValue,
+                source: row["source"]?.textValue
             )
         }
     }
 }
 
 enum AudioError: Error, LocalizedError {
-    case venvNotFound(String)
+    case pythonNotFound(String)
     case scriptNotFound(String)
     case transcriptionFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .venvNotFound(let p): return "Python venv not found at \(p)"
+        case .pythonNotFound(let p): return "Python runtime not found: \(p)"
         case .scriptNotFound(let p): return "Whisper script not found at \(p)"
         case .transcriptionFailed(let m): return "Transcription failed: \(m)"
         }

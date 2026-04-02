@@ -20,7 +20,7 @@ final class FallbackOCRProvider: OCRProvider {
     let name: String
     private let primary: any OCRProvider
     private let fallback: any OCRProvider
-    nonisolated(unsafe) private let logger = Logger.ocr
+    private let logger = Logger.ocr
 
     init(primary: any OCRProvider, fallback: any OCRProvider) {
         self.primary = primary
@@ -44,7 +44,7 @@ final class FallbackOCRProvider: OCRProvider {
 
 final class VisionOCRProvider: OCRProvider {
     let name = "vision"
-    nonisolated(unsafe) private let logger = Logger.ocr
+    private let logger = Logger.ocr
 
     func recognizeText(in image: NSImage) async throws -> OCRResult {
         let startTime = DispatchTime.now()

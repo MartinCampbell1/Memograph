@@ -7,7 +7,7 @@ struct MyMacAgentApp: App {
     @StateObject private var permissionsManager = PermissionsManager()
 
     var body: some Scene {
-        MenuBarExtra("MyMacAgent", systemImage: "brain.head.profile") {
+        MenuBarExtra("Memograph", systemImage: "brain.head.profile") {
             MenuBarPopover(permissionsManager: permissionsManager)
         }
         .menuBarExtraStyle(.window)

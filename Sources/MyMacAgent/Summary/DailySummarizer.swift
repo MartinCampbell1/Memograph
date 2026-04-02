@@ -22,7 +22,7 @@ struct ParsedSummary {
 
 final class DailySummarizer: @unchecked Sendable {
     private let db: DatabaseManager
-    nonisolated(unsafe) private let logger = Logger.summary
+    private let logger = Logger.summary
 
     /// Max total characters for all context text in prompt (~4 chars per token)
     private var maxPromptChars: Int { AppSettings().maxPromptChars }

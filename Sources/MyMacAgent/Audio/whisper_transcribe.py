@@ -2,6 +2,7 @@
 """Transcribe audio file using mlx-whisper. Called by MyMacAgent as subprocess."""
 import sys
 import json
+import os
 import mlx_whisper
 
 def main():
@@ -11,11 +12,12 @@ def main():
 
     audio_path = sys.argv[1]
     language = sys.argv[2] if len(sys.argv) > 2 else None
+    model_name = os.environ.get("MEMOGRAPH_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
 
     try:
         result = mlx_whisper.transcribe(
             audio_path,
-            path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+            path_or_hf_repo=model_name,
             language=language
         )
 

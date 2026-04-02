@@ -3,14 +3,18 @@ import PackageDescription
 
 let package = Package(
     name: "MyMacAgent",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS(.v15)],
     targets: [
         .executableTarget(
             name: "MyMacAgent",
             path: "Sources/MyMacAgent",
+            resources: [
+                .copy("Audio/whisper_transcribe.py"),
+            ],
             linkerSettings: [
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("AppKit"),
+                .linkedFramework("Security"),
             ]
         ),
         .testTarget(

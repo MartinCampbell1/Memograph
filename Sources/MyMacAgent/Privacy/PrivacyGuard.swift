@@ -39,6 +39,20 @@ final class PrivacyGuard {
         )
     }
 
+    static func fromSettings(_ settings: AppSettings = AppSettings()) -> PrivacyGuard {
+        let guard_ = PrivacyGuard(
+            blacklistedBundleIds: settings.blacklistedBundleIds,
+            blacklistedWindowPatterns: settings.blacklistedWindowPatterns,
+            metadataOnlyBundleIds: settings.metadataOnlyBundleIds
+        )
+
+        if settings.globalPause || settings.startPaused {
+            guard_.pause()
+        }
+
+        return guard_
+    }
+
     func shouldCapture(bundleId: String, windowTitle: String? = nil) -> Bool {
         if isPaused { return false }
         if blacklistedBundleIds.contains(bundleId) { return false }
@@ -54,7 +68,15 @@ final class PrivacyGuard {
         !metadataOnlyBundleIds.contains(bundleId)
     }
 
-    func pause() { isPaused = true; logger.info("Privacy: capture paused") }
-    func resume() { isPaused = false; logger.info("Privacy: capture resumed") }
+    func pause() {
+        isPaused = true
+        logger.info("Privacy: capture paused")
+    }
+
+    func resume() {
+        isPaused = false
+        logger.info("Privacy: capture resumed")
+    }
+
     var paused: Bool { isPaused }
 }

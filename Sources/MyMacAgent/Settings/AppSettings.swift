@@ -1,25 +1,200 @@
 import Foundation
 
+enum AppOperatingMode: String, CaseIterable, Identifiable {
+    case localOnly = "local_only"
+    case hybrid
+    case cloudAssisted = "cloud_assisted"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .localOnly: return "Local only"
+        case .hybrid: return "Hybrid"
+        case .cloudAssisted: return "Cloud-assisted"
+        }
+    }
+}
+
+enum SummaryProvider: String, CaseIterable, Identifiable {
+    case disabled
+    case local
+    case external
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .disabled: return "Disabled"
+        case .local: return "Local"
+        case .external: return "External"
+        }
+    }
+}
+
+enum VisionProvider: String, CaseIterable, Identifiable {
+    case disabled
+    case ollama
+    case external
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .disabled: return "Disabled"
+        case .ollama: return "Local (Ollama)"
+        case .external: return "External"
+        }
+    }
+}
+
+enum OCRProviderKind: String, CaseIterable, Identifiable {
+    case ollamaWithVisionFallback = "ollama_with_vision_fallback"
+    case ollamaOnly = "ollama_only"
+    case visionOnly = "vision_only"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .ollamaWithVisionFallback: return "Ollama + Vision fallback"
+        case .ollamaOnly: return "Ollama only"
+        case .visionOnly: return "Vision only"
+        }
+    }
+}
+
+enum StorageProfile: String, CaseIterable, Identifiable {
+    case raw
+    case balanced
+    case compact
+
+    var id: String { rawValue }
+}
+
+enum CaptureRetentionMode: String, CaseIterable, Identifiable {
+    case raw
+    case thumbnails
+    case textOnly = "text_only"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .raw: return "Keep screenshots"
+        case .thumbnails: return "Keep only thumbnails"
+        case .textOnly: return "Keep only text"
+        }
+    }
+}
+
 struct AppSettings {
     private let defaults: UserDefaults
+    private let credentialsStore: any CredentialsStore
 
-    init(defaults: UserDefaults = .standard) {
+    static let sharedCredentialsStore: any CredentialsStore =
+        KeychainCredentialsStore(service: "com.memograph.credentials")
+
+    static let defaultBlacklistedBundleIds = [
+        "com.apple.keychainaccess",
+        "com.1password.1password",
+        "com.agilebits.onepassword7",
+        "com.lastpass.LastPass",
+        "com.bitwarden.desktop",
+        "com.dashlane.Dashlane",
+        "com.apple.dt.Xcode", // protects signing and secrets dialogs
+    ]
+
+    static let defaultMetadataOnlyBundleIds = [
+        "com.apple.MobileSMS",
+        "com.tinyspeck.slackmacgap",
+        "ru.keepcoder.Telegram",
+        "com.apple.mail"
+    ]
+
+    static let defaultBlacklistedWindowPatterns = [
+        "password",
+        "private browsing",
+        "incognito",
+        "secret",
+        "credential",
+        "recovery key",
+        "seed phrase",
+        "wallet"
+    ]
+
+    init(
+        defaults: UserDefaults = .standard,
+        credentialsStore: any CredentialsStore = AppSettings.sharedCredentialsStore
+    ) {
         self.defaults = defaults
+        self.credentialsStore = credentialsStore
+        migrateLegacyCredentialsIfNeeded()
     }
 
     // MARK: - API
 
+    var externalAPIKey: String {
+        get { credentialsStore.string(for: "externalAPIKey") ?? "" }
+        set {
+            if newValue.isEmpty {
+                credentialsStore.removeValue(for: "externalAPIKey")
+            } else {
+                credentialsStore.set(newValue, for: "externalAPIKey")
+            }
+        }
+    }
+
     var openRouterApiKey: String {
-        get { defaults.string(forKey: "openRouterApiKey") ?? "" }
-        set { defaults.set(newValue, forKey: "openRouterApiKey") }
+        get { externalAPIKey }
+        set { externalAPIKey = newValue }
+    }
+
+    var hasApiKey: Bool { !externalAPIKey.isEmpty }
+
+    var externalBaseURL: String {
+        get { defaults.string(forKey: "externalBaseURL") ?? "https://openrouter.ai/api/v1" }
+        set { defaults.set(newValue, forKey: "externalBaseURL") }
+    }
+
+    var externalProviderName: String {
+        get { defaults.string(forKey: "externalProviderName") ?? "OpenRouter-compatible" }
+        set { defaults.set(newValue, forKey: "externalProviderName") }
+    }
+
+    var operatingMode: AppOperatingMode {
+        get { AppOperatingMode(rawValue: defaults.string(forKey: "operatingMode") ?? "") ?? .localOnly }
+        set { defaults.set(newValue.rawValue, forKey: "operatingMode") }
+    }
+
+    var summaryProvider: SummaryProvider {
+        get { SummaryProvider(rawValue: defaults.string(forKey: "summaryProvider") ?? "") ?? .disabled }
+        set { defaults.set(newValue.rawValue, forKey: "summaryProvider") }
+    }
+
+    var resolvedSummaryProvider: SummaryProvider {
+        guard networkAllowed else {
+            return summaryProvider == .disabled ? .disabled : .local
+        }
+        return summaryProvider
+    }
+
+    var summaryExternalModel: String {
+        get { defaults.string(forKey: "summaryExternalModel") ?? "minimax/minimax-m2.7" }
+        set { defaults.set(newValue, forKey: "summaryExternalModel") }
+    }
+
+    var summaryLocalModel: String {
+        get { defaults.string(forKey: "summaryLocalModel") ?? "hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M" }
+        set { defaults.set(newValue, forKey: "summaryLocalModel") }
     }
 
     var llmModel: String {
-        get { defaults.string(forKey: "llmModel") ?? "minimax/minimax-m2.7" }
-        set { defaults.set(newValue, forKey: "llmModel") }
+        get { summaryExternalModel }
+        set { summaryExternalModel = newValue }
     }
 
-    var hasApiKey: Bool { !openRouterApiKey.isEmpty }
+    var networkAllowed: Bool { operatingMode != .localOnly }
 
     // MARK: - Obsidian
 
@@ -27,6 +202,11 @@ struct AppSettings {
         get { defaults.string(forKey: "obsidianVaultPath")
               ?? NSHomeDirectory() + "/Documents/MyMacAgentVault" }
         set { defaults.set(newValue, forKey: "obsidianVaultPath") }
+    }
+
+    var dataDirectoryPath: String {
+        get { defaults.string(forKey: "dataDirectoryPath") ?? AppPaths.defaultDataDirectoryPath() }
+        set { defaults.set(newValue, forKey: "dataDirectoryPath") }
     }
 
     // MARK: - Capture
@@ -37,6 +217,16 @@ struct AppSettings {
             return val > 0 ? val : 300_000
         }
         set { defaults.set(newValue, forKey: "maxPromptChars") }
+    }
+
+    var startPaused: Bool {
+        get { defaults.bool(forKey: "startPaused") }
+        set { defaults.set(newValue, forKey: "startPaused") }
+    }
+
+    var globalPause: Bool {
+        get { defaults.bool(forKey: "captureGlobalPause") }
+        set { defaults.set(newValue, forKey: "captureGlobalPause") }
     }
 
     var summaryIntervalMinutes: Int {
@@ -63,7 +253,37 @@ struct AppSettings {
         set { defaults.set(newValue, forKey: "maxCapturesPerSession") }
     }
 
+    var normalCaptureIntervalSeconds: Double {
+        get { nonZeroDouble(forKey: "normalCaptureIntervalSeconds", defaultValue: 60) }
+        set { defaults.set(newValue, forKey: "normalCaptureIntervalSeconds") }
+    }
+
+    var degradedCaptureIntervalSeconds: Double {
+        get { nonZeroDouble(forKey: "degradedCaptureIntervalSeconds", defaultValue: 10) }
+        set { defaults.set(newValue, forKey: "degradedCaptureIntervalSeconds") }
+    }
+
+    var highUncertaintyCaptureIntervalSeconds: Double {
+        get { nonZeroDouble(forKey: "highUncertaintyCaptureIntervalSeconds", defaultValue: 3) }
+        set { defaults.set(newValue, forKey: "highUncertaintyCaptureIntervalSeconds") }
+    }
+
+    var storageProfile: StorageProfile {
+        get { StorageProfile(rawValue: defaults.string(forKey: "storageProfile") ?? "") ?? .balanced }
+        set { defaults.set(newValue.rawValue, forKey: "storageProfile") }
+    }
+
+    var captureRetentionMode: CaptureRetentionMode {
+        get { CaptureRetentionMode(rawValue: defaults.string(forKey: "captureRetentionMode") ?? "") ?? .raw }
+        set { defaults.set(newValue.rawValue, forKey: "captureRetentionMode") }
+    }
+
     // MARK: - OCR
+
+    var ocrProvider: OCRProviderKind {
+        get { OCRProviderKind(rawValue: defaults.string(forKey: "ocrProvider") ?? "") ?? .ollamaWithVisionFallback }
+        set { defaults.set(newValue.rawValue, forKey: "ocrProvider") }
+    }
 
     var ollamaModelName: String {
         get { defaults.string(forKey: "ollamaModelName") ?? "glm-ocr" }
@@ -75,16 +295,67 @@ struct AppSettings {
         set { defaults.set(newValue, forKey: "ollamaBaseURL") }
     }
 
-    // MARK: - Vision (screenshot analysis — local by default for privacy)
+    // MARK: - Vision
 
     var visionModel: String {
         get { defaults.string(forKey: "visionModel") ?? "qwen3.5:4b" }
         set { defaults.set(newValue, forKey: "visionModel") }
     }
 
-    var visionProvider: String {
-        get { defaults.string(forKey: "visionProvider") ?? "ollama" }
-        set { defaults.set(newValue, forKey: "visionProvider") }
+    var visionExternalModel: String {
+        get { defaults.string(forKey: "visionExternalModel") ?? summaryExternalModel }
+        set { defaults.set(newValue, forKey: "visionExternalModel") }
+    }
+
+    var visionProvider: VisionProvider {
+        get { VisionProvider(rawValue: defaults.string(forKey: "visionProvider") ?? "") ?? .ollama }
+        set { defaults.set(newValue.rawValue, forKey: "visionProvider") }
+    }
+
+    var resolvedVisionProvider: VisionProvider {
+        guard networkAllowed else {
+            return visionProvider == .external ? .ollama : visionProvider
+        }
+        return visionProvider
+    }
+
+    // MARK: - Privacy
+
+    var blacklistedBundleIds: [String] {
+        get { readList(forKey: "blacklistedBundleIds", defaultValue: Self.defaultBlacklistedBundleIds) }
+        set { writeList(newValue, forKey: "blacklistedBundleIds") }
+    }
+
+    var metadataOnlyBundleIds: [String] {
+        get { readList(forKey: "metadataOnlyBundleIds", defaultValue: Self.defaultMetadataOnlyBundleIds) }
+        set { writeList(newValue, forKey: "metadataOnlyBundleIds") }
+    }
+
+    var blacklistedWindowPatterns: [String] {
+        get { readList(forKey: "blacklistedWindowPatterns", defaultValue: Self.defaultBlacklistedWindowPatterns) }
+        set { writeList(newValue, forKey: "blacklistedWindowPatterns") }
+    }
+
+    // MARK: - Audio
+
+    var microphoneCaptureEnabled: Bool {
+        get { defaults.bool(forKey: "microphoneCaptureEnabled") }
+        set { defaults.set(newValue, forKey: "microphoneCaptureEnabled") }
+    }
+
+    var systemAudioCaptureEnabled: Bool {
+        get { defaults.bool(forKey: "systemAudioCaptureEnabled") }
+        set { defaults.set(newValue, forKey: "systemAudioCaptureEnabled") }
+    }
+
+    var audioPythonCommand: String {
+        get { defaults.string(forKey: "audioPythonCommand") ?? "" }
+        set { defaults.set(newValue, forKey: "audioPythonCommand") }
+    }
+
+    var audioModelName: String {
+        get { defaults.string(forKey: "audioModelName") ?? "mlx-community/whisper-large-v3-turbo" }
+        set { defaults.set(newValue, forKey: "audioModelName") }
     }
 
     // MARK: - Prompts (editable by user)
@@ -138,5 +409,41 @@ struct AppSettings {
     var userPromptSuffix: String {
         get { defaults.string(forKey: "userPromptSuffix") ?? Self.defaultUserPromptSuffix }
         set { defaults.set(newValue, forKey: "userPromptSuffix") }
+    }
+
+    func forgetCredentials() {
+        credentialsStore.removeValue(for: "externalAPIKey")
+    }
+
+    private func migrateLegacyCredentialsIfNeeded() {
+        guard let legacyKey = defaults.string(forKey: "openRouterApiKey"),
+              !legacyKey.isEmpty,
+              credentialsStore.string(for: "externalAPIKey") == nil else {
+            return
+        }
+
+        credentialsStore.set(legacyKey, for: "externalAPIKey")
+        defaults.removeObject(forKey: "openRouterApiKey")
+    }
+
+    private func nonZeroDouble(forKey key: String, defaultValue: Double) -> Double {
+        let value = defaults.double(forKey: key)
+        return value > 0 ? value : defaultValue
+    }
+
+    private func readList(forKey key: String, defaultValue: [String]) -> [String] {
+        guard let stored = defaults.string(forKey: key),
+              !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return defaultValue
+        }
+
+        return stored
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func writeList(_ values: [String], forKey key: String) {
+        defaults.set(values.joined(separator: "\n"), forKey: key)
     }
 }

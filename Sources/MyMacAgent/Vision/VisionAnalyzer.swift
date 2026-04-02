@@ -13,9 +13,9 @@ struct LowReadabilityCapture {
 
 /// Analyzes screenshots that OCR couldn't read well.
 /// Uses local Ollama (default, private) or cloud API (configurable in Settings).
-final class VisionAnalyzer {
+final class VisionAnalyzer: @unchecked Sendable {
     private let db: DatabaseManager
-    nonisolated(unsafe) private let logger = Logger.ocr
+    private let logger = Logger.ocr
 
     init(db: DatabaseManager) {
         self.db = db
@@ -57,10 +57,13 @@ final class VisionAnalyzer {
         let settings = AppSettings()
         let base64 = imageData.base64EncodedString()
 
-        if settings.visionProvider == "cloud" {
-            return try await analyzeViaCloud(base64: base64, settings: settings)
-        } else {
+        switch settings.resolvedVisionProvider {
+        case .disabled:
+            return ""
+        case .ollama:
             return try await analyzeViaOllama(base64: base64, settings: settings)
+        case .external:
+            return try await analyzeViaCloud(base64: base64, settings: settings)
         }
     }
 
@@ -95,11 +98,11 @@ final class VisionAnalyzer {
     // MARK: - Cloud API (OpenRouter/Gemini)
 
     private func analyzeViaCloud(base64: String, settings: AppSettings) async throws -> String {
-        guard settings.hasApiKey else { return "" }
+        guard settings.networkAllowed, settings.hasApiKey else { return "" }
 
         let dataURI = "data:image/jpeg;base64,\(base64)"
         let payload: [String: Any] = [
-            "model": settings.llmModel,
+            "model": settings.visionExternalModel,
             "messages": [
                 ["role": "user", "content": [
                     ["type": "image_url", "image_url": ["url": dataURI]],
@@ -110,9 +113,9 @@ final class VisionAnalyzer {
         ]
 
         let jsonData = try JSONSerialization.data(withJSONObject: payload)
-        var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
+        var request = URLRequest(url: URL(string: "\(settings.externalBaseURL)/chat/completions")!)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(settings.openRouterApiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(settings.externalAPIKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = jsonData
         request.timeoutInterval = 30
@@ -126,7 +129,7 @@ final class VisionAnalyzer {
             return ""
         }
 
-        logger.info("Vision (cloud \(settings.llmModel)): \(text.count) chars")
+        logger.info("Vision (cloud \(settings.visionExternalModel)): \(text.count) chars")
         return text
     }
 
@@ -150,7 +153,7 @@ final class VisionAnalyzer {
             }
         }
 
-        let provider = AppSettings().visionProvider
+        let provider = AppSettings().resolvedVisionProvider.rawValue
         logger.info("Vision: \(analyzed)/\(captures.count) analyzed (\(provider))")
         return analyzed
     }

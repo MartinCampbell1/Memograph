@@ -6,7 +6,7 @@ protocol CaptureSchedulerDelegate: AnyObject {
     func captureScheduler(_ scheduler: CaptureScheduler, didChangeMode mode: UncertaintyMode)
 }
 
-final class CaptureScheduler {
+final class CaptureScheduler: @unchecked Sendable {
     weak var delegate: CaptureSchedulerDelegate?
     private let policyEngine: CapturePolicyEngine
     private let logger = Logger.policy
@@ -62,8 +62,7 @@ final class CaptureScheduler {
     private func scheduleNextCapture() {
         let interval = currentInterval
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.triggerCapture()
+            self?.triggerCapture()
         }
     }
 }

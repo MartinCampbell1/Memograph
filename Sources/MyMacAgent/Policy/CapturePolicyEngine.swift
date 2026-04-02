@@ -13,11 +13,12 @@ final class CapturePolicyEngine {
     private let logger = Logger.policy
 
     func captureInterval(for mode: UncertaintyMode) -> TimeInterval {
+        let settings = AppSettings()
         switch mode {
-        case .normal: return 60
-        case .degraded: return 10
-        case .highUncertainty: return 3
-        case .recovery: return 10
+        case .normal: return settings.normalCaptureIntervalSeconds
+        case .degraded: return settings.degradedCaptureIntervalSeconds
+        case .highUncertainty: return settings.highUncertaintyCaptureIntervalSeconds
+        case .recovery: return settings.degradedCaptureIntervalSeconds
         }
     }
 

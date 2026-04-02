@@ -10,7 +10,7 @@ struct CaptureResult: @unchecked Sendable {
 }
 
 final class ScreenCaptureEngine: Sendable {
-    nonisolated(unsafe) private let logger = Logger.capture
+    private let logger = Logger.capture
 
     func captureWindow(pid: pid_t) async throws -> CaptureResult {
         guard CGPreflightScreenCaptureAccess() else {

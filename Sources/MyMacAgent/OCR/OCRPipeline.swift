@@ -2,10 +2,10 @@ import AppKit
 import Foundation
 import os
 
-final class OCRPipeline {
+final class OCRPipeline: @unchecked Sendable {
     private let provider: any OCRProvider
     private let db: DatabaseManager
-    nonisolated(unsafe) private let logger = Logger.ocr
+    private let logger = Logger.ocr
 
     init(provider: any OCRProvider, db: DatabaseManager) {
         self.provider = provider

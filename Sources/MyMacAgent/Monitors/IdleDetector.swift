@@ -6,7 +6,7 @@ protocol IdleDetectorDelegate: AnyObject {
     func idleDetector(_ detector: IdleDetector, didChangeIdleState isIdle: Bool)
 }
 
-final class IdleDetector {
+final class IdleDetector: @unchecked Sendable {
     weak var delegate: IdleDetectorDelegate?
     let idleThreshold: TimeInterval
     private let logger = Logger.monitor

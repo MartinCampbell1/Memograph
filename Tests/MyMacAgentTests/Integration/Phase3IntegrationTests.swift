@@ -122,7 +122,7 @@ struct Phase3IntegrationTests {
 
         #expect(FileManager.default.fileExists(atPath: filePath))
 
-        let content = try String(contentsOfFile: filePath)
+        let content = try String(contentsOfFile: filePath, encoding: .utf8)
         #expect(content.contains("# Daily Log — 2026-04-02"))
         #expect(content.contains("Cursor — 2h 14m"))
         #expect(content.contains("[[Swift Testing]]"))

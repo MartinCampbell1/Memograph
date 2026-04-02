@@ -81,7 +81,7 @@ struct ObsidianExporterTests {
         let filePath = try exporter.exportDailyNote(summary: summary)
 
         #expect(FileManager.default.fileExists(atPath: filePath))
-        let content = try String(contentsOfFile: filePath)
+        let content = try String(contentsOfFile: filePath, encoding: .utf8)
         #expect(content.contains("# Daily Log — 2026-04-02"))
     }
 

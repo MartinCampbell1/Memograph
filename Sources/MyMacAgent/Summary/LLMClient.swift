@@ -11,7 +11,7 @@ final class LLMClient {
     let apiKey: String
     let baseURL: String
     let model: String
-    nonisolated(unsafe) private let logger = Logger.summary
+    private let logger = Logger.summary
 
     init(apiKey: String, baseURL: String = "https://openrouter.ai/api/v1", model: String = "anthropic/claude-3-haiku") {
         self.apiKey = apiKey
@@ -21,6 +21,27 @@ final class LLMClient {
 
     static func defaultClient(apiKey: String) -> LLMClient {
         LLMClient(apiKey: apiKey)
+    }
+
+    static func client(for settings: AppSettings, apiKeyOverride: String? = nil) -> LLMClient? {
+        switch settings.resolvedSummaryProvider {
+        case .disabled:
+            return nil
+        case .local:
+            return LLMClient(
+                apiKey: "",
+                baseURL: "http://localhost:11434/v1",
+                model: settings.summaryLocalModel
+            )
+        case .external:
+            let key = apiKeyOverride ?? settings.externalAPIKey
+            guard !key.isEmpty else { return nil }
+            return LLMClient(
+                apiKey: key,
+                baseURL: settings.externalBaseURL,
+                model: settings.summaryExternalModel
+            )
+        }
     }
 
     func complete(systemPrompt: String, userPrompt: String) async throws -> LLMResponse {
@@ -62,7 +83,7 @@ final class LLMClient {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("MyMacAgent/0.1.0", forHTTPHeaderField: "HTTP-Referer")
+        request.setValue("Memograph/0.1.0", forHTTPHeaderField: "HTTP-Referer")
         request.httpBody = body
         return request
     }

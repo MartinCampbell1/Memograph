@@ -12,7 +12,7 @@ struct AppInfo {
     let pid: pid_t
 }
 
-final class AppMonitor {
+final class AppMonitor: @unchecked Sendable {
     weak var delegate: AppMonitorDelegate?
     private let db: DatabaseManager
     private let logger = Logger.monitor

@@ -31,10 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var autoSummaryTimer: Timer?
     private var captureHashTracker = CaptureHashTracker()
     private let captureGate = CaptureGate(maxConcurrent: 1)
-    private var privacyGuard = PrivacyGuard.withDefaults()
+    private var privacyGuard = PrivacyGuard.fromSettings()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("MyMacAgent launched")
+        registerObservers()
         initializeDatabase()
         initializeMonitors()
         initializePhase2()
@@ -60,12 +61,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logger.info("MyMacAgent terminating")
     }
 
+    private func registerObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSettingsChanged),
+            name: .settingsDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDeleteAllLocalData),
+            name: .deleteAllLocalDataRequested,
+            object: nil
+        )
+    }
+
     private func initializeDatabase() {
         do {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            let dbDir = appSupport.appendingPathComponent("MyMacAgent", isDirectory: true)
-            try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
-            let dbPath = dbDir.appendingPathComponent("mymacagent.db").path
+            let settings = AppSettings()
+            try AppPaths.ensureBaseDirectories(settings: settings)
+            let dbPath = AppPaths.databaseURL(settings: settings).path
             let db = try DatabaseManager(path: dbPath)
             let runner = MigrationRunner(db: db, migrations: [
                 V001_InitialSchema.migration,
@@ -110,9 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let db = databaseManager else { return }
 
         accessibilityEngine = AccessibilityContextEngine()
-        let ollamaProvider = OllamaOCRProvider()
-        let visionProvider = VisionOCRProvider()
-        let ocrProvider = FallbackOCRProvider(primary: ollamaProvider, fallback: visionProvider)
+        let ocrProvider = makeOCRProvider(settings: AppSettings())
         ocrPipeline = OCRPipeline(provider: ocrProvider, db: db)
 
         let policy = CapturePolicyEngine()
@@ -130,8 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let db = databaseManager else { return }
         contextFusionEngine = ContextFusionEngine()
         dailySummarizer = DailySummarizer(db: db)
-        let vaultPath = UserDefaults.standard.string(forKey: "obsidianVaultPath")
-            ?? NSHomeDirectory() + "/Documents/MyMacAgentVault"
+        let vaultPath = AppSettings().obsidianVaultPath
         obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
         logger.info("Phase 3 components initialized (fusion, summary, export)")
     }
@@ -144,7 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Run retention daily
         retentionTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
-            try? self?.retentionWorker?.runAll()
+            Task { @MainActor [weak self] in
+                try? self?.retentionWorker?.runAll()
+            }
         }
 
         // Run once on startup
@@ -152,7 +166,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Auto-generate summary every hour if user is active
         autoSummaryTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
-            self?.autoGenerateSummaryIfActive()
+            Task { @MainActor [weak self] in
+                self?.autoGenerateSummaryIfActive()
+            }
         }
 
         logger.info("Phase 4 initialized (retention, hourly auto-summary)")
@@ -164,18 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? transcriber.ensureTable()
         audioTranscriber = transcriber
         visionAnalyzer = VisionAnalyzer(db: db)
-
-        // Start mic audio capture
-        if let sessionMgr = sessionManager {
-            let audioEngine = AudioCaptureEngine(transcriber: transcriber, sessionManager: sessionMgr)
-            audioEngine.start()
-            audioCaptureEngine = audioEngine
-
-            // Start system audio capture (speakers/apps)
-            let sysAudio = SystemAudioCaptureEngine(transcriber: transcriber, sessionManager: sessionMgr)
-            Task { await sysAudio.start() }
-            systemAudioEngine = sysAudio
-        }
+        configureAudioEngines(forceRestart: true)
 
         logger.info("Phase 5 initialized (vision, mic audio, system audio)")
     }
@@ -199,21 +204,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let settings = AppSettings()
-        guard settings.hasApiKey else {
-            logger.info("Skipping auto-summary: no API key configured")
+        guard settings.resolvedSummaryProvider != .disabled else {
+            logger.info("Skipping auto-summary: summary provider is disabled")
             return
         }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let today = formatter.string(from: Date())
 
-        generateDailySummary(for: today, apiKey: settings.openRouterApiKey)
+        generateDailySummary(for: today, apiKey: settings.externalAPIKey)
         logger.info("Auto-summary triggered for \(today)")
     }
 
     private func performCapture(mode: UncertaintyMode) {
         // Global pause check
-        guard !UserDefaults.standard.bool(forKey: "captureGlobalPause") else { return }
+        guard !AppSettings().globalPause else { return }
 
         // Only attempt capture if we have Screen Recording permission
         guard CGPreflightScreenCaptureAccess() else {
@@ -259,8 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let hash = imageProcessor.visualHash(image: captureResult.image)
 
                 // 3. Save to disk
-                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                let captureDir = appSupport.appendingPathComponent("MyMacAgent/captures", isDirectory: true)
+                let captureDir = AppPaths.capturesDirectoryURL()
                 try FileManager.default.createDirectory(at: captureDir, withIntermediateDirectories: true)
                 let imagePath = try captureEngine.saveToDisk(result: captureResult, directory: captureDir.path)
 
@@ -351,12 +355,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             do {
                 let settings = AppSettings()
-                let key = apiKey ?? settings.openRouterApiKey
-                let client: LLMClient
-                if settings.hasApiKey {
-                    client = LLMClient(apiKey: key, model: settings.llmModel)
-                } else {
-                    client = LLMClient(apiKey: "", baseURL: "http://localhost:11434/v1", model: "hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M")
+                guard let client = LLMClient.client(for: settings, apiKeyOverride: apiKey) else {
+                    logger.info("Skipping summary generation: no configured summary provider")
+                    return
                 }
                 if let analyzer {
                     let count = try await analyzer.analyzeAllLowReadability(for: date)
@@ -374,6 +375,110 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 logger.error("Daily summary failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func makeOCRProvider(settings: AppSettings) -> any OCRProvider {
+        let ollamaProvider = OllamaOCRProvider(
+            modelName: settings.ollamaModelName,
+            baseURL: settings.ollamaBaseURL
+        )
+        let visionProvider = VisionOCRProvider()
+
+        switch settings.ocrProvider {
+        case .ollamaWithVisionFallback:
+            return FallbackOCRProvider(primary: ollamaProvider, fallback: visionProvider)
+        case .ollamaOnly:
+            return ollamaProvider
+        case .visionOnly:
+            return visionProvider
+        }
+    }
+
+    private func configureAudioEngines(forceRestart: Bool) {
+        guard let sessionMgr = sessionManager,
+              let transcriber = audioTranscriber else { return }
+
+        let settings = AppSettings()
+        if forceRestart {
+            audioCaptureEngine?.stop()
+            audioCaptureEngine = nil
+            systemAudioEngine?.stop()
+            systemAudioEngine = nil
+        }
+
+        let runtimeStatus = AudioRuntimeResolver.resolve(settings: settings)
+        logger.info("Audio runtime: \(runtimeStatus.description)")
+
+        if settings.microphoneCaptureEnabled && audioCaptureEngine == nil {
+            let audioEngine = AudioCaptureEngine(
+                transcriber: transcriber,
+                sessionManager: sessionMgr,
+                audioDir: AppPaths.audioDirectoryURL(settings: settings).path
+            )
+            audioEngine.start()
+            audioCaptureEngine = audioEngine
+        }
+
+        if settings.systemAudioCaptureEnabled && systemAudioEngine == nil {
+            let systemAudio = SystemAudioCaptureEngine(
+                transcriber: transcriber,
+                sessionManager: sessionMgr,
+                audioDir: AppPaths.systemAudioDirectoryURL(settings: settings).path
+            )
+            Task { await systemAudio.start() }
+            systemAudioEngine = systemAudio
+        }
+    }
+
+    @objc
+    private func handleSettingsChanged() {
+        let settings = AppSettings()
+        privacyGuard = PrivacyGuard.fromSettings(settings)
+
+        if let db = databaseManager {
+            retentionWorker = RetentionWorker(db: db, retentionDays: settings.retentionDays)
+            obsidianExporter = ObsidianExporter(db: db, vaultPath: settings.obsidianVaultPath)
+            ocrPipeline = OCRPipeline(provider: makeOCRProvider(settings: settings), db: db)
+        }
+
+        configureAudioEngines(forceRestart: true)
+    }
+
+    @objc
+    private func handleDeleteAllLocalData() {
+        let settings = AppSettings()
+
+        autoSummaryTimer?.invalidate()
+        autoSummaryTimer = nil
+        retentionTimer?.invalidate()
+        retentionTimer = nil
+        captureScheduler?.stop()
+        appMonitor?.stop()
+        windowMonitor?.stop()
+        idleDetector?.stop()
+        audioCaptureEngine?.stop()
+        systemAudioEngine?.stop()
+
+        audioCaptureEngine = nil
+        systemAudioEngine = nil
+        dailySummarizer = nil
+        obsidianExporter = nil
+        visionAnalyzer = nil
+        databaseManager = nil
+
+        do {
+            try AppPaths.removeAllLocalData(settings: settings)
+            logger.info("Deleted all local data at \(settings.dataDirectoryPath)")
+        } catch {
+            logger.error("Failed to delete local data: \(error.localizedDescription)")
+        }
+
+        initializeDatabase()
+        initializeMonitors()
+        initializePhase2()
+        initializePhase3()
+        initializePhase4()
+        initializePhase5()
     }
 }
 

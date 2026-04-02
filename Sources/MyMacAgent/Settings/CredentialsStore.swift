@@ -1,0 +1,74 @@
+import Foundation
+import Security
+
+protocol CredentialsStore: Sendable {
+    func string(for key: String) -> String?
+    func set(_ value: String, for key: String)
+    func removeValue(for key: String)
+}
+
+final class KeychainCredentialsStore: CredentialsStore, @unchecked Sendable {
+    private let service: String
+
+    init(service: String) {
+        self.service = service
+    }
+
+    func string(for key: String) -> String? {
+        var query = baseQuery(for: key)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return value
+    }
+
+    func set(_ value: String, for key: String) {
+        let encodedValue = Data(value.utf8)
+        let query = baseQuery(for: key)
+        let attributes = [kSecValueData as String: encodedValue]
+
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return
+        }
+
+        var newItem = query
+        newItem[kSecValueData as String] = encodedValue
+        SecItemAdd(newItem as CFDictionary, nil)
+    }
+
+    func removeValue(for key: String) {
+        SecItemDelete(baseQuery(for: key) as CFDictionary)
+    }
+
+    private func baseQuery(for key: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
+        ]
+    }
+}
+
+final class InMemoryCredentialsStore: CredentialsStore, @unchecked Sendable {
+    private var values: [String: String] = [:]
+
+    func string(for key: String) -> String? {
+        values[key]
+    }
+
+    func set(_ value: String, for key: String) {
+        values[key] = value
+    }
+
+    func removeValue(for key: String) {
+        values.removeValue(forKey: key)
+    }
+}

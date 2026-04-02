@@ -41,7 +41,7 @@ struct TimelineView: View {
         }
         .frame(minWidth: 700, minHeight: 500)
         .onAppear { loadData() }
-        .onChange(of: selectedDate) { _ in loadData() }
+        .onChange(of: selectedDate) { loadData() }
     }
 
     private var timelineContentView: some View {
