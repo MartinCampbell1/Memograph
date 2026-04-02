@@ -1,0 +1,9 @@
+#!/bin/bash
+# Filter out -no_warn_duplicate_libraries which requires newer ld
+FILTERED_ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" != "-no_warn_duplicate_libraries" ]]; then
+        FILTERED_ARGS+=("$arg")
+    fi
+done
+exec /usr/bin/ld "${FILTERED_ARGS[@]}"

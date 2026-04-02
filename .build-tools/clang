@@ -1,0 +1,21 @@
+#!/bin/bash
+# Filter out -no_warn_duplicate_libraries passed via -Xlinker
+# Because our system ld is too old to support it
+FILTERED_ARGS=()
+SKIP_NEXT=false
+for arg in "$@"; do
+    if $SKIP_NEXT; then
+        SKIP_NEXT=false
+        continue
+    fi
+    if [[ "$arg" == "-Xlinker" ]]; then
+        # Peek at next arg in the array to see if we should skip
+        FILTERED_ARGS+=("$arg")
+    elif [[ "$arg" == "-no_warn_duplicate_libraries" ]]; then
+        # Remove the preceding -Xlinker
+        unset 'FILTERED_ARGS[${#FILTERED_ARGS[@]}-1]'
+    else
+        FILTERED_ARGS+=("$arg")
+    fi
+done
+exec /usr/bin/clang "${FILTERED_ARGS[@]}"

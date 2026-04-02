@@ -1,0 +1,9 @@
+#!/bin/bash
+# Shim to work around SPM's PlatformPath requirement on CLT-only systems
+if [[ "$*" == *"--show-sdk-platform-path"* ]]; then
+    # SPM needs a path with Developer/Library/Frameworks for Swift overlays
+    # Use the CLT usr path which has swift libs
+    echo "/Library/Developer/CommandLineTools"
+    exit 0
+fi
+exec /usr/bin/xcrun "$@"
