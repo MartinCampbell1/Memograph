@@ -20,14 +20,9 @@ struct MyMacAgentApp: App {
             }
         }
 
-        Settings {
-            TabView {
-                SettingsView()
-                    .tabItem { Label("General", systemImage: "gear") }
-                PermissionsView(manager: permissionsManager)
-                    .tabItem { Label("Permissions", systemImage: "lock.shield") }
-            }
-            .frame(width: 500, height: 400)
+        Window("Settings", id: "settings") {
+            SettingsView()
         }
+        .defaultSize(width: 600, height: 700)
     }
 }

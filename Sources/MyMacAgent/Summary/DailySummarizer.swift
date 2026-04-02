@@ -24,8 +24,8 @@ final class DailySummarizer: @unchecked Sendable {
     private let db: DatabaseManager
     nonisolated(unsafe) private let logger = Logger.summary
 
-    /// Max total characters for all context text in prompt (~4 chars per token, 100K token budget)
-    private let maxPromptChars = 300_000
+    /// Max total characters for all context text in prompt (~4 chars per token)
+    private var maxPromptChars: Int { AppSettings().maxPromptChars }
 
     init(db: DatabaseManager) {
         self.db = db
@@ -164,36 +164,8 @@ final class DailySummarizer: @unchecked Sendable {
             totalChars = prompt.count
         }
 
-        // 3. Instructions
-        prompt += """
-
-        ---
-        Based on ALL the data above (app names, window titles, full OCR text, code, documents):
-
-        ## Summary
-        Write 2-4 sentences about what the user accomplished today. Be specific — mention actual code, documents, topics they worked on. Reference the content you can see.
-
-        ## Main topics
-        - List every distinct topic/project/task (bullet list)
-        - Include programming languages, frameworks, tools used
-        - Note if the user was in AI chats (ChatGPT, Claude, etc.)
-
-        ## AI sessions
-        - List any AI assistant interactions detected (ChatGPT, Claude, Copilot, etc.)
-        - What were they asking about?
-
-        ## Distractions
-        - Note any context-switching patterns (rapid app switches, short sessions)
-        - Social media or messaging breaks
-
-        ## Suggested notes
-        - [[Wiki Link Name]] for each topic worth creating a note about
-        - Focus on knowledge worth preserving, not trivial activity
-
-        ## Continue tomorrow
-        - What was the user working on when the day ended?
-        - Any unfinished tasks visible in the content?
-        """
+        // 3. Instructions (user-editable via Settings → Prompts)
+        prompt += "\n---\n" + AppSettings().userPromptSuffix
 
         return prompt
     }
@@ -201,21 +173,8 @@ final class DailySummarizer: @unchecked Sendable {
     func summarize(for date: String, using client: LLMClient) async throws -> DailySummaryRecord {
         let prompt = try buildDailyPrompt(for: date)
 
-        let systemPrompt = """
-        You are a personal knowledge management assistant analyzing computer activity logs.
-        You receive timestamped sessions with full OCR text extracted from screenshots,
-        window titles, and app metadata.
-
-        Your job:
-        1. Understand what the user actually DID based on the content (code, documents, chats)
-        2. Extract topics and knowledge worth preserving
-        3. Identify patterns (focus blocks, distractions, AI usage)
-        4. Build on previous context — don't repeat what was already summarized
-        5. Create useful [[wiki-links]] that connect to concepts, not just app names
-
-        Be specific and evidence-based. Quote actual content when relevant.
-        Write in the user's language (Russian if their content is in Russian).
-        """
+        // System prompt from Settings (user-editable)
+        let systemPrompt = AppSettings().systemPrompt
 
         logger.info("Generating daily summary for \(date), prompt length: \(prompt.count) chars")
 

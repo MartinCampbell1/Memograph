@@ -8,7 +8,7 @@ struct AppSettingsTests {
         let settings = AppSettings(defaults: UserDefaults(suiteName: "test_\(UUID().uuidString)")!)
         #expect(settings.obsidianVaultPath.contains("MyMacAgentVault"))
         #expect(settings.openRouterApiKey.isEmpty)
-        #expect(settings.llmModel == "anthropic/claude-3-haiku")
+        #expect(settings.llmModel == "minimax/minimax-m2.7")
         #expect(settings.retentionDays == 30)
         #expect(settings.maxCapturesPerSession == 500)
     }

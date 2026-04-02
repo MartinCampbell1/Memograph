@@ -9,17 +9,9 @@ struct MenuBarPopover: View {
             Text("MyMacAgent")
                 .font(.headline)
 
-            if permissionsManager.allGranted {
-                Label("Running", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.caption)
-            } else {
-                Label("Limited (grant permissions in System Settings)",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                    .font(.caption)
-                    .lineLimit(2)
-            }
+            Label("Running", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.caption)
 
             Divider()
 
@@ -30,7 +22,7 @@ struct MenuBarPopover: View {
 
             Button("Settings") {
                 NSApp.activate(ignoringOtherApps: true)
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                openWindow(id: "settings")
             }
 
             Divider()
@@ -40,9 +32,6 @@ struct MenuBarPopover: View {
             }
         }
         .padding()
-        .frame(width: 280)
-        .onAppear {
-            permissionsManager.checkAll()
-        }
+        .frame(width: 220)
     }
 }
