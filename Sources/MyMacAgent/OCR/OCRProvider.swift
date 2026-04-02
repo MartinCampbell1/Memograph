@@ -14,6 +14,34 @@ protocol OCRProvider {
     func recognizeText(in image: NSImage) async throws -> OCRResult
 }
 
+/// Tries the primary provider first; falls back to the secondary if primary returns
+/// empty text or low confidence (< 0.2).
+final class FallbackOCRProvider: OCRProvider {
+    let name: String
+    private let primary: any OCRProvider
+    private let fallback: any OCRProvider
+    nonisolated(unsafe) private let logger = Logger.ocr
+
+    init(primary: any OCRProvider, fallback: any OCRProvider) {
+        self.primary = primary
+        self.fallback = fallback
+        self.name = "\(primary.name)+\(fallback.name)"
+    }
+
+    func recognizeText(in image: NSImage) async throws -> OCRResult {
+        do {
+            let result = try await primary.recognizeText(in: image)
+            if result.confidence > 0.2 && !result.rawText.isEmpty {
+                return result
+            }
+            logger.info("Primary OCR (\(self.primary.name)) returned low quality, trying fallback (\(self.fallback.name))")
+        } catch {
+            logger.info("Primary OCR (\(self.primary.name)) failed: \(error.localizedDescription), trying fallback")
+        }
+        return try await fallback.recognizeText(in: image)
+    }
+}
+
 final class VisionOCRProvider: OCRProvider {
     let name = "vision"
     nonisolated(unsafe) private let logger = Logger.ocr

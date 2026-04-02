@@ -96,7 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let db = databaseManager else { return }
 
         accessibilityEngine = AccessibilityContextEngine()
-        ocrPipeline = OCRPipeline(provider: VisionOCRProvider(), db: db)
+        let ollamaProvider = OllamaOCRProvider()
+        let visionProvider = VisionOCRProvider()
+        let ocrProvider = FallbackOCRProvider(primary: ollamaProvider, fallback: visionProvider)
+        ocrPipeline = OCRPipeline(provider: ocrProvider, db: db)
 
         let policy = CapturePolicyEngine()
         policyEngine = policy
