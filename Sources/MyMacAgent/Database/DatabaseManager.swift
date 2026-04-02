@@ -27,7 +27,7 @@ enum SQLiteValue: Equatable {
 
 typealias SQLiteRow = [String: SQLiteValue]
 
-final class DatabaseManager {
+final class DatabaseManager: @unchecked Sendable {
     private var db: OpaquePointer?
     private let logger = Logger.database
 

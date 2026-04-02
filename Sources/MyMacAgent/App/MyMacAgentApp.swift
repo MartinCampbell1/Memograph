@@ -12,6 +12,14 @@ struct MyMacAgentApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        Window("Timeline", id: "timeline") {
+            if let db = appDelegate.databaseManager {
+                TimelineView(db: db)
+            } else {
+                Text("Database not ready")
+            }
+        }
+
         Settings {
             if permissionsManager.allGranted {
                 SettingsView()

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuBarPopover: View {
     @ObservedObject var permissionsManager: PermissionsManager
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -21,6 +22,16 @@ struct MenuBarPopover: View {
                     NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 }
                 .font(.caption)
+            }
+
+            Divider()
+
+            Button("Open Timeline") {
+                openWindow(id: "timeline")
+            }
+
+            Button("Settings") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
             }
 
             Divider()

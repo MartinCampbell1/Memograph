@@ -116,9 +116,10 @@ final class RetentionWorker {
     }
 
     func runAll() throws {
-        let captures = try cleanupOldCaptures()
+        // Delete child rows before parent rows to satisfy foreign key constraints
         let ocr = try cleanupOldOCRSnapshots()
         let ax = try cleanupOldAXSnapshots()
+        let captures = try cleanupOldCaptures()
         let thinned = try thinHighFrequencyCaptures()
         logger.info("Retention complete: \(captures) captures, \(ocr) OCR, \(ax) AX deleted, \(thinned) thinned")
     }

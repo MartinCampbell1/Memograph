@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var contextFusionEngine: ContextFusionEngine?
     private var dailySummarizer: DailySummarizer?
     private var obsidianExporter: ObsidianExporter?
+    // Phase 4
+    private var retentionWorker: RetentionWorker?
+    private var retentionTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("MyMacAgent launched")
@@ -27,9 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         initializeMonitors()
         initializePhase2()
         initializePhase3()
+        initializePhase4()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        retentionTimer?.invalidate()
+        retentionTimer = nil
         captureScheduler?.stop()
         appMonitor?.stop()
         windowMonitor?.stop()
@@ -108,6 +114,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? NSHomeDirectory() + "/Documents/MyMacAgentVault"
         obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
         logger.info("Phase 3 components initialized (fusion, summary, export)")
+    }
+
+    private func initializePhase4() {
+        guard let db = databaseManager else { return }
+
+        let settings = AppSettings()
+        retentionWorker = RetentionWorker(db: db, retentionDays: settings.retentionDays)
+
+        // Run retention daily
+        retentionTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
+            try? self?.retentionWorker?.runAll()
+        }
+
+        // Run once on startup
+        try? retentionWorker?.runAll()
+
+        logger.info("Phase 4 initialized (retention, UI data)")
     }
 
     private func performCapture(mode: UncertaintyMode) {
