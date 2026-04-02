@@ -11,19 +11,14 @@ struct LowReadabilityCapture {
     let windowTitle: String?
 }
 
+/// Analyzes screenshots that OCR couldn't read well.
+/// Uses local Ollama (default, private) or cloud API (configurable in Settings).
 final class VisionAnalyzer {
     private let db: DatabaseManager
-    private let apiKey: String
-    private let model: String
-    private let baseURL: String
     nonisolated(unsafe) private let logger = Logger.ocr
 
-    init(db: DatabaseManager, apiKey: String = "", model: String = "", baseURL: String = "") {
+    init(db: DatabaseManager) {
         self.db = db
-        let settings = AppSettings()
-        self.apiKey = apiKey.isEmpty ? settings.openRouterApiKey : apiKey
-        self.model = model.isEmpty ? settings.llmModel : model
-        self.baseURL = baseURL.isEmpty ? "https://openrouter.ai/api/v1" : baseURL
     }
 
     func findLowReadabilityCaptures(for date: String, threshold: Double = 0.3) throws -> [LowReadabilityCapture] {
@@ -59,12 +54,52 @@ final class VisionAnalyzer {
             return ""
         }
 
+        let settings = AppSettings()
         let base64 = imageData.base64EncodedString()
-        let dataURI = "data:image/jpeg;base64,\(base64)"
 
-        // Use OpenRouter multimodal API (Gemini supports images)
+        if settings.visionProvider == "cloud" {
+            return try await analyzeViaCloud(base64: base64, settings: settings)
+        } else {
+            return try await analyzeViaOllama(base64: base64, settings: settings)
+        }
+    }
+
+    // MARK: - Local Ollama (private, no data leaves machine)
+
+    private func analyzeViaOllama(base64: String, settings: AppSettings) async throws -> String {
         let payload: [String: Any] = [
-            "model": model,
+            "model": settings.visionModel,
+            "prompt": buildVisionPrompt(),
+            "images": [base64],
+            "stream": false
+        ]
+
+        let jsonData = try JSONSerialization.data(withJSONObject: payload)
+        var request = URLRequest(url: URL(string: "\(settings.ollamaBaseURL)/api/generate")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = jsonData
+        request.timeoutInterval = 120
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = json["response"] as? String else {
+            return ""
+        }
+
+        logger.info("Vision (local \(settings.visionModel)): \(text.count) chars")
+        return text
+    }
+
+    // MARK: - Cloud API (OpenRouter/Gemini)
+
+    private func analyzeViaCloud(base64: String, settings: AppSettings) async throws -> String {
+        guard settings.hasApiKey else { return "" }
+
+        let dataURI = "data:image/jpeg;base64,\(base64)"
+        let payload: [String: Any] = [
+            "model": settings.llmModel,
             "messages": [
                 ["role": "user", "content": [
                     ["type": "image_url", "image_url": ["url": dataURI]],
@@ -75,15 +110,14 @@ final class VisionAnalyzer {
         ]
 
         let jsonData = try JSONSerialization.data(withJSONObject: payload)
-        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(settings.openRouterApiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = jsonData
         request.timeoutInterval = 30
 
         let (data, response) = try await URLSession.shared.data(for: request)
-
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
@@ -92,7 +126,7 @@ final class VisionAnalyzer {
             return ""
         }
 
-        logger.info("Vision analysis (Gemini): \(text.count) chars for \(path)")
+        logger.info("Vision (cloud \(settings.llmModel)): \(text.count) chars")
         return text
     }
 
@@ -104,11 +138,6 @@ final class VisionAnalyzer {
     }
 
     func analyzeAllLowReadability(for date: String) async throws -> Int {
-        guard !apiKey.isEmpty else {
-            logger.info("Vision: skipping — no API key")
-            return 0
-        }
-
         let captures = try findLowReadabilityCaptures(for: date)
         var analyzed = 0
 
@@ -121,16 +150,16 @@ final class VisionAnalyzer {
             }
         }
 
-        logger.info("Vision: \(analyzed)/\(captures.count) low-readability captures analyzed via \(self.model)")
+        let provider = AppSettings().visionProvider
+        logger.info("Vision: \(analyzed)/\(captures.count) analyzed (\(provider))")
         return analyzed
     }
 
     func buildVisionPrompt() -> String {
         """
-        Describe this screenshot in detail with [[wiki-links]] for Obsidian. \
-        Focus on: text content, code, UI elements, charts/graphs, data. \
-        Extract all readable text. Identify the app, task, and context. \
-        Wrap every tool/project/technology in [[double brackets]].
+        Describe this screenshot in detail. Focus on: text content, code, \
+        UI elements, charts/graphs, data. Extract all readable text. \
+        Identify the app and what the user is doing.
         """
     }
 }

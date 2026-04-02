@@ -212,6 +212,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performCapture(mode: UncertaintyMode) {
+        // Global pause check
+        guard !UserDefaults.standard.bool(forKey: "captureGlobalPause") else { return }
+
         // Only attempt capture if we have Screen Recording permission
         guard CGPreflightScreenCaptureAccess() else {
             logger.info("Skipping capture: no screen recording permission")

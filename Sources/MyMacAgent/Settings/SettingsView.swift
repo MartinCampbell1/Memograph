@@ -8,6 +8,8 @@ struct SettingsView: View {
     @State private var summaryInterval = ""
     @State private var maxPromptChars = ""
     @State private var ollamaModel = ""
+    @State private var visionModel = ""
+    @State private var visionProvider = ""
     @State private var systemPrompt = ""
     @State private var userPromptSuffix = ""
     @State private var selectedTab = 0
@@ -51,8 +53,19 @@ struct SettingsView: View {
             }
 
             Section("OCR (Ollama)") {
-                TextField("Model name", text: $ollamaModel)
+                TextField("OCR Model", text: $ollamaModel)
                 Text("e.g. glm-ocr, minicpm-v, llava")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+
+            Section("Screenshot Analysis") {
+                Picker("Provider", selection: $visionProvider) {
+                    Text("Local (Ollama) — private").tag("ollama")
+                    Text("Cloud (Gemini) — better quality").tag("cloud")
+                }
+                .pickerStyle(.segmented)
+                TextField("Vision Model", text: $visionModel)
+                Text("Local: qwen3.5:4b | Cloud: uses Summary model above")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
 
@@ -152,6 +165,8 @@ struct SettingsView: View {
         summaryInterval = String(s.summaryIntervalMinutes)
         maxPromptChars = String(s.maxPromptChars)
         ollamaModel = s.ollamaModelName
+        visionModel = s.visionModel
+        visionProvider = s.visionProvider
         systemPrompt = s.systemPrompt
         userPromptSuffix = s.userPromptSuffix
     }
@@ -165,6 +180,8 @@ struct SettingsView: View {
         s.summaryIntervalMinutes = Int(summaryInterval) ?? 60
         s.maxPromptChars = Int(maxPromptChars) ?? 300_000
         s.ollamaModelName = ollamaModel
+        s.visionModel = visionModel
+        s.visionProvider = visionProvider
         s.systemPrompt = systemPrompt
         s.userPromptSuffix = userPromptSuffix
         saved = true

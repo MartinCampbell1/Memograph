@@ -75,6 +75,18 @@ struct AppSettings {
         set { defaults.set(newValue, forKey: "ollamaBaseURL") }
     }
 
+    // MARK: - Vision (screenshot analysis — local by default for privacy)
+
+    var visionModel: String {
+        get { defaults.string(forKey: "visionModel") ?? "qwen3.5:4b" }
+        set { defaults.set(newValue, forKey: "visionModel") }
+    }
+
+    var visionProvider: String {
+        get { defaults.string(forKey: "visionProvider") ?? "ollama" }
+        set { defaults.set(newValue, forKey: "visionProvider") }
+    }
+
     // MARK: - Prompts (editable by user)
 
     static let defaultSystemPrompt = """

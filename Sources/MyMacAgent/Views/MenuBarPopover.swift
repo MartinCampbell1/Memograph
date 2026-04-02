@@ -3,17 +3,30 @@ import SwiftUI
 struct MenuBarPopover: View {
     @ObservedObject var permissionsManager: PermissionsManager
     @Environment(\.openWindow) private var openWindow
+    @State private var isPaused = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("MyMacAgent")
                 .font(.headline)
 
-            Label("Running", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .font(.caption)
+            if isPaused {
+                Label("Paused", systemImage: "pause.circle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+            } else {
+                Label("Running", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.caption)
+            }
 
             Divider()
+
+            Button(isPaused ? "Resume Tracking" : "Pause Tracking") {
+                isPaused.toggle()
+                UserDefaults.standard.set(isPaused, forKey: "captureGlobalPause")
+                NotificationCenter.default.post(name: .captureToggled, object: nil)
+            }
 
             Button("Open Timeline") {
                 NSApp.activate(ignoringOtherApps: true)
@@ -32,6 +45,13 @@ struct MenuBarPopover: View {
             }
         }
         .padding()
-        .frame(width: 220)
+        .frame(width: 230)
+        .onAppear {
+            isPaused = UserDefaults.standard.bool(forKey: "captureGlobalPause")
+        }
     }
+}
+
+extension Notification.Name {
+    static let captureToggled = Notification.Name("captureToggled")
 }
