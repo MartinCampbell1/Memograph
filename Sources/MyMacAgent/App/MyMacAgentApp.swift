@@ -25,6 +25,7 @@ struct MyMacAgentApp: App {
         Window("Settings", id: "settings") {
             SettingsView()
         }
-        .defaultSize(width: 600, height: 700)
+        .defaultSize(width: 920, height: 760)
+        .windowResizability(.contentSize)
     }
 }

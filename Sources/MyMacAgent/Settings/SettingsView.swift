@@ -90,6 +90,7 @@ struct SettingsView: View {
     private let previewState: SettingsPreviewState?
 
     @State private var selectedTab = 0
+    @State private var hasStoredExternalAPIKey = false
     @State private var saved = false
     @State private var showDeleteDataAlert = false
 
@@ -165,8 +166,8 @@ struct SettingsView: View {
                 .tabItem { Label("Prompts", systemImage: "text.bubble") }
                 .tag(5)
         }
-        .padding()
-        .frame(minWidth: 760, minHeight: 660)
+        .padding(20)
+        .frame(minWidth: 700, minHeight: 680)
         .onAppear {
             if let previewState {
                 applyPreviewState(previewState)
@@ -184,71 +185,68 @@ struct SettingsView: View {
     }
 
     private var generalTab: some View {
-        Form {
-            Section("Product Mode") {
+        settingsScroll {
+            settingsCard("Product Mode", subtitle: modeDescription) {
                 Picker("Operating mode", selection: $operatingMode) {
                     ForEach(AppOperatingMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
-                .pickerStyle(.menu)
-
-                Text(modeDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .pickerStyle(.segmented)
             }
 
-            Section("Data") {
-                HStack {
-                    TextField("Data folder", text: $dataDirectoryPath)
-                    Button("Browse") { browseFolder(binding: $dataDirectoryPath) }
-                    Button("Open") { openFolder(path: dataDirectoryPath) }
+            settingsCard("Data & Storage") {
+                settingRow("Data folder", help: "SQLite database, captures, and transcripts live here.") {
+                    HStack(spacing: 8) {
+                        TextField("Data folder", text: $dataDirectoryPath)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Browse") { browseFolder(binding: $dataDirectoryPath) }
+                        Button("Open") { openFolder(path: dataDirectoryPath) }
+                    }
                 }
 
-                HStack {
-                    TextField("Obsidian vault", text: $vaultPath)
-                    Button("Browse") { browseFolder(binding: $vaultPath) }
-                }
-            }
-
-            Section("Runtime") {
-                Toggle("Start paused", isOn: $startPaused)
-                Toggle("Pause capture now", isOn: $globalPause)
-
-                HStack {
-                    Text("Retention")
-                    TextField("30", text: $retentionDays)
-                        .frame(width: 70)
-                    Text("days")
-                }
-
-                HStack {
-                    Text("Auto-summary every")
-                    TextField("60", text: $summaryInterval)
-                        .frame(width: 70)
-                    Text("minutes")
+                settingRow("Obsidian vault", help: "Daily notes can be exported here.") {
+                    HStack(spacing: 8) {
+                        TextField("Obsidian vault", text: $vaultPath)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Browse") { browseFolder(binding: $vaultPath) }
+                    }
                 }
             }
 
-            Section("Diagnostics") {
+            settingsCard("Runtime") {
+                toggleRow("Start paused", help: "Launch in paused mode and wait for explicit resume.", isOn: $startPaused)
+                toggleRow("Pause capture now", help: "Stops tracking immediately without quitting the app.", isOn: $globalPause)
+
+                settingRow("Retention", help: "Delete old local data after N days.") {
+                    inlineNumberField("30", text: $retentionDays, suffix: "days")
+                }
+
+                settingRow("Auto-summary", help: "How often Memograph should build a day summary.") {
+                    inlineNumberField("60", text: $summaryInterval, suffix: "minutes")
+                }
+            }
+
+            settingsCard("Diagnostics") {
                 diagnosticsRow("Current mode", value: operatingMode.label)
                 diagnosticsRow("Data folder", value: dataDirectoryPath)
                 diagnosticsRow("Summary provider", value: summaryProvider.label)
                 diagnosticsRow("Vision provider", value: visionProvider.label)
+                diagnosticsRow("Stored API key", value: hasStoredExternalAPIKey ? "Saved in Keychain" : "Not set")
             }
 
-            Section("Danger Zone") {
-                Button("Forget external credentials") {
-                    externalAPIKey = ""
-                    let settings = AppSettings()
-                    settings.forgetCredentials()
-                }
-                .foregroundStyle(.orange)
+            settingsCard("Danger Zone") {
+                HStack(spacing: 8) {
+                    Button("Forget external credentials") {
+                        forgetStoredAPIKey()
+                    }
+                    .foregroundStyle(.orange)
 
-                Button("Delete all local data") {
-                    showDeleteDataAlert = true
+                    Button("Delete all local data") {
+                        showDeleteDataAlert = true
+                    }
+                    .foregroundStyle(.red)
                 }
-                .foregroundStyle(.red)
             }
 
             saveButton
@@ -256,47 +254,107 @@ struct SettingsView: View {
     }
 
     private var providersTab: some View {
-        Form {
-            Section("External Provider") {
-                TextField("Provider label", text: $externalProviderName)
-                TextField("Base URL", text: $externalBaseURL)
-                SecureField("API key", text: $externalAPIKey)
-            }
+        settingsScroll {
+            settingsCard("External Provider", subtitle: "Used only when you choose external summary or vision providers.") {
+                settingRow("Provider label") {
+                    TextField("OpenRouter-compatible", text: $externalProviderName)
+                        .textFieldStyle(.roundedBorder)
+                }
 
-            Section("Summary") {
-                Picker("Provider", selection: $summaryProvider) {
-                    ForEach(SummaryProvider.allCases) { provider in
-                        Text(provider.label).tag(provider)
+                settingRow("Base URL") {
+                    TextField("https://openrouter.ai/api/v1", text: $externalBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                settingRow("API key", help: "Stored in Keychain. The field stays empty unless you paste a replacement key.") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SecureField(hasStoredExternalAPIKey ? "Key already stored. Paste a new key to replace it." : "Paste API key", text: $externalAPIKey)
+                            .textFieldStyle(.roundedBorder)
+
+                        HStack(spacing: 8) {
+                            Label(
+                                hasStoredExternalAPIKey ? "Saved in login Keychain" : "No stored key yet",
+                                systemImage: hasStoredExternalAPIKey ? "checkmark.shield.fill" : "key.slash"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(hasStoredExternalAPIKey ? .green : .secondary)
+
+                            if hasStoredExternalAPIKey {
+                                Button("Forget stored key") {
+                                    forgetStoredAPIKey()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
                     }
                 }
-                .pickerStyle(.menu)
-
-                TextField("External model", text: $summaryExternalModel)
-                TextField("Local model", text: $summaryLocalModel)
             }
 
-            Section("Vision") {
-                Picker("Provider", selection: $visionProvider) {
-                    ForEach(VisionProvider.allCases) { provider in
-                        Text(provider.label).tag(provider)
+            settingsCard("Summaries") {
+                settingRow("Provider") {
+                    Picker("Summary provider", selection: $summaryProvider) {
+                        ForEach(SummaryProvider.allCases) { provider in
+                            Text(provider.label).tag(provider)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
                 }
-                .pickerStyle(.menu)
 
-                TextField("Local model", text: $visionModel)
-                TextField("External model", text: $visionExternalModel)
+                settingRow("External model") {
+                    TextField("google/gemini-2.5-flash-preview", text: $summaryExternalModel)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                settingRow("Local model") {
+                    TextField("hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M", text: $summaryLocalModel)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
 
-            Section("OCR") {
-                Picker("Provider", selection: $ocrProvider) {
-                    ForEach(OCRProviderKind.allCases) { provider in
-                        Text(provider.label).tag(provider)
+            settingsCard("Vision") {
+                settingRow("Provider") {
+                    Picker("Vision provider", selection: $visionProvider) {
+                        ForEach(VisionProvider.allCases) { provider in
+                            Text(provider.label).tag(provider)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
                 }
-                .pickerStyle(.menu)
 
-                TextField("Ollama OCR model", text: $ollamaModel)
-                TextField("Ollama base URL", text: $ollamaBaseURL)
+                settingRow("Local model") {
+                    TextField("qwen3.5:4b", text: $visionModel)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                settingRow("External model") {
+                    TextField("google/gemini-2.5-flash-preview", text: $visionExternalModel)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            settingsCard("OCR") {
+                settingRow("Provider") {
+                    Picker("OCR provider", selection: $ocrProvider) {
+                        ForEach(OCRProviderKind.allCases) { provider in
+                            Text(provider.label).tag(provider)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+
+                settingRow("Ollama OCR model") {
+                    TextField("glm-ocr", text: $ollamaModel)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                settingRow("Ollama base URL") {
+                    TextField("http://localhost:11434", text: $ollamaBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
 
             saveButton
@@ -304,32 +362,51 @@ struct SettingsView: View {
     }
 
     private var captureTab: some View {
-        Form {
-            Section("Cadence") {
-                intervalRow("Normal", value: $normalCaptureInterval)
-                intervalRow("Degraded", value: $degradedCaptureInterval)
-                intervalRow("High uncertainty", value: $highUncertaintyCaptureInterval)
+        settingsScroll {
+            settingsCard("Capture Cadence", subtitle: "Memograph captures more aggressively when readability drops.") {
+                settingRow("Normal", help: "Default cadence when OCR and AX extraction are healthy.") {
+                    inlineNumberField("60", text: $normalCaptureInterval, suffix: "sec")
+                }
+
+                settingRow("Limited mode", help: "Used when context quality drops but recovery is still possible.") {
+                    inlineNumberField("10", text: $degradedCaptureInterval, suffix: "sec")
+                }
+
+                settingRow("High uncertainty", help: "Burst cadence for difficult screens that need more context.") {
+                    inlineNumberField("3", text: $highUncertaintyCaptureInterval, suffix: "sec")
+                }
             }
 
-            Section("Budgets") {
-                numericRow("Max prompt chars", value: $maxPromptChars)
-                numericRow("Max captures per session", value: $maxCapturesPerSession)
+            settingsCard("Budgets") {
+                settingRow("Max prompt chars", help: "Hard cap for summary context passed into the LLM.") {
+                    inlineNumberField("300000", text: $maxPromptChars)
+                }
+
+                settingRow("Max captures per session", help: "Safety cap for long work sessions.") {
+                    inlineNumberField("500", text: $maxCapturesPerSession)
+                }
             }
 
-            Section("Storage") {
-                Picker("Storage profile", selection: $storageProfile) {
-                    ForEach(StorageProfile.allCases) { profile in
-                        Text(profile.rawValue.capitalized).tag(profile)
+            settingsCard("Storage") {
+                settingRow("Storage profile", help: "Overall disk strategy for capture artifacts.") {
+                    Picker("Storage profile", selection: $storageProfile) {
+                        ForEach(StorageProfile.allCases) { profile in
+                            Text(profile.rawValue.capitalized).tag(profile)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
                 }
-                .pickerStyle(.menu)
 
-                Picker("Capture retention", selection: $captureRetentionMode) {
-                    ForEach(CaptureRetentionMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
+                settingRow("Capture retention", help: "How much image data to keep after extraction.") {
+                    Picker("Capture retention", selection: $captureRetentionMode) {
+                        ForEach(CaptureRetentionMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
                 }
-                .pickerStyle(.menu)
             }
 
             saveButton
@@ -337,44 +414,55 @@ struct SettingsView: View {
     }
 
     private var privacyTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        settingsScroll {
+            settingsCard("Permissions", subtitle: "Memograph works in limited mode when optional permissions are missing.") {
                 PermissionsView(manager: permissionsManager, autoRefresh: previewState == nil)
                     .frame(maxWidth: .infinity, alignment: .leading)
-
-                GroupBox("Blacklisted bundle IDs") {
-                    listEditor(text: $blacklistedBundleIds)
-                }
-
-                GroupBox("Metadata-only apps") {
-                    listEditor(text: $metadataOnlyBundleIds)
-                }
-
-                GroupBox("Blocked window title patterns") {
-                    listEditor(text: $blacklistedWindowPatterns)
-                }
-
-                saveButton
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            settingsCard("Blacklisted Bundle IDs", subtitle: "These apps are never captured.") {
+                listEditor(text: $blacklistedBundleIds)
+            }
+
+            settingsCard("Metadata-only Apps", subtitle: "Capture app activity without storing screenshot content.") {
+                listEditor(text: $metadataOnlyBundleIds)
+            }
+
+            settingsCard("Blocked Window Title Patterns", subtitle: "Window titles matching these patterns are skipped.") {
+                listEditor(text: $blacklistedWindowPatterns)
+            }
+
+            saveButton
         }
     }
 
     private var audioTab: some View {
-        Form {
-            Section("Experimental Toggles") {
-                Toggle("Enable microphone transcription", isOn: $microphoneCaptureEnabled)
-                Toggle("Enable system audio transcription", isOn: $systemAudioCaptureEnabled)
+        settingsScroll {
+            settingsCard("Experimental Capture", subtitle: "Audio stays off by default. Turn it on only if you explicitly want transcripts.") {
+                toggleRow("Microphone transcription", help: "Starts recording only when another app is actively using the microphone.", isOn: $microphoneCaptureEnabled)
+                toggleRow("System audio transcription", help: "Captures speaker output with ScreenCaptureKit when supported.", isOn: $systemAudioCaptureEnabled)
             }
 
-            Section("Runtime") {
-                TextField("Python command or absolute path", text: $audioPythonCommand)
-                TextField("Whisper model", text: $audioModelName)
-                diagnosticsRow("Runtime status", value: audioRuntimeStatus)
+            settingsCard("Runtime") {
+                settingRow("Python command", help: "Absolute path or command name for the Whisper runtime.") {
+                    TextField("python3", text: $audioPythonCommand)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                settingRow("Whisper model") {
+                    TextField("mlx-community/whisper-large-v3-turbo", text: $audioModelName)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                settingRow("Runtime status") {
+                    Text(audioRuntimeStatus)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
 
-            Section("Notes") {
-                Text("Audio is experimental, off by default, and depends on an external Python runtime plus Whisper dependencies.")
+            settingsCard("How It Works") {
+                Text("Audio support is still experimental. It depends on an external Python runtime plus Whisper dependencies, and it is intentionally opt-in.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -384,20 +472,26 @@ struct SettingsView: View {
     }
 
     private var promptsTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("System Prompt")
-                .font(.headline)
-            TextEditor(text: $systemPrompt)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 180)
-                .border(Color.gray.opacity(0.2))
+        settingsScroll {
+            settingsCard("System Prompt") {
+                TextEditor(text: $systemPrompt)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 200)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.gray.opacity(0.2))
+                    )
+            }
 
-            Text("Summary Template")
-                .font(.headline)
-            TextEditor(text: $userPromptSuffix)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 220)
-                .border(Color.gray.opacity(0.2))
+            settingsCard("Summary Template") {
+                TextEditor(text: $userPromptSuffix)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 260)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.gray.opacity(0.2))
+                    )
+            }
 
             HStack {
                 Button("Reset to Defaults") {
@@ -409,7 +503,6 @@ struct SettingsView: View {
                 saveButton
             }
         }
-        .padding(.top, 8)
     }
 
     private var saveButton: some View {
@@ -441,7 +534,8 @@ struct SettingsView: View {
         operatingMode = settings.operatingMode
         externalProviderName = settings.externalProviderName
         externalBaseURL = settings.externalBaseURL
-        externalAPIKey = settings.externalAPIKey
+        externalAPIKey = ""
+        hasStoredExternalAPIKey = settings.hasApiKey
         summaryProvider = settings.summaryProvider
         summaryExternalModel = settings.summaryExternalModel
         summaryLocalModel = settings.summaryLocalModel
@@ -485,6 +579,7 @@ struct SettingsView: View {
         externalProviderName = preview.externalProviderName
         externalBaseURL = preview.externalBaseURL
         externalAPIKey = preview.externalAPIKey
+        hasStoredExternalAPIKey = !preview.externalAPIKey.isEmpty
         summaryProvider = preview.summaryProvider
         summaryExternalModel = preview.summaryExternalModel
         summaryLocalModel = preview.summaryLocalModel
@@ -529,7 +624,14 @@ struct SettingsView: View {
         settings.operatingMode = operatingMode
         settings.externalProviderName = externalProviderName
         settings.externalBaseURL = externalBaseURL
-        settings.externalAPIKey = externalAPIKey
+        let trimmedAPIKey = externalAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAPIKey.isEmpty {
+            settings.externalAPIKey = trimmedAPIKey
+            hasStoredExternalAPIKey = true
+            externalAPIKey = ""
+        } else if !hasStoredExternalAPIKey {
+            settings.externalAPIKey = ""
+        }
         settings.summaryProvider = summaryProvider
         settings.summaryExternalModel = summaryExternalModel
         settings.summaryLocalModel = summaryLocalModel
@@ -596,6 +698,13 @@ struct SettingsView: View {
         NotificationCenter.default.post(name: .deleteAllLocalDataRequested, object: nil)
     }
 
+    private func forgetStoredAPIKey() {
+        let settings = AppSettings()
+        settings.forgetCredentials()
+        externalAPIKey = ""
+        hasStoredExternalAPIKey = false
+    }
+
     private func diagnosticsRow(_ label: String, value: String) -> some View {
         HStack {
             Text(label)
@@ -606,22 +715,87 @@ struct SettingsView: View {
         }
     }
 
-    private func intervalRow(_ label: String, value: Binding<String>) -> some View {
-        HStack {
-            Text(label)
-            Spacer()
-            TextField("0", text: value)
-                .frame(width: 80)
-            Text("sec")
+    private func settingsScroll<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                content()
+            }
+            .frame(maxWidth: 860, alignment: .leading)
+            .padding(.vertical, 8)
         }
     }
 
-    private func numericRow(_ label: String, value: Binding<String>) -> some View {
-        HStack {
-            Text(label)
-            Spacer()
-            TextField("0", text: value)
+    private func settingsCard<Content: View>(
+        _ title: String,
+        subtitle: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            content()
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func settingRow<Content: View>(
+        _ label: String,
+        help: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .font(.subheadline.weight(.semibold))
+                if let help {
+                    Text(help)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 220, alignment: .leading)
+
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func toggleRow(_ title: String, help: String, isOn: Binding<Bool>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(title, isOn: isOn)
+            Text(help)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 2)
+        }
+    }
+
+    private func inlineNumberField(_ placeholder: String, text: Binding<String>, suffix: String? = nil) -> some View {
+        HStack(spacing: 8) {
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
                 .frame(width: 120)
+            if let suffix {
+                Text(suffix)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

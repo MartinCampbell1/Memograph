@@ -41,4 +41,16 @@ struct AppSettingsTests {
         settings.openRouterApiKey = "sk-test"
         #expect(settings.hasApiKey)
     }
+
+    @Test("hasApiKey detects stored credentials without reading the secret")
+    func hasApiKeyWithoutRead() {
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        let store = InMemoryCredentialsStore()
+        store.set("sk-test", for: "externalAPIKey")
+
+        let settings = AppSettings(defaults: defaults, credentialsStore: store)
+
+        #expect(settings.hasApiKey)
+        #expect(defaults.bool(forKey: "hasExternalAPIKey"))
+    }
 }

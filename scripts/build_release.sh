@@ -10,6 +10,7 @@ BUNDLE_ID="${BUNDLE_ID:-com.memograph.app}"
 VERSION="${VERSION:-0.1.0}"
 BUILD_DIR="${BUILD_DIR:-dist/build}"
 APP_DIR="${APP_DIR:-dist/${APP_NAME}.app}"
+ICON_PATH="${ICON_PATH:-AppAssets/AppIcon.icns}"
 
 mkdir -p "$BUILD_DIR"
 swift build -c release
@@ -24,6 +25,10 @@ chmod +x "$APP_DIR/Contents/MacOS/${APP_NAME}"
 
 if compgen -G "${BIN_DIR}/*.bundle" > /dev/null; then
   cp -R "${BIN_DIR}"/*.bundle "$APP_DIR/Contents/Resources/"
+fi
+
+if [[ -f "$ICON_PATH" ]]; then
+  cp "$ICON_PATH" "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<EOF
@@ -41,6 +46,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<EOF
   <string>${BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleName</key>
   <string>${APP_NAME}</string>
   <key>CFBundlePackageType</key>

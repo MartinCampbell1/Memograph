@@ -1,7 +1,9 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 protocol CredentialsStore: Sendable {
+    func hasValue(for key: String) -> Bool
     func string(for key: String) -> String?
     func set(_ value: String, for key: String)
     func removeValue(for key: String)
@@ -12,6 +14,19 @@ final class KeychainCredentialsStore: CredentialsStore, @unchecked Sendable {
 
     init(service: String) {
         self.service = service
+    }
+
+    func hasValue(for key: String) -> Bool {
+        var query = baseQuery(for: key)
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecReturnAttributes as String] = true
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
     func string(for key: String) -> String? {
@@ -59,6 +74,10 @@ final class KeychainCredentialsStore: CredentialsStore, @unchecked Sendable {
 
 final class InMemoryCredentialsStore: CredentialsStore, @unchecked Sendable {
     private var values: [String: String] = [:]
+
+    func hasValue(for key: String) -> Bool {
+        values[key] != nil
+    }
 
     func string(for key: String) -> String? {
         values[key]

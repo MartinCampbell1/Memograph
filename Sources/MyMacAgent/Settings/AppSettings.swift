@@ -91,6 +91,7 @@ enum CaptureRetentionMode: String, CaseIterable, Identifiable {
 struct AppSettings {
     private let defaults: UserDefaults
     private let credentialsStore: any CredentialsStore
+    private static let hasExternalAPIKeyKey = "hasExternalAPIKey"
 
     static let sharedCredentialsStore: any CredentialsStore =
         KeychainCredentialsStore(service: "com.memograph.credentials")
@@ -139,8 +140,10 @@ struct AppSettings {
         set {
             if newValue.isEmpty {
                 credentialsStore.removeValue(for: "externalAPIKey")
+                defaults.set(false, forKey: Self.hasExternalAPIKeyKey)
             } else {
                 credentialsStore.set(newValue, for: "externalAPIKey")
+                defaults.set(true, forKey: Self.hasExternalAPIKeyKey)
             }
         }
     }
@@ -150,7 +153,15 @@ struct AppSettings {
         set { externalAPIKey = newValue }
     }
 
-    var hasApiKey: Bool { !externalAPIKey.isEmpty }
+    var hasApiKey: Bool {
+        if defaults.object(forKey: Self.hasExternalAPIKeyKey) != nil {
+            return defaults.bool(forKey: Self.hasExternalAPIKeyKey)
+        }
+
+        let exists = credentialsStore.hasValue(for: "externalAPIKey")
+        defaults.set(exists, forKey: Self.hasExternalAPIKeyKey)
+        return exists
+    }
 
     var externalBaseURL: String {
         get { defaults.string(forKey: "externalBaseURL") ?? "https://openrouter.ai/api/v1" }
@@ -413,16 +424,19 @@ struct AppSettings {
 
     func forgetCredentials() {
         credentialsStore.removeValue(for: "externalAPIKey")
+        defaults.set(false, forKey: Self.hasExternalAPIKeyKey)
     }
 
     private func migrateLegacyCredentialsIfNeeded() {
         guard let legacyKey = defaults.string(forKey: "openRouterApiKey"),
-              !legacyKey.isEmpty,
-              credentialsStore.string(for: "externalAPIKey") == nil else {
+              !legacyKey.isEmpty else {
             return
         }
 
-        credentialsStore.set(legacyKey, for: "externalAPIKey")
+        if !credentialsStore.hasValue(for: "externalAPIKey") {
+            credentialsStore.set(legacyKey, for: "externalAPIKey")
+        }
+        defaults.set(true, forKey: Self.hasExternalAPIKeyKey)
         defaults.removeObject(forKey: "openRouterApiKey")
     }
 

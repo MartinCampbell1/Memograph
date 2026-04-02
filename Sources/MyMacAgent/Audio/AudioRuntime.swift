@@ -16,7 +16,7 @@ enum AudioRuntimeStatus {
     var description: String {
         switch self {
         case .ready(let env):
-            let command = ([env.executableURL.path] + env.launchArgumentsPrefix).joined(separator: " ")
+            let command = env.launchArgumentsPrefix.first ?? env.executableURL.lastPathComponent
             return "Ready (\(command))"
         case .missingPython(let details):
             return "Python runtime missing: \(details)"

@@ -34,6 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var privacyGuard = PrivacyGuard.fromSettings()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.applicationIconImage = AppIconArtwork.makeImage()
+
         if CommandLine.arguments.contains("--render-marketing-assets") {
             logger.info("Running marketing asset renderer")
             do {
