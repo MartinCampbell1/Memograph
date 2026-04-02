@@ -2,11 +2,8 @@ import SwiftUI
 
 struct TimelineView: View {
     let db: DatabaseManager
-    @State private var selectedDate: String = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
-    }()
+    private let dateSupport = LocalDateSupport()
+    @State private var selectedDate: String = LocalDateSupport().currentLocalDateString()
     @State private var sessions: [TimelineSession] = []
     @State private var apps: [AppUsageSummary] = []
     @State private var dates: [String] = []
@@ -63,8 +60,13 @@ struct TimelineView: View {
 
                 // Sessions
                 Text("Sessions").font(.headline)
-                ForEach(sessions, id: \.sessionId) { session in
-                    SessionRowView(session: session)
+                if sessions.isEmpty {
+                    Text("No sessions recorded for this day yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(sessions, id: \.sessionId) { session in
+                        SessionRowView(session: session)
+                    }
                 }
             }
         }
@@ -80,7 +82,7 @@ struct TimelineView: View {
                             Text(result.appName ?? "Unknown").fontWeight(.medium)
                             Text(result.windowTitle ?? "").foregroundStyle(.secondary)
                             Spacer()
-                            Text(String(result.timestamp.prefix(16)))
+                            Text(dateSupport.localDateTimeString(from: result.timestamp))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         if let text = result.mergedText {
@@ -97,8 +99,13 @@ struct TimelineView: View {
     }
 
     private func loadData() {
-        let provider = TimelineDataProvider(db: db)
-        dates = (try? provider.availableDates()) ?? []
+        let provider = TimelineDataProvider(db: db, timeZone: dateSupport.timeZone)
+        let loadedDates = (try? provider.availableDates()) ?? []
+        dates = loadedDates
+        if let mostRecent = loadedDates.first, !loadedDates.contains(selectedDate) {
+            selectedDate = mostRecent
+            return
+        }
         sessions = (try? provider.sessionsForDate(selectedDate)) ?? []
         apps = (try? provider.appSummaryForDate(selectedDate)) ?? []
         searchResults = []
@@ -114,6 +121,7 @@ struct TimelineView: View {
 
 struct SessionRowView: View {
     let session: TimelineSession
+    private let dateSupport = LocalDateSupport()
 
     var body: some View {
         HStack {
@@ -137,9 +145,6 @@ struct SessionRowView: View {
     }
 
     private func formatTime(_ iso: String) -> String {
-        guard iso.count >= 16 else { return iso }
-        let start = iso.index(iso.startIndex, offsetBy: 11)
-        let end = iso.index(start, offsetBy: 5)
-        return String(iso[start..<end])
+        dateSupport.localTimeString(from: iso)
     }
 }

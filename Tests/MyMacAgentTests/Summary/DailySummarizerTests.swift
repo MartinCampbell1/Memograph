@@ -3,6 +3,9 @@ import Foundation
 @testable import MyMacAgent
 
 struct DailySummarizerTests {
+    private let utc = TimeZone(secondsFromGMT: 0)!
+    private let makassar = TimeZone(secondsFromGMT: 8 * 3600)!
+
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
@@ -67,7 +70,7 @@ struct DailySummarizerTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         try seedTestData(db: db)
 
-        let summarizer = DailySummarizer(db: db)
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
         let prompt = try summarizer.buildDailyPrompt(for: "2026-04-02")
 
         #expect(prompt.contains("Cursor"))
@@ -82,7 +85,7 @@ struct DailySummarizerTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         try seedTestData(db: db)
 
-        let summarizer = DailySummarizer(db: db)
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
         let data = try summarizer.collectSessionData(for: "2026-04-02")
 
         #expect(data.count == 2)
@@ -95,7 +98,7 @@ struct DailySummarizerTests {
         let (db, path) = try makeDB()
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let summarizer = DailySummarizer(db: db)
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
         let summary = DailySummaryRecord(
             date: "2026-04-02", summaryText: "Productive day",
             topAppsJson: "[\"Cursor\"]", topTopicsJson: "[\"Swift\"]",
@@ -112,6 +115,42 @@ struct DailySummarizerTests {
             params: [.text("2026-04-02")])
         #expect(rows.count == 1)
         #expect(rows[0]["summary_text"]?.textValue == "Productive day")
+    }
+
+    @Test("buildPrompt uses local day boundaries and local times")
+    func buildPromptForLocalDay() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.cursor"), .text("Cursor")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms, uncertainty_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("sess-local"), .integer(1),
+            .text("2026-04-02T16:30:00Z"), .text("2026-04-02T17:00:00Z"),
+            .integer(1800000), .text("normal")
+        ])
+        try db.execute("""
+            INSERT INTO context_snapshots (id, session_id, timestamp, app_name, bundle_id,
+                window_title, text_source, merged_text, readable_score, uncertainty_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("ctx-local"), .text("sess-local"), .text("2026-04-02T16:40:00Z"),
+            .text("Cursor"), .text("com.cursor"),
+            .text("night.swift"), .text("ax+ocr"),
+            .text("Debugging a timezone edge case"),
+            .real(0.95), .real(0.05)
+        ])
+
+        let summarizer = DailySummarizer(db: db, timeZone: makassar)
+        let prompt = try summarizer.buildDailyPrompt(for: "2026-04-03")
+
+        #expect(prompt.contains("Cursor"))
+        #expect(prompt.contains("00:30"))
+        #expect(prompt.contains("01:00"))
+        #expect(!prompt.contains("16:30"))
     }
 
     @Test("parseSummaryResponse extracts sections")

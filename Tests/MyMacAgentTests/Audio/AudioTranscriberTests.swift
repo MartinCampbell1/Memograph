@@ -3,6 +3,9 @@ import Foundation
 @testable import MyMacAgent
 
 struct AudioTranscriberTests {
+    private let utc = TimeZone(secondsFromGMT: 0)!
+    private let makassar = TimeZone(secondsFromGMT: 8 * 3600)!
+
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
@@ -13,7 +16,7 @@ struct AudioTranscriberTests {
 
     @Test("Transcriber initializes with correct paths")
     func initializes() {
-        let transcriber = AudioTranscriber(db: DatabaseManager.forTesting())
+        let transcriber = AudioTranscriber(db: DatabaseManager.forTesting(), timeZone: utc)
         #expect(transcriber.venvPath.contains(".venv"))
     }
 
@@ -41,7 +44,7 @@ struct AudioTranscriberTests {
         try db.execute("INSERT INTO sessions (id, app_id, started_at) VALUES (?, ?, ?)",
             params: [.text("s1"), .integer(1), .text("2026-04-02T10:00:00Z")])
 
-        let transcriber = AudioTranscriber(db: db)
+        let transcriber = AudioTranscriber(db: db, timeZone: utc)
         try transcriber.persistTranscript(
             sessionId: "s1",
             text: "Обсуждали архитектуру нового сервиса",
@@ -82,10 +85,40 @@ struct AudioTranscriberTests {
             VALUES (?, ?, ?, ?)
         """, params: [.text("t2"), .text("2026-04-02T10:05:00Z"), .text("Second chunk"), .real(300)])
 
-        let transcriber = AudioTranscriber(db: db)
+        let transcriber = AudioTranscriber(db: db, timeZone: utc)
         let transcripts = try transcriber.getTranscriptsForDate("2026-04-02")
 
         #expect(transcripts.count == 2)
         #expect(transcripts[0].text == "First chunk")
+    }
+
+    @Test("getTranscriptsForDate uses local day boundaries")
+    func getsTranscriptsForLocalDay() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS audio_transcripts (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                timestamp TEXT NOT NULL,
+                duration_seconds REAL DEFAULT 0,
+                transcript TEXT,
+                language TEXT,
+                source TEXT DEFAULT 'system',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        try db.execute("""
+            INSERT INTO audio_transcripts (id, timestamp, transcript, duration_seconds)
+            VALUES (?, ?, ?, ?)
+        """, params: [.text("t-local"), .text("2026-04-02T16:05:00Z"), .text("Late-night note"), .real(60)])
+
+        let transcriber = AudioTranscriber(db: db, timeZone: makassar)
+        let transcripts = try transcriber.getTranscriptsForDate("2026-04-03")
+
+        #expect(transcripts.count == 1)
+        #expect(transcripts[0].text == "Late-night note")
     }
 }

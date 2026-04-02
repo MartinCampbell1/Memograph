@@ -3,6 +3,9 @@ import Foundation
 @testable import MyMacAgent
 
 struct ObsidianExporterTests {
+    private let utc = TimeZone(secondsFromGMT: 0)!
+    private let makassar = TimeZone(secondsFromGMT: 8 * 3600)!
+
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
@@ -45,7 +48,7 @@ struct ObsidianExporterTests {
             generationStatus: "success"
         )
 
-        let exporter = ObsidianExporter(db: db)
+        let exporter = ObsidianExporter(db: db, timeZone: utc)
         let markdown = try exporter.renderDailyNote(summary: summary)
 
         #expect(markdown.contains("# Daily Log — 2026-04-02"))
@@ -77,7 +80,7 @@ struct ObsidianExporterTests {
             generationStatus: "success"
         )
 
-        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir)
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
         let filePath = try exporter.exportDailyNote(summary: summary)
 
         #expect(FileManager.default.fileExists(atPath: filePath))
@@ -99,11 +102,33 @@ struct ObsidianExporterTests {
                       .text("2026-04-02T09:10:00Z"), .text("2026-04-02T09:32:00Z"),
                       .integer(1320000)])
 
-        let exporter = ObsidianExporter(db: db)
+        let exporter = ObsidianExporter(db: db, timeZone: utc)
         let timeline = try exporter.buildTimeline(for: "2026-04-02")
 
         #expect(timeline.contains("09:10"))
         #expect(timeline.contains("09:32"))
+        #expect(timeline.contains("TestApp"))
+    }
+
+    @Test("Generates timeline using local times for the selected day")
+    func generatesTimelineForLocalDay() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.test"), .text("TestApp")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms)
+            VALUES (?, ?, ?, ?, ?)
+        """, params: [.text("s-local"), .integer(1),
+                      .text("2026-04-02T16:10:00Z"), .text("2026-04-02T16:32:00Z"),
+                      .integer(1320000)])
+
+        let exporter = ObsidianExporter(db: db, timeZone: makassar)
+        let timeline = try exporter.buildTimeline(for: "2026-04-03")
+
+        #expect(timeline.contains("00:10"))
+        #expect(timeline.contains("00:32"))
         #expect(timeline.contains("TestApp"))
     }
 

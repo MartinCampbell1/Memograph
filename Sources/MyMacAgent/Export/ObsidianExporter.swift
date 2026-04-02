@@ -5,10 +5,12 @@ final class ObsidianExporter {
     private let db: DatabaseManager
     private let vaultPath: String
     private let logger = Logger.export
+    private let dateSupport: LocalDateSupport
 
-    init(db: DatabaseManager, vaultPath: String = "") {
+    init(db: DatabaseManager, vaultPath: String = "", timeZone: TimeZone = .autoupdatingCurrent) {
         self.db = db
         self.vaultPath = vaultPath
+        self.dateSupport = LocalDateSupport(timeZone: timeZone)
     }
 
     func renderDailyNote(summary: DailySummaryRecord) throws -> String {
@@ -80,13 +82,16 @@ final class ObsidianExporter {
     }
 
     func buildTimeline(for date: String) throws -> String {
+        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+            return ""
+        }
         let sessions = try db.query("""
             SELECT s.started_at, s.ended_at, a.app_name
             FROM sessions s
             JOIN apps a ON s.app_id = a.id
-            WHERE s.started_at LIKE ?
+            WHERE s.started_at >= ? AND s.started_at < ?
             ORDER BY s.started_at
-        """, params: [.text("\(date)%")])
+        """, params: [.text(range.start), .text(range.end)])
 
         var timeline = ""
         for row in sessions {
@@ -136,10 +141,6 @@ final class ObsidianExporter {
     }
 
     private func formatTime(_ isoString: String) -> String {
-        // Extract HH:mm from ISO 8601 string like "2026-04-02T09:10:00Z"
-        guard isoString.count >= 16 else { return isoString }
-        let startIndex = isoString.index(isoString.startIndex, offsetBy: 11)
-        let endIndex = isoString.index(startIndex, offsetBy: 5)
-        return String(isoString[startIndex..<endIndex])
+        dateSupport.localTimeString(from: isoString)
     }
 }

@@ -3,6 +3,8 @@ import Foundation
 @testable import MyMacAgent
 
 struct VisionAudioIntegrationTests {
+    private let utc = TimeZone(secondsFromGMT: 0)!
+
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
@@ -51,7 +53,8 @@ struct VisionAudioIntegrationTests {
         try seedMinimalSession(db: db, date: date)
 
         // Insert a transcript containing a distinctive keyword
-        let transcriber = AudioTranscriber(db: db)
+        let fixedNow = ISO8601DateFormatter().date(from: "\(date)T12:00:00Z")!
+        let transcriber = AudioTranscriber(db: db, timeZone: utc, now: { fixedNow })
         try transcriber.persistTranscript(
             sessionId: "sess-va",
             text: "Today we discussed Kubernetes deployment strategies",
@@ -59,7 +62,7 @@ struct VisionAudioIntegrationTests {
             durationSeconds: 120
         )
 
-        let summarizer = DailySummarizer(db: db)
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
         let prompt = try summarizer.buildDailyPrompt(for: date)
 
         #expect(prompt.contains("Kubernetes"))
@@ -93,7 +96,7 @@ struct VisionAudioIntegrationTests {
             .real(0.9)
         ])
 
-        let summarizer = DailySummarizer(db: db)
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
         let prompt = try summarizer.buildDailyPrompt(for: date)
 
         #expect(prompt.contains("Vision Analysis"))
@@ -110,7 +113,8 @@ struct VisionAudioIntegrationTests {
         try seedMinimalSession(db: db, date: date)
 
         // Insert audio transcript
-        let transcriber = AudioTranscriber(db: db)
+        let fixedNow = ISO8601DateFormatter().date(from: "\(date)T12:00:00Z")!
+        let transcriber = AudioTranscriber(db: db, timeZone: utc, now: { fixedNow })
         try transcriber.persistTranscript(
             sessionId: "sess-va",
             text: "Meeting about the new API architecture",
@@ -137,7 +141,7 @@ struct VisionAudioIntegrationTests {
             .real(0.85)
         ])
 
-        let summarizer = DailySummarizer(db: db)
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
         let prompt = try summarizer.buildDailyPrompt(for: date)
 
         // Both sections present

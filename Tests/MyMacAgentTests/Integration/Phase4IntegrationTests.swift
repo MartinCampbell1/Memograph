@@ -3,6 +3,8 @@ import Foundation
 @testable import MyMacAgent
 
 struct Phase4IntegrationTests {
+    private let utc = TimeZone(secondsFromGMT: 0)!
+
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
@@ -46,7 +48,7 @@ struct Phase4IntegrationTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         try seedTimeline(db: db)
 
-        let provider = TimelineDataProvider(db: db)
+        let provider = TimelineDataProvider(db: db, timeZone: utc)
         let sessions = try provider.sessionsForDate("2026-04-02")
         let apps = try provider.appSummaryForDate("2026-04-02")
         let dates = try provider.availableDates()

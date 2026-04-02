@@ -23,23 +23,35 @@ struct ParsedSummary {
 final class DailySummarizer: @unchecked Sendable {
     private let db: DatabaseManager
     private let logger = Logger.summary
+    private let dateSupport: LocalDateSupport
+    private let now: () -> Date
 
     /// Max total characters for all context text in prompt (~4 chars per token)
     private var maxPromptChars: Int { AppSettings().maxPromptChars }
 
-    init(db: DatabaseManager) {
+    init(
+        db: DatabaseManager,
+        timeZone: TimeZone = .autoupdatingCurrent,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.db = db
+        self.dateSupport = LocalDateSupport(timeZone: timeZone)
+        self.now = now
     }
 
     func collectSessionData(for date: String) throws -> [SessionData] {
+        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+            logger.error("Invalid local date requested for summarizer: \(date)")
+            return []
+        }
         let sessions = try db.query("""
             SELECT s.id, s.started_at, s.ended_at, s.active_duration_ms,
                    s.uncertainty_mode, a.app_name, a.bundle_id
             FROM sessions s
             JOIN apps a ON s.app_id = a.id
-            WHERE s.started_at LIKE ?
+            WHERE s.started_at >= ? AND s.started_at < ?
             ORDER BY s.started_at
-        """, params: [.text("\(date)%")])
+        """, params: [.text(range.start), .text(range.end)])
 
         return try sessions.compactMap { row -> SessionData? in
             guard let sessionId = row["id"]?.textValue,
@@ -62,7 +74,12 @@ final class DailySummarizer: @unchecked Sendable {
                 windowTitles: Array(Set(windowTitles)),
                 startedAt: startedAt,
                 endedAt: row["ended_at"]?.textValue,
-                durationMs: row["active_duration_ms"]?.intValue ?? 0,
+                durationMs: dateSupport.effectiveDurationMs(
+                    startedAt: startedAt,
+                    endedAt: row["ended_at"]?.textValue,
+                    storedActiveDurationMs: row["active_duration_ms"]?.intValue ?? 0,
+                    now: now()
+                ),
                 uncertaintyMode: row["uncertainty_mode"]?.textValue ?? "normal",
                 contextTexts: contextTexts
             )
@@ -132,7 +149,8 @@ final class DailySummarizer: @unchecked Sendable {
         for session in sessions {
             let durationMin = session.durationMs / 60000
             prompt += "### \(session.appName) (\(durationMin) min)\n"
-            prompt += "Time: \(session.startedAt) — \(session.endedAt ?? "ongoing")\n"
+            prompt += "Time: \(dateSupport.localTimeString(from: session.startedAt)) — "
+            prompt += "\(session.endedAt.map { dateSupport.localTimeString(from: $0) } ?? "ongoing")\n"
 
             if !session.windowTitles.isEmpty {
                 prompt += "Windows: \(session.windowTitles.joined(separator: ", "))\n"
@@ -165,11 +183,11 @@ final class DailySummarizer: @unchecked Sendable {
         }
 
         // 2.5 Audio transcripts
-        let audioTranscriber = AudioTranscriber(db: db)
+        let audioTranscriber = AudioTranscriber(db: db, timeZone: dateSupport.timeZone, now: now)
         if let transcripts = try? audioTranscriber.getTranscriptsForDate(date), !transcripts.isEmpty {
             prompt += "## Audio Transcripts\n\n"
             for transcript in transcripts {
-                let time = String(transcript.timestamp.prefix(16))
+                let time = dateSupport.localDateTimeString(from: transcript.timestamp)
                 let lang = transcript.language ?? "?"
                 prompt += "[\(time)] (\(lang)): \(transcript.text)\n"
             }
@@ -177,17 +195,21 @@ final class DailySummarizer: @unchecked Sendable {
         }
 
         // 2.6 Vision analysis of unreadable screenshots
+        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+            return prompt + "\n---\n" + AppSettings().userPromptSuffix
+        }
         let visionSnapshots = try db.query("""
             SELECT timestamp, app_name, window_title, merged_text
             FROM context_snapshots
-            WHERE timestamp LIKE ? AND text_source = 'vision' AND merged_text IS NOT NULL
+            WHERE timestamp >= ? AND timestamp < ?
+              AND text_source = 'vision' AND merged_text IS NOT NULL
             ORDER BY timestamp
-        """, params: [.text("\(date)%")])
+        """, params: [.text(range.start), .text(range.end)])
 
         if !visionSnapshots.isEmpty {
             prompt += "## Vision Analysis (screenshots that couldn't be OCR'd)\n\n"
             for row in visionSnapshots {
-                let time = row["timestamp"]?.textValue.map { String($0.prefix(16)) } ?? ""
+                let time = row["timestamp"]?.textValue.map { dateSupport.localDateTimeString(from: $0) } ?? ""
                 let app = row["app_name"]?.textValue ?? ""
                 let text = row["merged_text"]?.textValue ?? ""
                 prompt += "[\(time)] \(app): \(text)\n"

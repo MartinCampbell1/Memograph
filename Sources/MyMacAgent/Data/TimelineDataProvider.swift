@@ -21,27 +21,31 @@ struct AppUsageSummary {
 final class TimelineDataProvider {
     private let db: DatabaseManager
     private let logger = Logger.app
+    private let dateSupport: LocalDateSupport
+    private let now: () -> Date
 
-    init(db: DatabaseManager) {
+    init(
+        db: DatabaseManager,
+        timeZone: TimeZone = .autoupdatingCurrent,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.db = db
+        self.dateSupport = LocalDateSupport(timeZone: timeZone)
+        self.now = now
     }
 
     func sessionsForDate(_ date: String) throws -> [TimelineSession] {
-        let rows = try db.query("""
-            SELECT s.id, a.app_name, a.bundle_id, s.started_at, s.ended_at,
-                   s.active_duration_ms, s.uncertainty_mode
-            FROM sessions s
-            JOIN apps a ON s.app_id = a.id
-            WHERE s.started_at LIKE ?
-            ORDER BY s.started_at
-        """, params: [.text("\(date)%")])
-
-        return rows.compactMap { row -> TimelineSession? in
+        try sessionRows(for: date).compactMap { row -> TimelineSession? in
             guard let id = row["id"]?.textValue,
                   let appName = row["app_name"]?.textValue,
                   let bundleId = row["bundle_id"]?.textValue,
                   let startedAt = row["started_at"]?.textValue else { return nil }
-            let durationMs = row["active_duration_ms"]?.intValue ?? 0
+            let durationMs = dateSupport.effectiveDurationMs(
+                startedAt: startedAt,
+                endedAt: row["ended_at"]?.textValue,
+                storedActiveDurationMs: row["active_duration_ms"]?.intValue ?? 0,
+                now: now()
+            )
             return TimelineSession(
                 sessionId: id, appName: appName, bundleId: bundleId,
                 startedAt: startedAt, endedAt: row["ended_at"]?.textValue,
@@ -52,38 +56,65 @@ final class TimelineDataProvider {
     }
 
     func appSummaryForDate(_ date: String) throws -> [AppUsageSummary] {
-        let rows = try db.query("""
-            SELECT a.app_name, a.bundle_id,
-                   SUM(s.active_duration_ms) as total_ms,
-                   COUNT(s.id) as session_count
-            FROM sessions s
-            JOIN apps a ON s.app_id = a.id
-            WHERE s.started_at LIKE ?
-            GROUP BY a.bundle_id
-            ORDER BY total_ms DESC
-        """, params: [.text("\(date)%")])
-
-        return rows.compactMap { row -> AppUsageSummary? in
+        let rows = try sessionRows(for: date)
+        let grouped = rows.reduce(into: [String: (appName: String, bundleId: String, totalMs: Int64, sessionCount: Int)]()) {
+            partialResult, row in
             guard let appName = row["app_name"]?.textValue,
-                  let bundleId = row["bundle_id"]?.textValue else { return nil }
-            let totalMs = row["total_ms"]?.intValue ?? 0
-            let sessionCount = row["session_count"]?.intValue ?? 0
-            return AppUsageSummary(
-                appName: appName, bundleId: bundleId,
-                totalMinutes: Int(totalMs / 60000),
-                sessionCount: Int(sessionCount)
+                  let bundleId = row["bundle_id"]?.textValue,
+                  let startedAt = row["started_at"]?.textValue else { return }
+            let effectiveDurationMs = dateSupport.effectiveDurationMs(
+                startedAt: startedAt,
+                endedAt: row["ended_at"]?.textValue,
+                storedActiveDurationMs: row["active_duration_ms"]?.intValue ?? 0,
+                now: now()
+            )
+            let existing = partialResult[bundleId] ?? (appName, bundleId, 0, 0)
+            partialResult[bundleId] = (
+                appName: existing.appName,
+                bundleId: existing.bundleId,
+                totalMs: existing.totalMs + effectiveDurationMs,
+                sessionCount: existing.sessionCount + 1
             )
         }
+
+        return grouped.values
+            .sorted {
+                if $0.totalMs == $1.totalMs {
+                    return $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending
+                }
+                return $0.totalMs > $1.totalMs
+            }
+            .map { summary in
+                AppUsageSummary(
+                    appName: summary.appName,
+                    bundleId: summary.bundleId,
+                    totalMinutes: Int(summary.totalMs / 60000),
+                    sessionCount: summary.sessionCount
+                )
+            }
     }
 
     func availableDates() throws -> [String] {
         let rows = try db.query("""
-            SELECT DISTINCT SUBSTR(started_at, 1, 10) as date
+            SELECT started_at
             FROM sessions
-            ORDER BY date DESC
-            LIMIT 90
+            ORDER BY started_at DESC
+            LIMIT 50000
         """)
-        return rows.compactMap { $0["date"]?.textValue }
+
+        var seen = Set<String>()
+        var dates: [String] = []
+        for row in rows {
+            guard let startedAt = row["started_at"]?.textValue,
+                  let localDate = dateSupport.localDateString(from: startedAt) else { continue }
+            if seen.insert(localDate).inserted {
+                dates.append(localDate)
+                if dates.count == 90 {
+                    break
+                }
+            }
+        }
+        return dates
     }
 
     func contextSnapshotsForSession(_ sessionId: String) throws -> [ContextSnapshotRecord] {
@@ -101,5 +132,21 @@ final class TimelineDataProvider {
             params: [.text(date)]
         )
         return rows.first.flatMap { DailySummaryRecord(row: $0) }
+    }
+
+    private func sessionRows(for date: String) throws -> [SQLiteRow] {
+        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+            logger.error("Invalid local date requested for timeline: \(date)")
+            return []
+        }
+
+        return try db.query("""
+            SELECT s.id, a.app_name, a.bundle_id, s.started_at, s.ended_at,
+                   s.active_duration_ms, s.uncertainty_mode
+            FROM sessions s
+            JOIN apps a ON s.app_id = a.id
+            WHERE s.started_at >= ? AND s.started_at < ?
+            ORDER BY s.started_at
+        """, params: [.text(range.start), .text(range.end)])
     }
 }

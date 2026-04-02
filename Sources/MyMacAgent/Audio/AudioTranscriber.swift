@@ -17,13 +17,19 @@ final class AudioTranscriber: @unchecked Sendable {
     private let scriptPath: String
     private let runtimeStatus: AudioRuntimeStatus
     private let logger = Logger.app
+    private let dateSupport: LocalDateSupport
+    private let now: () -> Date
 
     init(db: DatabaseManager,
          venvPath: String = "",
          scriptPath: String = "",
-         runtimeStatus: AudioRuntimeStatus? = nil) {
+         runtimeStatus: AudioRuntimeStatus? = nil,
+         timeZone: TimeZone = .autoupdatingCurrent,
+         now: @escaping () -> Date = Date.init) {
         self.db = db
         self.runtimeStatus = runtimeStatus ?? AudioRuntimeResolver.resolve()
+        self.dateSupport = LocalDateSupport(timeZone: timeZone)
+        self.now = now
 
         if venvPath.isEmpty {
             self.venvPath = FileManager.default.currentDirectoryPath + "/.venv"
@@ -124,7 +130,7 @@ final class AudioTranscriber: @unchecked Sendable {
         source: String = "system"
     ) throws {
         let id = UUID().uuidString
-        let now = ISO8601DateFormatter().string(from: Date())
+        let timestamp = ISO8601DateFormatter().string(from: now())
 
         try db.execute("""
             INSERT INTO audio_transcripts (id, session_id, timestamp, duration_seconds, transcript, language, source)
@@ -132,7 +138,7 @@ final class AudioTranscriber: @unchecked Sendable {
         """, params: [
             .text(id),
             sessionId.map { .text($0) } ?? .null,
-            .text(now),
+            .text(timestamp),
             .real(durationSeconds),
             .text(text),
             language.map { .text($0) } ?? .null,
@@ -141,12 +147,15 @@ final class AudioTranscriber: @unchecked Sendable {
     }
 
     func getTranscriptsForDate(_ date: String) throws -> [AudioTranscript] {
+        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+            return []
+        }
         let rows = try db.query("""
             SELECT id, session_id, timestamp, duration_seconds, transcript, language, source
             FROM audio_transcripts
-            WHERE timestamp LIKE ?
+            WHERE timestamp >= ? AND timestamp < ?
             ORDER BY timestamp
-        """, params: [.text("\(date)%")])
+        """, params: [.text(range.start), .text(range.end)])
 
         return rows.compactMap { row -> AudioTranscript? in
             guard let id = row["id"]?.textValue,

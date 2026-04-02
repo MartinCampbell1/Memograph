@@ -3,6 +3,9 @@ import Foundation
 @testable import MyMacAgent
 
 struct TimelineDataProviderTests {
+    private let utc = TimeZone(secondsFromGMT: 0)!
+    private let makassar = TimeZone(secondsFromGMT: 8 * 3600)!
+
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
@@ -36,7 +39,7 @@ struct TimelineDataProviderTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         try seedData(db: db)
 
-        let provider = TimelineDataProvider(db: db)
+        let provider = TimelineDataProvider(db: db, timeZone: utc)
         let sessions = try provider.sessionsForDate("2026-04-02")
 
         #expect(sessions.count == 2)
@@ -51,7 +54,7 @@ struct TimelineDataProviderTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         try seedData(db: db)
 
-        let provider = TimelineDataProvider(db: db)
+        let provider = TimelineDataProvider(db: db, timeZone: utc)
         let apps = try provider.appSummaryForDate("2026-04-02")
 
         #expect(apps.count == 2)
@@ -66,7 +69,7 @@ struct TimelineDataProviderTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
         try seedData(db: db)
 
-        let provider = TimelineDataProvider(db: db)
+        let provider = TimelineDataProvider(db: db, timeZone: utc)
         let dates = try provider.availableDates()
 
         #expect(dates.contains("2026-04-02"))
@@ -86,10 +89,36 @@ struct TimelineDataProviderTests {
                       .text("Cursor"), .text("main.swift"), .text("ax+ocr"),
                       .text("Swift code here"), .real(0.9), .real(0.1)])
 
-        let provider = TimelineDataProvider(db: db)
+        let provider = TimelineDataProvider(db: db, timeZone: utc)
         let contexts = try provider.contextSnapshotsForSession("s1")
 
         #expect(contexts.count == 1)
         #expect(contexts[0].mergedText == "Swift code here")
+    }
+
+    @Test("sessionsForDate uses local day boundaries and computes ongoing duration")
+    func sessionsForLocalDayBoundary() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.cursor"), .text("Cursor")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms, uncertainty_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [.text("s-local"), .integer(1),
+                      .text("2026-04-02T16:30:00Z"), .null,
+                      .integer(0), .text("normal")])
+
+        let fixedNow = ISO8601DateFormatter().date(from: "2026-04-02T18:00:00Z")!
+        let provider = TimelineDataProvider(db: db, timeZone: makassar, now: { fixedNow })
+
+        let sessions = try provider.sessionsForDate("2026-04-03")
+        let dates = try provider.availableDates()
+
+        #expect(sessions.count == 1)
+        #expect(sessions[0].appName == "Cursor")
+        #expect(sessions[0].durationMinutes == 90)
+        #expect(dates.first == "2026-04-03")
     }
 }

@@ -3,6 +3,8 @@ import Foundation
 @testable import MyMacAgent
 
 struct Phase3IntegrationTests {
+    private let utc = TimeZone(secondsFromGMT: 0)!
+
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
@@ -78,7 +80,7 @@ struct Phase3IntegrationTests {
             .real(0.9), .real(0.05)
         ])
 
-        let summarizer = DailySummarizer(db: db)
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
         let data = try summarizer.collectSessionData(for: "2026-04-02")
 
         #expect(data.count == 1)
@@ -117,7 +119,7 @@ struct Phase3IntegrationTests {
             generationStatus: "success"
         )
 
-        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir)
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
         let filePath = try exporter.exportDailyNote(summary: summary)
 
         #expect(FileManager.default.fileExists(atPath: filePath))
@@ -158,7 +160,7 @@ struct Phase3IntegrationTests {
         try fusion.persist(snapshot: ctx, db: db)
 
         // 2. Verify prompt can be built
-        let summarizer = DailySummarizer(db: db)
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
         let prompt = try summarizer.buildDailyPrompt(for: "2026-04-02")
         #expect(prompt.contains("TestApp"))
 
@@ -176,7 +178,7 @@ struct Phase3IntegrationTests {
         try summarizer.persistSummary(summary)
 
         // 4. Export
-        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir)
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
         let filePath = try exporter.exportDailyNote(summary: summary)
         #expect(FileManager.default.fileExists(atPath: filePath))
 
