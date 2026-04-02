@@ -15,6 +15,33 @@ struct PermissionsView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
+            if manager.legacyAppRunning {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("A legacy MyMacAgent build is still running.")
+                        .fontWeight(.semibold)
+                    Text("macOS can apply microphone and privacy state to that old process instead of Memograph. Quit it first, then re-check permissions here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button("Quit Legacy App") {
+                            manager.quitLegacyAppInstances()
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Re-check") {
+                            manager.checkAll()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.08)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.orange.opacity(0.35))
+                )
+            }
+
             permissionRow(
                 title: "Accessibility",
                 description: "Read window titles and focused UI elements",
@@ -57,8 +84,18 @@ struct PermissionsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Text("Tip: Screen Recording changes on macOS often require quitting and reopening Memograph before they start reporting correctly.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             HStack {
                 Spacer()
+                if !manager.screenRecordingGranted {
+                    Button("Relaunch App") {
+                        manager.relaunchApp()
+                    }
+                    .buttonStyle(.bordered)
+                }
                 Button("Re-check") {
                     manager.checkAll()
                 }

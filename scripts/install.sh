@@ -39,9 +39,13 @@ fi
 cd "$WORK_DIR"
 ./scripts/build_release.sh >/dev/null
 
+pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+pkill -x MyMacAgent >/dev/null 2>&1 || true
+pkill -f "/Audio/whisper_transcribe.py" >/dev/null 2>&1 || true
+
 mkdir -p "$DEST_DIR"
 rm -rf "$DEST_APP"
-cp -R "dist/${APP_NAME}.app" "$DEST_APP"
+ditto "dist/${APP_NAME}.app" "$DEST_APP"
 xattr -dr com.apple.quarantine "$DEST_APP" >/dev/null 2>&1 || true
 
 echo "Installed ${APP_NAME} to ${DEST_APP}"

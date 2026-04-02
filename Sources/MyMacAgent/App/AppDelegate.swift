@@ -76,6 +76,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logger.info("MyMacAgent terminating")
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return false }
+        restorePrimaryWindows()
+        return true
+    }
+
     private func registerObservers() {
         NotificationCenter.default.addObserver(
             self,
@@ -89,6 +95,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: .deleteAllLocalDataRequested,
             object: nil
         )
+    }
+
+    private func restorePrimaryWindows() {
+        let candidateWindows = NSApp.windows.filter { window in
+            !window.isVisible || window.isMiniaturized || !window.canBecomeKey
+        }
+
+        if candidateWindows.isEmpty {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        for window in candidateWindows {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func initializeDatabase() {

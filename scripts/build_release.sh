@@ -67,7 +67,11 @@ cat > "$APP_DIR/Contents/Info.plist" <<EOF
 EOF
 
 if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
-  codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP_DIR"
+  codesign --force --deep --options runtime --timestamp --identifier "$BUNDLE_ID" --sign "$SIGNING_IDENTITY" "$APP_DIR"
+else
+  # Force a clean ad-hoc signature so TCC and macOS privacy panes see the shipped bundle ID,
+  # not the original SwiftPM product identifier baked into the executable.
+  codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_DIR"
 fi
 
 echo "Release app built at: ${APP_DIR}"
