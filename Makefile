@@ -6,7 +6,7 @@ DIST_DIR ?= dist
 APP_NAME ?= Memograph
 SWIFT_TARGET ?= MyMacAgent
 
-.PHONY: setup setup-audio setup-models build test clean run release package notarize verify
+.PHONY: setup setup-audio setup-models build test clean run install release package notarize verify
 
 setup: setup-audio setup-models
 
@@ -32,6 +32,9 @@ test:
 
 run:
 	$(SWIFT) run $(SWIFT_TARGET)
+
+install:
+	./scripts/install.sh
 
 release:
 	./scripts/build_release.sh

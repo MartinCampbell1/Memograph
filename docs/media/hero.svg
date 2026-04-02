@@ -1,0 +1,59 @@
+<svg width="1200" height="720" viewBox="0 0 1200 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="720" rx="32" fill="#F4F0E8"/>
+  <rect x="36" y="36" width="1128" height="648" rx="28" fill="url(#bg)"/>
+  <rect x="74" y="84" width="172" height="34" rx="17" fill="#D6F5EB"/>
+  <text x="160" y="106" fill="#0B1F1E" font-size="16" text-anchor="middle" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Free local-first memory for macOS</text>
+  <text x="78" y="194" fill="#F7F6F1" font-size="64" font-weight="700" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Recall what you saw</text>
+  <text x="78" y="266" fill="#F7F6F1" font-size="64" font-weight="700" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">without renting your brain.</text>
+  <text x="78" y="326" fill="#CFE1DB" font-size="24" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Swift-native. Private by default. Obsidian-ready.</text>
+  <text x="78" y="364" fill="#CFE1DB" font-size="24" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Built for MacBook users who want a lean local memory layer.</text>
+
+  <rect x="78" y="432" width="204" height="60" rx="20" fill="#72E1C2"/>
+  <text x="180" y="470" fill="#0B1F1E" font-size="24" font-weight="700" text-anchor="middle" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Install in one command</text>
+  <rect x="302" y="432" width="208" height="60" rx="20" stroke="#6E8C86" stroke-width="2"/>
+  <text x="406" y="470" fill="#F7F6F1" font-size="24" font-weight="600" text-anchor="middle" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Audio stays experimental</text>
+
+  <g transform="translate(640 104)">
+    <rect width="464" height="520" rx="28" fill="#F7F6F1"/>
+    <rect x="28" y="24" width="408" height="56" rx="18" fill="#EAE3D6"/>
+    <circle cx="58" cy="52" r="8" fill="#E57A5A"/>
+    <circle cx="84" cy="52" r="8" fill="#F3A84B"/>
+    <circle cx="110" cy="52" r="8" fill="#72E1C2"/>
+    <text x="142" y="59" fill="#0B1F1E" font-size="24" font-weight="700" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Memograph timeline</text>
+
+    <rect x="28" y="108" width="182" height="384" rx="20" fill="#0F2A28"/>
+    <text x="52" y="146" fill="#F7F6F1" font-size="20" font-weight="700" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Today</text>
+    <g fill="#CFE1DB" font-size="14" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+      <text x="52" y="184">09:14  Xcode  Planning release</text>
+      <text x="52" y="222">10:03  Safari  ScreenPipe research</text>
+      <text x="52" y="260">11:27  Settings  Provider routing</text>
+      <text x="52" y="298">13:42  Notes  Daily summary draft</text>
+      <text x="52" y="336">15:05  Mail  Metadata-only mode</text>
+      <text x="52" y="374">17:18  Obsidian  Export complete</text>
+    </g>
+
+    <rect x="230" y="108" width="206" height="150" rx="20" fill="#D6F5EB"/>
+    <text x="254" y="146" fill="#0B1F1E" font-size="18" font-weight="700" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Summary</text>
+    <g fill="#17443E" font-size="14" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+      <text x="254" y="180">- release prep and OSS cleanup</text>
+      <text x="254" y="206">- settings/providers hardened</text>
+      <text x="254" y="232">- privacy defaults visible</text>
+    </g>
+
+    <rect x="230" y="278" width="206" height="104" rx="20" fill="#FBE5C6"/>
+    <text x="254" y="316" fill="#5B3614" font-size="18" font-weight="700" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Privacy state</text>
+    <text x="254" y="350" fill="#7A5221" font-size="14" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Audio off by default</text>
+    <text x="254" y="374" fill="#7A5221" font-size="14" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">External providers opt-in</text>
+
+    <rect x="230" y="402" width="206" height="90" rx="20" fill="#F9D4C8"/>
+    <text x="254" y="440" fill="#6A2D1E" font-size="18" font-weight="700" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Export</text>
+    <text x="254" y="474" fill="#7E3A29" font-size="14" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">Daily note -> Obsidian</text>
+  </g>
+
+  <defs>
+    <linearGradient id="bg" x1="36" y1="36" x2="1164" y2="684" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B1F1E"/>
+      <stop offset="1" stop-color="#133935"/>
+    </linearGradient>
+  </defs>
+</svg>
