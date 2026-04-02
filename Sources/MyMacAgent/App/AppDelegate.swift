@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var visionAnalyzer: VisionAnalyzer?
     private var audioTranscriber: AudioTranscriber?
     private var audioCaptureEngine: AudioCaptureEngine?
+    private var systemAudioEngine: SystemAudioCaptureEngine?
     private var retentionTimer: Timer?
     private var autoSummaryTimer: Timer?
     private var captureHashTracker = CaptureHashTracker()
@@ -52,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowMonitor?.stop()
         idleDetector?.stop()
         audioCaptureEngine?.stop()
+        systemAudioEngine?.stop()
         if let sessionId = sessionManager?.currentSessionId {
             try? sessionManager?.endSession(sessionId)
         }
@@ -163,14 +165,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audioTranscriber = transcriber
         visionAnalyzer = VisionAnalyzer(db: db)
 
-        // Start audio capture
+        // Start mic audio capture
         if let sessionMgr = sessionManager {
             let audioEngine = AudioCaptureEngine(transcriber: transcriber, sessionManager: sessionMgr)
             audioEngine.start()
             audioCaptureEngine = audioEngine
+
+            // Start system audio capture (speakers/apps)
+            let sysAudio = SystemAudioCaptureEngine(transcriber: transcriber, sessionManager: sessionMgr)
+            Task { await sysAudio.start() }
+            systemAudioEngine = sysAudio
         }
 
-        logger.info("Phase 5 initialized (vision analyzer, audio transcriber, audio capture)")
+        logger.info("Phase 5 initialized (vision, mic audio, system audio)")
     }
 
     func toggleAudioCapture() {

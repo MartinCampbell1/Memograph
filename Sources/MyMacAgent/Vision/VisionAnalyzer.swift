@@ -13,16 +13,17 @@ struct LowReadabilityCapture {
 
 final class VisionAnalyzer {
     private let db: DatabaseManager
-    private let ollamaBaseURL: String
-    private let modelName: String
+    private let apiKey: String
+    private let model: String
+    private let baseURL: String
     nonisolated(unsafe) private let logger = Logger.ocr
 
-    init(db: DatabaseManager,
-         ollamaBaseURL: String = "http://localhost:11434",
-         modelName: String = "hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M") {
+    init(db: DatabaseManager, apiKey: String = "", model: String = "", baseURL: String = "") {
         self.db = db
-        self.ollamaBaseURL = ollamaBaseURL
-        self.modelName = modelName
+        let settings = AppSettings()
+        self.apiKey = apiKey.isEmpty ? settings.openRouterApiKey : apiKey
+        self.model = model.isEmpty ? settings.llmModel : model
+        self.baseURL = baseURL.isEmpty ? "https://openrouter.ai/api/v1" : baseURL
     }
 
     func findLowReadabilityCaptures(for date: String, threshold: Double = 0.3) throws -> [LowReadabilityCapture] {
@@ -53,38 +54,45 @@ final class VisionAnalyzer {
     }
 
     func analyzeImage(at path: String) async throws -> String {
-        guard FileManager.default.fileExists(atPath: path) else {
+        guard FileManager.default.fileExists(atPath: path),
+              let imageData = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
             return ""
         }
 
-        guard let imageData = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
-            return ""
-        }
         let base64 = imageData.base64EncodedString()
+        let dataURI = "data:image/jpeg;base64,\(base64)"
 
+        // Use OpenRouter multimodal API (Gemini supports images)
         let payload: [String: Any] = [
-            "model": modelName,
-            "prompt": buildVisionPrompt(),
-            "images": [base64],
-            "stream": false
+            "model": model,
+            "messages": [
+                ["role": "user", "content": [
+                    ["type": "image_url", "image_url": ["url": dataURI]],
+                    ["type": "text", "text": buildVisionPrompt()]
+                ]]
+            ],
+            "max_tokens": 1000
         ]
 
         let jsonData = try JSONSerialization.data(withJSONObject: payload)
-        var request = URLRequest(url: URL(string: "\(ollamaBaseURL)/api/generate")!)
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
         request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = jsonData
-        request.timeoutInterval = 60
+        request.timeoutInterval = 30
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = json["response"] as? String else {
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let text = message["content"] as? String else {
             return ""
         }
 
-        logger.info("Vision analysis: \(text.count) chars for image at \(path)")
+        logger.info("Vision analysis (Gemini): \(text.count) chars for \(path)")
         return text
     }
 
@@ -96,6 +104,11 @@ final class VisionAnalyzer {
     }
 
     func analyzeAllLowReadability(for date: String) async throws -> Int {
+        guard !apiKey.isEmpty else {
+            logger.info("Vision: skipping — no API key")
+            return 0
+        }
+
         let captures = try findLowReadabilityCaptures(for: date)
         var analyzed = 0
 
@@ -105,15 +118,19 @@ final class VisionAnalyzer {
             if !description.isEmpty {
                 try persistVisionResult(contextId: capture.contextId, description: description)
                 analyzed += 1
-                logger.info("Vision: analyzed \(capture.captureId) for \(capture.appName ?? "unknown")")
             }
         }
 
-        logger.info("Vision analysis complete: \(analyzed)/\(captures.count) captures analyzed for \(date)")
+        logger.info("Vision: \(analyzed)/\(captures.count) low-readability captures analyzed via \(self.model)")
         return analyzed
     }
 
     func buildVisionPrompt() -> String {
-        "Describe what is shown in this screenshot in detail. Focus on: text content, code, UI elements, charts/graphs, data tables, and any important visual information. Extract all readable text. Be concise but thorough."
+        """
+        Describe this screenshot in detail with [[wiki-links]] for Obsidian. \
+        Focus on: text content, code, UI elements, charts/graphs, data. \
+        Extract all readable text. Identify the app, task, and context. \
+        Wrap every tool/project/technology in [[double brackets]].
+        """
     }
 }
