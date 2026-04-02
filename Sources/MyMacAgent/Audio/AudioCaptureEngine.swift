@@ -13,6 +13,13 @@ final class AudioCaptureEngine: @unchecked Sendable {
     nonisolated(unsafe) private let logger = Logger.app
     private var isRecording = false
 
+    // VAD — voice activity detection
+    private let silenceThreshold: Float = 0.01  // RMS below this = silence
+    private let silenceTimeout: TimeInterval = 3.0  // seconds of silence before pausing
+    private var lastSoundTime: Date = Date()
+    private var isCapturing = false  // true when voice detected, false during silence
+    private var silentFrames = 0
+
     init(transcriber: AudioTranscriber, sessionManager: SessionManager,
          segmentDuration: TimeInterval = 300, audioDir: String? = nil) {
         self.transcriber = transcriber
@@ -35,16 +42,13 @@ final class AudioCaptureEngine: @unchecked Sendable {
             let inputNode = audioEngine.inputNode
             let format = inputNode.outputFormat(forBus: 0)
 
-            // Ensure we have a valid format
             guard format.sampleRate > 0 else {
                 logger.error("AudioCapture: no valid input format")
                 return
             }
 
-            startNewSegment(format: format)
-
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-                self?.writeBuffer(buffer)
+                self?.processBuffer(buffer, format: format)
             }
 
             audioEngine.prepare()
@@ -56,7 +60,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
                 self?.rotateSegment()
             }
 
-            logger.info("AudioCapture: started recording (segment: \(Int(self.segmentDuration))s)")
+            logger.info("AudioCapture: started with VAD (threshold: \(self.silenceThreshold), timeout: \(self.silenceTimeout)s)")
         } catch {
             logger.error("AudioCapture: failed to start: \(error.localizedDescription)")
         }
@@ -69,8 +73,8 @@ final class AudioCaptureEngine: @unchecked Sendable {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         isRecording = false
+        isCapturing = false
 
-        // Finalize current segment
         if let path = currentFilePath {
             currentFile = nil
             transcribeAndCleanup(path: path)
@@ -81,7 +85,65 @@ final class AudioCaptureEngine: @unchecked Sendable {
 
     var recording: Bool { isRecording }
 
-    // MARK: - Private
+    // MARK: - VAD + Write
+
+    private func processBuffer(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
+        let rms = computeRMS(buffer)
+
+        if rms > silenceThreshold {
+            // Sound detected
+            lastSoundTime = Date()
+            silentFrames = 0
+
+            if !isCapturing {
+                // Start capturing — voice detected after silence
+                isCapturing = true
+                startNewSegment(format: format)
+                logger.info("AudioCapture: voice detected, recording started")
+            }
+
+            // Write audio
+            if let file = currentFile {
+                try? file.write(from: buffer)
+            }
+        } else {
+            // Silence
+            silentFrames += 1
+
+            if isCapturing {
+                // Still write for a bit during short pauses
+                if Date().timeIntervalSince(lastSoundTime) < silenceTimeout {
+                    if let file = currentFile {
+                        try? file.write(from: buffer)
+                    }
+                } else {
+                    // Silence exceeded timeout — stop capturing
+                    isCapturing = false
+                    if let path = currentFilePath {
+                        currentFile = nil
+                        currentFilePath = nil
+                        transcribeAndCleanup(path: path)
+                        logger.info("AudioCapture: silence detected, segment saved")
+                    }
+                }
+            }
+        }
+    }
+
+    private func computeRMS(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData else { return 0 }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return 0 }
+
+        var sum: Float = 0
+        let data = channelData[0]
+        for i in 0..<frames {
+            sum += data[i] * data[i]
+        }
+        return sqrtf(sum / Float(frames))
+    }
+
+    // MARK: - Segments
 
     private func startNewSegment(format: AVAudioFormat? = nil) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -92,31 +154,18 @@ final class AudioCaptureEngine: @unchecked Sendable {
         let fmt = format ?? audioEngine.inputNode.outputFormat(forBus: 0)
 
         do {
-            let url = URL(fileURLWithPath: path)
-            currentFile = try AVAudioFile(forWriting: url, settings: fmt.settings)
+            currentFile = try AVAudioFile(forWriting: URL(fileURLWithPath: path), settings: fmt.settings)
             currentFilePath = path
         } catch {
             logger.error("AudioCapture: failed to create file: \(error.localizedDescription)")
         }
     }
 
-    private func writeBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let file = currentFile else { return }
-        do {
-            try file.write(from: buffer)
-        } catch {
-            // Don't spam logs for write errors
-        }
-    }
-
     private func rotateSegment() {
-        let oldPath = currentFilePath
+        guard isCapturing, let oldPath = currentFilePath else { return }
         currentFile = nil
         startNewSegment()
-
-        if let path = oldPath {
-            transcribeAndCleanup(path: path)
-        }
+        transcribeAndCleanup(path: oldPath)
     }
 
     private func transcribeAndCleanup(path: String) {
@@ -126,20 +175,20 @@ final class AudioCaptureEngine: @unchecked Sendable {
         Task {
             do {
                 let result = try await transcriber.transcribeFile(audioPath: path)
-                if !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
                     try transcriber.persistTranscript(
                         sessionId: sessionId,
-                        text: result.text,
+                        text: text,
                         language: result.language,
                         durationSeconds: result.durationSeconds
                     )
-                    Logger.app.info("AudioCapture: transcribed \(result.text.count) chars from \(path)")
+                    Logger.app.info("AudioCapture: transcribed \(text.count) chars")
                 }
             } catch {
                 Logger.app.error("AudioCapture: transcription failed: \(error.localizedDescription)")
             }
 
-            // Delete WAV after transcription
             try? FileManager.default.removeItem(atPath: path)
         }
     }

@@ -33,6 +33,10 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
 
     func start() async {
         guard !isRecording else { return }
+        guard CGPreflightScreenCaptureAccess() else {
+            logger.info("SystemAudio: no screen recording permission, skipping")
+            return
+        }
 
         do {
             try FileManager.default.createDirectory(atPath: audioDir, withIntermediateDirectories: true)

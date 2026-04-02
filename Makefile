@@ -20,3 +20,13 @@ test:
 
 clean:
 	rm -rf .build
+
+install: build
+	cp .build/arm64-apple-macosx/debug/MyMacAgent build/MyMacAgent.app/Contents/MacOS/MyMacAgent
+	codesign --force --sign - build/MyMacAgent.app
+
+run: install
+	open build/MyMacAgent.app
+
+kill:
+	pkill -f "MyMacAgent" 2>/dev/null || true
