@@ -59,7 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
             let dbPath = dbDir.appendingPathComponent("mymacagent.db").path
             let db = try DatabaseManager(path: dbPath)
-            let runner = MigrationRunner(db: db, migrations: [V001_InitialSchema.migration])
+            let runner = MigrationRunner(db: db, migrations: [
+                V001_InitialSchema.migration,
+                V002_AudioTranscripts.migration
+            ])
             try runner.runPending()
             databaseManager = db
             logger.info("Database initialized at \(dbPath)")

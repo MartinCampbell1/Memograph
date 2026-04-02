@@ -87,6 +87,10 @@ final class DatabaseManager: @unchecked Sendable {
         return rows
     }
 
+    static func forTesting() -> DatabaseManager {
+        try! DatabaseManager(path: NSTemporaryDirectory() + "test_\(UUID().uuidString).db")
+    }
+
     func userVersion() throws -> Int {
         let rows = try query("PRAGMA user_version")
         guard let row = rows.first, let version = row["user_version"]?.intValue else {
