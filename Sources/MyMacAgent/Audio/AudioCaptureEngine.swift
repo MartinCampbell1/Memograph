@@ -1,6 +1,10 @@
 import AVFoundation
+import CoreAudio
 import os
 
+/// Captures mic audio ONLY when another app is using the microphone
+/// (Zoom, Telegram, Spokenly, WhatsApp, etc.)
+/// Uses CoreAudio's kAudioDevicePropertyDeviceIsRunningSomewhere to detect this.
 final class AudioCaptureEngine: @unchecked Sendable {
     private let audioEngine = AVAudioEngine()
     private var currentFile: AVAudioFile?
@@ -11,14 +15,10 @@ final class AudioCaptureEngine: @unchecked Sendable {
     private let transcriber: AudioTranscriber
     private let sessionManager: SessionManager
     nonisolated(unsafe) private let logger = Logger.app
-    private var isRecording = false
-
-    // VAD — voice activity detection
-    private let silenceThreshold: Float = 0.01  // RMS below this = silence
-    private let silenceTimeout: TimeInterval = 3.0  // seconds of silence before pausing
-    private var lastSoundTime: Date = Date()
-    private var isCapturing = false  // true when voice detected, false during silence
-    private var silentFrames = 0
+    private var isMonitoring = false
+    private var isCapturing = false
+    private var micInUseListener: AudioObjectPropertyListenerBlock?
+    private var inputDeviceID: AudioDeviceID = 0
 
     init(transcriber: AudioTranscriber, sessionManager: SessionManager,
          segmentDuration: TimeInterval = 300, audioDir: String? = nil) {
@@ -33,114 +33,153 @@ final class AudioCaptureEngine: @unchecked Sendable {
         }
     }
 
+    /// Start monitoring — does NOT record until another app uses the mic
     func start() {
-        guard !isRecording else { return }
+        guard !isMonitoring else { return }
 
         do {
             try FileManager.default.createDirectory(atPath: audioDir, withIntermediateDirectories: true)
+        } catch {
+            logger.error("AudioCapture: failed to create dir: \(error.localizedDescription)")
+            return
+        }
 
+        // Get default input device
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID: AudioDeviceID = 0
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        )
+        guard status == noErr, deviceID != 0 else {
+            logger.error("AudioCapture: no default input device")
+            return
+        }
+        inputDeviceID = deviceID
+
+        // Listen for "device is running somewhere" changes
+        var runningAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.checkMicState()
+            }
+        }
+        micInUseListener = listener
+
+        AudioObjectAddPropertyListenerBlock(deviceID, &runningAddress, DispatchQueue.main, listener)
+
+        isMonitoring = true
+        logger.info("AudioCapture: monitoring mic usage (device: \(deviceID))")
+
+        // Check initial state
+        checkMicState()
+    }
+
+    func stop() {
+        if isCapturing {
+            stopCapture()
+        }
+
+        // Remove listener
+        if inputDeviceID != 0, let listener = micInUseListener {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(inputDeviceID, &address, DispatchQueue.main, listener)
+        }
+
+        isMonitoring = false
+        logger.info("AudioCapture: monitoring stopped")
+    }
+
+    var recording: Bool { isCapturing }
+
+    // MARK: - Mic state monitoring
+
+    private func checkMicState() {
+        let running = isMicRunning()
+        if running && !isCapturing {
+            startCapture()
+        } else if !running && isCapturing {
+            // Small delay — apps sometimes briefly release mic
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self, !self.isMicRunning() else { return }
+                self.stopCapture()
+            }
+        }
+    }
+
+    private func isMicRunning() -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var isRunning: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(inputDeviceID, &address, 0, nil, &size, &isRunning)
+        return status == noErr && isRunning != 0
+    }
+
+    // MARK: - Capture control
+
+    private func startCapture() {
+        guard !isCapturing else { return }
+
+        do {
             let inputNode = audioEngine.inputNode
             let format = inputNode.outputFormat(forBus: 0)
+            guard format.sampleRate > 0 else { return }
 
-            guard format.sampleRate > 0 else {
-                logger.error("AudioCapture: no valid input format")
-                return
-            }
+            startNewSegment(format: format)
 
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-                self?.processBuffer(buffer, format: format)
+                guard let self, let file = self.currentFile else { return }
+                try? file.write(from: buffer)
             }
 
             audioEngine.prepare()
             try audioEngine.start()
-            isRecording = true
+            isCapturing = true
 
-            // Timer to rotate segments
             segmentTimer = Timer.scheduledTimer(withTimeInterval: segmentDuration, repeats: true) { [weak self] _ in
                 self?.rotateSegment()
             }
 
-            logger.info("AudioCapture: started with VAD (threshold: \(self.silenceThreshold), timeout: \(self.silenceTimeout)s)")
+            logger.info("AudioCapture: another app is using mic — recording started")
         } catch {
             logger.error("AudioCapture: failed to start: \(error.localizedDescription)")
         }
     }
 
-    func stop() {
-        guard isRecording else { return }
+    private func stopCapture() {
+        guard isCapturing else { return }
+
         segmentTimer?.invalidate()
         segmentTimer = nil
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
-        isRecording = false
         isCapturing = false
 
         if let path = currentFilePath {
             currentFile = nil
+            currentFilePath = nil
             transcribeAndCleanup(path: path)
         }
 
-        logger.info("AudioCapture: stopped")
-    }
-
-    var recording: Bool { isRecording }
-
-    // MARK: - VAD + Write
-
-    private func processBuffer(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
-        let rms = computeRMS(buffer)
-
-        if rms > silenceThreshold {
-            // Sound detected
-            lastSoundTime = Date()
-            silentFrames = 0
-
-            if !isCapturing {
-                // Start capturing — voice detected after silence
-                isCapturing = true
-                startNewSegment(format: format)
-                logger.info("AudioCapture: voice detected, recording started")
-            }
-
-            // Write audio
-            if let file = currentFile {
-                try? file.write(from: buffer)
-            }
-        } else {
-            // Silence
-            silentFrames += 1
-
-            if isCapturing {
-                // Still write for a bit during short pauses
-                if Date().timeIntervalSince(lastSoundTime) < silenceTimeout {
-                    if let file = currentFile {
-                        try? file.write(from: buffer)
-                    }
-                } else {
-                    // Silence exceeded timeout — stop capturing
-                    isCapturing = false
-                    if let path = currentFilePath {
-                        currentFile = nil
-                        currentFilePath = nil
-                        transcribeAndCleanup(path: path)
-                        logger.info("AudioCapture: silence detected, segment saved")
-                    }
-                }
-            }
-        }
-    }
-
-    private func computeRMS(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData else { return 0 }
-        let frames = Int(buffer.frameLength)
-        guard frames > 0 else { return 0 }
-
-        var sum: Float = 0
-        let data = channelData[0]
-        for i in 0..<frames {
-            sum += data[i] * data[i]
-        }
-        return sqrtf(sum / Float(frames))
+        logger.info("AudioCapture: mic released by other apps — recording stopped")
     }
 
     // MARK: - Segments
@@ -148,7 +187,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
     private func startNewSegment(format: AVAudioFormat? = nil) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
-        let filename = "audio_\(timestamp).wav"
+        let filename = "mic_\(timestamp).wav"
         let path = (audioDir as NSString).appendingPathComponent(filename)
 
         let fmt = format ?? audioEngine.inputNode.outputFormat(forBus: 0)
@@ -162,10 +201,13 @@ final class AudioCaptureEngine: @unchecked Sendable {
     }
 
     private func rotateSegment() {
-        guard isCapturing, let oldPath = currentFilePath else { return }
+        guard isCapturing else { return }
+        let oldPath = currentFilePath
         currentFile = nil
         startNewSegment()
-        transcribeAndCleanup(path: oldPath)
+        if let path = oldPath {
+            transcribeAndCleanup(path: path)
+        }
     }
 
     private func transcribeAndCleanup(path: String) {
@@ -183,12 +225,11 @@ final class AudioCaptureEngine: @unchecked Sendable {
                         language: result.language,
                         durationSeconds: result.durationSeconds
                     )
-                    Logger.app.info("AudioCapture: transcribed \(text.count) chars")
+                    Logger.app.info("AudioCapture: transcribed \(text.count) chars from mic")
                 }
             } catch {
                 Logger.app.error("AudioCapture: transcription failed: \(error.localizedDescription)")
             }
-
             try? FileManager.default.removeItem(atPath: path)
         }
     }
