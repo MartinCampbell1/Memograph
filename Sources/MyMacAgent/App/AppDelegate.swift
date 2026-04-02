@@ -1,6 +1,7 @@
 import AppKit
 import os
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger.app
     private(set) var databaseManager: DatabaseManager?
@@ -10,14 +11,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionManager: SessionManager?
     private var captureEngine: ScreenCaptureEngine?
     private var imageProcessor: ImageProcessor?
+    // Phase 2
+    private var accessibilityEngine: AccessibilityContextEngine?
+    private var ocrPipeline: OCRPipeline?
+    private var policyEngine: CapturePolicyEngine?
+    private var captureScheduler: CaptureScheduler?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("MyMacAgent launched")
         initializeDatabase()
         initializeMonitors()
+        initializePhase2()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        captureScheduler?.stop()
         appMonitor?.stop()
         windowMonitor?.stop()
         idleDetector?.stop()
@@ -69,9 +77,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         logger.info("Monitors initialized")
     }
+
+    private func initializePhase2() {
+        guard let db = databaseManager else { return }
+
+        accessibilityEngine = AccessibilityContextEngine()
+        ocrPipeline = OCRPipeline(provider: VisionOCRProvider(), db: db)
+
+        let policy = CapturePolicyEngine()
+        policyEngine = policy
+
+        let scheduler = CaptureScheduler(policyEngine: policy)
+        scheduler.delegate = self
+        scheduler.start()
+        captureScheduler = scheduler
+
+        logger.info("Phase 2 components initialized (AX, OCR, adaptive capture)")
+    }
+
+    private func performCapture(mode: UncertaintyMode) {
+        guard let appInfo = appMonitor?.currentAppInfo,
+              let sessionManager, let sessionId = sessionManager.currentSessionId,
+              let captureEngine, let imageProcessor, let db = databaseManager else { return }
+
+        // Capture Phase 2 components by value to avoid self capture across isolation boundary
+        let axEngine = accessibilityEngine
+        let ocrPipe = ocrPipeline
+        let policy = policyEngine
+        let scheduler = captureScheduler
+        let pid = appInfo.pid
+
+        Task {
+            do {
+                // 1. Take screenshot
+                let captureResult = try await captureEngine.captureWindow(pid: pid)
+
+                // 2. Compute hash and diff
+                let hash = imageProcessor.visualHash(image: captureResult.image)
+
+                // 3. Save to disk
+                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                let captureDir = appSupport.appendingPathComponent("MyMacAgent/captures", isDirectory: true)
+                try FileManager.default.createDirectory(at: captureDir, withIntermediateDirectories: true)
+                let imagePath = try captureEngine.saveToDisk(result: captureResult, directory: captureDir.path)
+
+                // 4. Persist capture record
+                let captureId = UUID().uuidString
+                let now = ISO8601DateFormatter().string(from: Date())
+                try db.execute("""
+                    INSERT INTO captures (id, session_id, timestamp, capture_type, image_path,
+                        width, height, visual_hash, sampling_mode)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, params: [
+                    .text(captureId), .text(sessionId), .text(now),
+                    .text("window"), .text(imagePath),
+                    .integer(Int64(captureResult.width)), .integer(Int64(captureResult.height)),
+                    hash.map { .text($0) } ?? .null, .text(mode.rawValue)
+                ])
+
+                try sessionManager.recordEvent(sessionId: sessionId, type: .captureTaken, payload: nil)
+
+                // 5. AX snapshot
+                var axTextLen = 0
+                if let axEngine {
+                    if let axSnapshot = axEngine.extract(pid: pid, sessionId: sessionId, captureId: captureId) {
+                        try axEngine.persist(snapshot: axSnapshot, db: db)
+                        axTextLen = axSnapshot.textLen
+                        try sessionManager.recordEvent(sessionId: sessionId, type: .axSnapshotTaken, payload: nil)
+                    }
+                }
+
+                // 6. OCR (if policy says to)
+                var ocrConfidence = 0.0
+                var ocrTextLen = 0
+                let visualDiff: Double = hash != nil ? 0.5 : 0.5 // default: assume change
+
+                if let policy, policy.shouldRunOCR(visualDiffScore: visualDiff, mode: mode) {
+                    try sessionManager.recordEvent(sessionId: sessionId, type: .ocrRequested, payload: nil)
+                    if let ocrPipe {
+                        let ocrResult = try await ocrPipe.process(
+                            image: captureResult.image, captureId: captureId, sessionId: sessionId
+                        )
+                        ocrConfidence = ocrResult.confidence
+                        ocrTextLen = ocrResult.normalizedText?.count ?? 0
+                        try sessionManager.recordEvent(sessionId: sessionId, type: .ocrCompleted, payload: nil)
+                    }
+                }
+
+                // 7. Update readability score and mode
+                let readabilityInput = ReadabilityInput(
+                    axTextLen: axTextLen, ocrConfidence: ocrConfidence, ocrTextLen: ocrTextLen,
+                    visualChangeScore: visualDiff, isCanvasLike: false
+                )
+                scheduler?.updateReadability(readabilityInput)
+
+                // 8. Update session uncertainty mode if changed
+                if let scheduler {
+                    try sessionManager.updateUncertaintyMode(sessionId: sessionId, mode: scheduler.currentMode)
+                }
+
+            } catch {
+                Logger.app.error("Capture failed: \(error.localizedDescription)")
+            }
+        }
+    }
 }
 
-extension AppDelegate: AppMonitorDelegate {
+// MARK: - AppMonitorDelegate
+extension AppDelegate: @preconcurrency AppMonitorDelegate {
     func appMonitor(_ monitor: AppMonitor, didSwitchTo bundleId: String, appName: String, appId: Int64) {
         guard let sessionManager else { return }
         do {
@@ -81,13 +194,20 @@ extension AppDelegate: AppMonitorDelegate {
             if let pid = monitor.currentAppInfo?.pid {
                 windowMonitor?.updateApp(appId: appId, pid: pid)
             }
+            // Reset capture scheduler to normal mode for new app
+            let normalInput = ReadabilityInput(
+                axTextLen: 0, ocrConfidence: 0, ocrTextLen: 0,
+                visualChangeScore: 0, isCanvasLike: false
+            )
+            captureScheduler?.updateReadability(normalInput)
         } catch {
             logger.error("Failed to handle app switch: \(error.localizedDescription)")
         }
     }
 }
 
-extension AppDelegate: WindowMonitorDelegate {
+// MARK: - WindowMonitorDelegate
+extension AppDelegate: @preconcurrency WindowMonitorDelegate {
     func windowMonitor(_ monitor: WindowMonitor, didSwitchTo windowId: Int64, title: String?) {
         guard let sessionManager, let sessionId = sessionManager.currentSessionId else { return }
         do {
@@ -99,10 +219,25 @@ extension AppDelegate: WindowMonitorDelegate {
     }
 }
 
-extension AppDelegate: IdleDetectorDelegate {
+// MARK: - IdleDetectorDelegate
+extension AppDelegate: @preconcurrency IdleDetectorDelegate {
     func idleDetector(_ detector: IdleDetector, didChangeIdleState isIdle: Bool) {
         guard let sessionManager, let sessionId = sessionManager.currentSessionId else { return }
         let eventType: SessionEventType = isIdle ? .idleStarted : .idleEnded
         try? sessionManager.recordEvent(sessionId: sessionId, type: eventType, payload: nil)
+    }
+}
+
+// MARK: - CaptureSchedulerDelegate
+extension AppDelegate: @preconcurrency CaptureSchedulerDelegate {
+    func captureScheduler(_ scheduler: CaptureScheduler, shouldCaptureWithMode mode: UncertaintyMode) {
+        performCapture(mode: mode)
+    }
+
+    func captureScheduler(_ scheduler: CaptureScheduler, didChangeMode mode: UncertaintyMode) {
+        guard let sessionManager, let sessionId = sessionManager.currentSessionId else { return }
+        try? sessionManager.recordEvent(sessionId: sessionId, type: .modeChanged, payload:
+            "{\"mode\":\"\(mode.rawValue)\"}")
+        logger.info("Capture mode changed to \(mode.rawValue)")
     }
 }
