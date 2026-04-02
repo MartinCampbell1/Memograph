@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Phase 4
     private var retentionWorker: RetentionWorker?
     private var retentionTimer: Timer?
+    private var autoSummaryTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("MyMacAgent launched")
@@ -34,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        autoSummaryTimer?.invalidate()
+        autoSummaryTimer = nil
         retentionTimer?.invalidate()
         retentionTimer = nil
         captureScheduler?.stop()
@@ -130,7 +133,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Run once on startup
         try? retentionWorker?.runAll()
 
-        logger.info("Phase 4 initialized (retention, UI data)")
+        // Auto-generate summary every hour if user is active
+        autoSummaryTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.autoGenerateSummaryIfActive()
+        }
+
+        logger.info("Phase 4 initialized (retention, hourly auto-summary)")
+    }
+
+    private func autoGenerateSummaryIfActive() {
+        // Only generate if user was active (not idle) and we have an API key
+        guard let idleDetector, !idleDetector.isIdle else {
+            logger.info("Skipping auto-summary: user is idle")
+            return
+        }
+        let settings = AppSettings()
+        guard settings.hasApiKey else {
+            logger.info("Skipping auto-summary: no API key configured")
+            return
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let today = formatter.string(from: Date())
+
+        generateDailySummary(for: today, apiKey: settings.openRouterApiKey)
+        logger.info("Auto-summary triggered for \(today)")
     }
 
     private func performCapture(mode: UncertaintyMode) {
@@ -241,10 +268,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func generateDailySummary(for date: String, apiKey: String) {
+    func generateDailySummary(for date: String, apiKey: String? = nil) {
         Task { @MainActor in
             do {
-                let client = LLMClient(apiKey: apiKey)
+                let settings = AppSettings()
+                let key = apiKey ?? settings.openRouterApiKey
+                let client = LLMClient(apiKey: key, model: settings.llmModel)
                 guard let summarizer = dailySummarizer else { return }
                 let summary = try await summarizer.summarize(for: date, using: client)
                 if let exporter = obsidianExporter {

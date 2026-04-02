@@ -1,6 +1,5 @@
 import AppKit
 @preconcurrency import ScreenCaptureKit
-import CoreGraphics
 import os
 
 struct CaptureResult: @unchecked Sendable {
@@ -22,15 +21,13 @@ final class ScreenCaptureEngine: Sendable {
             throw CaptureError.windowNotFound
         }
 
-        let windowID = CGWindowID(window.windowID)
-        guard let cgImage = CGWindowListCreateImage(
-            .null,
-            .optionIncludingWindow,
-            windowID,
-            [.boundsIgnoreFraming, .nominalResolution]
-        ) else {
-            throw CaptureError.windowNotFound
-        }
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let config = SCStreamConfiguration()
+        config.width = Int(window.frame.width) * 2
+        config.height = Int(window.frame.height) * 2
+        config.showsCursor = false
+
+        let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
 
         let width = Int(window.frame.width)
         let height = Int(window.frame.height)
@@ -45,13 +42,22 @@ final class ScreenCaptureEngine: Sendable {
     }
 
     func captureScreen() async throws -> CaptureResult {
-        guard let mainDisplay = CGMainDisplayID() as CGDirectDisplayID?,
-              let cgImage = CGDisplayCreateImage(mainDisplay) else {
+        let content = try await SCShareableContent.current
+
+        guard let display = content.displays.first else {
             throw CaptureError.displayNotFound
         }
 
-        let width = cgImage.width
-        let height = cgImage.height
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let config = SCStreamConfiguration()
+        config.width = Int(display.width) * 2
+        config.height = Int(display.height) * 2
+        config.showsCursor = false
+
+        let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+
+        let width = Int(display.width)
+        let height = Int(display.height)
         let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
 
         return CaptureResult(

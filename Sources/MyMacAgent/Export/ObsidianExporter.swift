@@ -14,6 +14,11 @@ final class ObsidianExporter {
     func renderDailyNote(summary: DailySummaryRecord) throws -> String {
         var md = "# Daily Log — \(summary.date)\n\n"
 
+        // Navigation links (graph connections between days)
+        let prevDay = offsetDate(summary.date, by: -1)
+        let nextDay = offsetDate(summary.date, by: 1)
+        md += "← [[Daily/\(prevDay)|\(prevDay)]] | [[Daily/\(nextDay)|\(nextDay)]] →\n\n"
+
         // Summary
         md += "## Summary\n"
         md += "\(summary.summaryText ?? "No summary available.")\n\n"
@@ -39,7 +44,7 @@ final class ObsidianExporter {
            let topicsData = topicsJson.data(using: .utf8),
            let topics = try? JSONSerialization.jsonObject(with: topicsData) as? [String] {
             for topic in topics {
-                md += "- \(topic)\n"
+                md += "- [[\(topic)]]\n"
             }
         } else {
             md += "- No topics extracted\n"
@@ -117,6 +122,14 @@ final class ObsidianExporter {
         let hours = minutes / 60
         let mins = minutes % 60
         return "\(hours)h \(String(format: "%02d", mins))m"
+    }
+
+    private func offsetDate(_ dateStr: String, by days: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: dateStr) else { return dateStr }
+        guard let offset = Calendar.current.date(byAdding: .day, value: days, to: date) else { return dateStr }
+        return formatter.string(from: offset)
     }
 
     private func formatTime(_ isoString: String) -> String {
