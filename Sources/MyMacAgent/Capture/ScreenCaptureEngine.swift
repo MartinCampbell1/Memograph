@@ -13,6 +13,9 @@ final class ScreenCaptureEngine: Sendable {
     nonisolated(unsafe) private let logger = Logger.capture
 
     func captureWindow(pid: pid_t) async throws -> CaptureResult {
+        guard CGPreflightScreenCaptureAccess() else {
+            throw CaptureError.windowNotFound
+        }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard let window = content.windows.first(where: {

@@ -21,11 +21,13 @@ struct MyMacAgentApp: App {
         }
 
         Settings {
-            if permissionsManager.allGranted {
+            TabView {
                 SettingsView()
-            } else {
+                    .tabItem { Label("General", systemImage: "gear") }
                 PermissionsView(manager: permissionsManager)
+                    .tabItem { Label("Permissions", systemImage: "lock.shield") }
             }
+            .frame(width: 500, height: 400)
         }
     }
 }

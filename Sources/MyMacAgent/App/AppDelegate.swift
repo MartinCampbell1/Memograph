@@ -164,6 +164,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performCapture(mode: UncertaintyMode) {
+        // Only attempt capture if we have Screen Recording permission
+        guard CGPreflightScreenCaptureAccess() else {
+            logger.info("Skipping capture: no screen recording permission")
+            return
+        }
+
         guard let appInfo = appMonitor?.currentAppInfo,
               let sessionManager, let sessionId = sessionManager.currentSessionId,
               let captureEngine, let imageProcessor, let db = databaseManager else { return }
