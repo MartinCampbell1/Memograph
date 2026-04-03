@@ -91,10 +91,12 @@ enum CaptureRetentionMode: String, CaseIterable, Identifiable {
 struct AppSettings {
     private let defaults: UserDefaults
     private let credentialsStore: any CredentialsStore
+    private let legacyCredentialsStore: any CredentialsStore
     private static let hasExternalAPIKeyKey = "hasExternalAPIKey"
     private static let experimentalAudioOptInConfirmedKey = "experimentalAudioOptInConfirmed"
+    private static let migratedOffKeychainKey = "migratedOffKeychain"
 
-    static let sharedCredentialsStore: any CredentialsStore =
+    static let sharedLegacyCredentialsStore: any CredentialsStore =
         KeychainCredentialsStore(service: "com.memograph.credentials")
 
     static let defaultBlacklistedBundleIds = [
@@ -127,11 +129,16 @@ struct AppSettings {
 
     init(
         defaults: UserDefaults = .standard,
-        credentialsStore: any CredentialsStore = AppSettings.sharedCredentialsStore
+        credentialsStore: (any CredentialsStore)? = nil,
+        legacyCredentialsStore: (any CredentialsStore)? = nil
     ) {
         self.defaults = defaults
         self.credentialsStore = credentialsStore
+            ?? PreferencesCredentialsStore(defaults: defaults)
+        self.legacyCredentialsStore = legacyCredentialsStore
+            ?? (credentialsStore == nil ? AppSettings.sharedLegacyCredentialsStore : NoOpCredentialsStore())
         migrateLegacyCredentialsIfNeeded()
+        migrateAwayFromKeychainIfNeeded()
         migrateExperimentalAudioOptInIfNeeded()
     }
 
@@ -435,6 +442,7 @@ struct AppSettings {
 
     func forgetCredentials() {
         credentialsStore.removeValue(for: "externalAPIKey")
+        legacyCredentialsStore.removeValue(for: "externalAPIKey")
         defaults.set(false, forKey: Self.hasExternalAPIKeyKey)
     }
 
@@ -449,6 +457,30 @@ struct AppSettings {
         }
         defaults.set(true, forKey: Self.hasExternalAPIKeyKey)
         defaults.removeObject(forKey: "openRouterApiKey")
+    }
+
+    private func migrateAwayFromKeychainIfNeeded() {
+        guard !defaults.bool(forKey: Self.migratedOffKeychainKey) else {
+            return
+        }
+
+        let storedLocalValue = credentialsStore
+            .string(for: "externalAPIKey")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if storedLocalValue.isEmpty,
+           let legacyValue = legacyCredentialsStore
+            .string(for: "externalAPIKey")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !legacyValue.isEmpty {
+            credentialsStore.set(legacyValue, for: "externalAPIKey")
+            defaults.set(true, forKey: Self.hasExternalAPIKeyKey)
+        } else if storedLocalValue.isEmpty {
+            defaults.set(false, forKey: Self.hasExternalAPIKeyKey)
+        }
+
+        legacyCredentialsStore.removeValue(for: "externalAPIKey")
+        defaults.set(true, forKey: Self.migratedOffKeychainKey)
     }
 
     private func migrateExperimentalAudioOptInIfNeeded() {

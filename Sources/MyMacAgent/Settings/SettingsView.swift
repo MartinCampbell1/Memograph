@@ -232,7 +232,7 @@ struct SettingsView: View {
                 diagnosticsRow("Data folder", value: dataDirectoryPath)
                 diagnosticsRow("Summary provider", value: summaryProvider.label)
                 diagnosticsRow("Vision provider", value: visionProvider.label)
-                diagnosticsRow("Stored API key", value: hasStoredExternalAPIKey ? "Saved in Keychain" : "Not set")
+                diagnosticsRow("Stored API key", value: hasStoredExternalAPIKey ? "Saved locally in Memograph" : "Not set")
             }
 
             settingsCard("Danger Zone") {
@@ -266,15 +266,15 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                settingRow("API key", help: "Stored in Keychain. The field stays empty unless you paste a replacement key.") {
+                settingRow("API key", help: "Stored locally in Memograph settings on this Mac. The field stays empty unless you paste a replacement key.") {
                     VStack(alignment: .leading, spacing: 8) {
                         SecureField(hasStoredExternalAPIKey ? "Key already stored. Paste a new key to replace it." : "Paste API key", text: $externalAPIKey)
                             .textFieldStyle(.roundedBorder)
 
                         HStack(spacing: 8) {
                             Label(
-                                hasStoredExternalAPIKey ? "Saved in login Keychain" : "No stored key yet",
-                                systemImage: hasStoredExternalAPIKey ? "checkmark.shield.fill" : "key.slash"
+                                hasStoredExternalAPIKey ? "Saved locally in Memograph" : "No stored key yet",
+                                systemImage: hasStoredExternalAPIKey ? "checkmark.circle.fill" : "key.slash"
                             )
                             .font(.caption)
                             .foregroundStyle(hasStoredExternalAPIKey ? .green : .secondary)

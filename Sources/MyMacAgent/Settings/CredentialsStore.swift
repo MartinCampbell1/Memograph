@@ -9,6 +9,39 @@ protocol CredentialsStore: Sendable {
     func removeValue(for key: String)
 }
 
+final class PreferencesCredentialsStore: CredentialsStore, @unchecked Sendable {
+    private let defaults: UserDefaults
+    private let namespace: String
+
+    init(defaults: UserDefaults = .standard, namespace: String = "com.memograph.credentials.") {
+        self.defaults = defaults
+        self.namespace = namespace
+    }
+
+    func hasValue(for key: String) -> Bool {
+        guard let value = defaults.string(forKey: namespacedKey(key)) else {
+            return false
+        }
+        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func string(for key: String) -> String? {
+        defaults.string(forKey: namespacedKey(key))
+    }
+
+    func set(_ value: String, for key: String) {
+        defaults.set(value, forKey: namespacedKey(key))
+    }
+
+    func removeValue(for key: String) {
+        defaults.removeObject(forKey: namespacedKey(key))
+    }
+
+    private func namespacedKey(_ key: String) -> String {
+        namespace + key
+    }
+}
+
 final class KeychainCredentialsStore: CredentialsStore, @unchecked Sendable {
     private let service: String
 
@@ -33,6 +66,9 @@ final class KeychainCredentialsStore: CredentialsStore, @unchecked Sendable {
         var query = baseQuery(for: key)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
 
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -90,4 +126,11 @@ final class InMemoryCredentialsStore: CredentialsStore, @unchecked Sendable {
     func removeValue(for key: String) {
         values.removeValue(forKey: key)
     }
+}
+
+struct NoOpCredentialsStore: CredentialsStore {
+    func hasValue(for key: String) -> Bool { false }
+    func string(for key: String) -> String? { nil }
+    func set(_ value: String, for key: String) {}
+    func removeValue(for key: String) {}
 }

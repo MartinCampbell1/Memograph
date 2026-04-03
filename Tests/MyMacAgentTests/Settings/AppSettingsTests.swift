@@ -32,6 +32,19 @@ struct AppSettingsTests {
         #expect(settings2.retentionDays == 14)
     }
 
+    @Test("Default credentials storage persists locally without Keychain")
+    func persistsInLocalSettingsStore() {
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        let legacyStore = InMemoryCredentialsStore()
+
+        var settings = AppSettings(defaults: defaults, legacyCredentialsStore: legacyStore)
+        settings.openRouterApiKey = "sk-local-123"
+
+        let settings2 = AppSettings(defaults: defaults, legacyCredentialsStore: legacyStore)
+        #expect(settings2.openRouterApiKey == "sk-local-123")
+        #expect(settings2.hasApiKey)
+    }
+
     @Test("hasApiKey returns true when key is set")
     func hasApiKey() {
         let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
@@ -52,5 +65,18 @@ struct AppSettingsTests {
 
         #expect(settings.hasApiKey)
         #expect(defaults.bool(forKey: "hasExternalAPIKey"))
+    }
+
+    @Test("Legacy Keychain value migrates into local settings store")
+    func migratesLegacyKeychainValue() {
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        let legacyStore = InMemoryCredentialsStore()
+        legacyStore.set("sk-legacy", for: "externalAPIKey")
+
+        let settings = AppSettings(defaults: defaults, legacyCredentialsStore: legacyStore)
+
+        #expect(settings.openRouterApiKey == "sk-legacy")
+        #expect(settings.hasApiKey)
+        #expect(!legacyStore.hasValue(for: "externalAPIKey"))
     }
 }
