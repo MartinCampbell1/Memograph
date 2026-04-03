@@ -638,6 +638,232 @@ struct KnowledgePipelineTests {
         #expect(rows.first?["to_name"]?.textValue == "System Audio Capture")
     }
 
+    @Test("Durable topics gain tool relations from session evidence")
+    func durableTopicsGainToolRelations() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Investigated [[System Audio Capture]] inside [[Codex]] while debugging Memograph.
+            """,
+            topAppsJson: """
+            [{"name":"Codex","duration_min":35}]
+            """,
+            topTopicsJson: """
+            ["System Audio Capture"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T10:00:00Z","window_end":"2026-04-03T11:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-03T11:01:55Z",
+            modelName: "google/gemini-3-flash-preview",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Codex",
+                bundleId: "com.openai.codex",
+                windowTitles: ["System audio capture runtime"],
+                startedAt: "2026-04-03T10:00:00Z",
+                endedAt: "2026-04-03T10:50:00Z",
+                durationMs: 3_000_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Investigated system audio capture retry logic"]
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let topicClaims = try db.query("""
+            SELECT kc.predicate, kc.object_text
+            FROM knowledge_claims kc
+            JOIN knowledge_entities ke ON ke.id = kc.subject_entity_id
+            WHERE ke.canonical_name = 'System Audio Capture'
+            ORDER BY kc.predicate, kc.object_text
+        """)
+
+        #expect(topicClaims.contains {
+            $0["predicate"]?.textValue == "worked_with_tool" &&
+            $0["object_text"]?.textValue == "Codex"
+        })
+
+        let edgeRows = try db.query("""
+            SELECT e_from.canonical_name AS from_name, e_to.canonical_name AS to_name, edge.edge_type
+            FROM knowledge_edges edge
+            JOIN knowledge_entities e_from ON e_from.id = edge.from_entity_id
+            JOIN knowledge_entities e_to ON e_to.id = edge.to_entity_id
+            WHERE edge.edge_type = 'works_on_topic'
+        """)
+
+        #expect(edgeRows.contains {
+            $0["from_name"]?.textValue == "Codex" &&
+            $0["to_name"]?.textValue == "System Audio Capture"
+        })
+    }
+
+    @Test("Summary-only passive tools do not create topic relations without session evidence")
+    func passiveToolsDoNotLeakIntoTopicRelations() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Exported notes to [[Obsidian]] after investigating [[System Audio Capture]].
+            """,
+            topAppsJson: """
+            [{"name":"Obsidian","duration_min":10}]
+            """,
+            topTopicsJson: """
+            ["System Audio Capture","Obsidian Knowledge Graph"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T10:00:00Z","window_end":"2026-04-03T11:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-03T11:01:55Z",
+            modelName: "google/gemini-3-flash-preview",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Obsidian",
+                bundleId: "md.obsidian",
+                windowTitles: ["Daily notes"],
+                startedAt: "2026-04-03T10:00:00Z",
+                endedAt: "2026-04-03T10:10:00Z",
+                durationMs: 600_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Exported the latest notes into the vault"]
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let edgeRows = try db.query("""
+            SELECT e_from.canonical_name AS from_name, e_to.canonical_name AS to_name
+            FROM knowledge_edges edge
+            JOIN knowledge_entities e_from ON e_from.id = edge.from_entity_id
+            JOIN knowledge_entities e_to ON e_to.id = edge.to_entity_id
+            WHERE edge.edge_type = 'works_on_topic'
+        """)
+
+        #expect(!edgeRows.contains {
+            $0["from_name"]?.textValue == "Obsidian" &&
+            $0["to_name"]?.textValue == "System Audio Capture"
+        })
+    }
+
+    @Test("Durable topic families gain typed topic relations")
+    func durableTopicFamiliesGainTypedRelations() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Compared [[Q4 quantization]] requirements with [[VRAM]] limits while researching local models.
+            """,
+            topAppsJson: """
+            [{"name":"Safari","duration_min":25}]
+            """,
+            topTopicsJson: """
+            ["Q4 quantization","VRAM","Hardware for AI"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T10:00:00Z","window_end":"2026-04-03T11:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-03T11:01:55Z",
+            modelName: "google/gemini-3-flash-preview",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Safari",
+                bundleId: "com.apple.Safari",
+                windowTitles: ["VRAM and quantization notes"],
+                startedAt: "2026-04-03T10:00:00Z",
+                endedAt: "2026-04-03T10:25:00Z",
+                durationMs: 1_500_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Compared q4 quantization tradeoffs against available VRAM"]
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let topicClaims = try db.query("""
+            SELECT kc.predicate, kc.object_text
+            FROM knowledge_claims kc
+            JOIN knowledge_entities ke ON ke.id = kc.subject_entity_id
+            WHERE ke.canonical_name = 'Q4 quantization'
+            ORDER BY kc.predicate, kc.object_text
+        """)
+
+        #expect(topicClaims.contains {
+            $0["predicate"]?.textValue == "related_topic" &&
+            $0["object_text"]?.textValue == "VRAM"
+        })
+
+        let edgeRows = try db.query("""
+            SELECT e_from.canonical_name AS from_name, e_to.canonical_name AS to_name, edge.edge_type
+            FROM knowledge_edges edge
+            JOIN knowledge_entities e_from ON e_from.id = edge.from_entity_id
+            JOIN knowledge_entities e_to ON e_to.id = edge.to_entity_id
+            WHERE edge.edge_type = 'related_topic'
+        """)
+
+        #expect(edgeRows.contains {
+            Set([$0["from_name"]?.textValue ?? "", $0["to_name"]?.textValue ?? ""]) == Set(["Q4 quantization", "VRAM"])
+        })
+    }
+
     @Test("Knowledge entities track window boundaries instead of only summary midnight")
     func knowledgeEntitiesTrackWindowBoundaries() throws {
         let (db, path) = try makeDB()

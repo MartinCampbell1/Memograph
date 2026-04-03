@@ -278,8 +278,11 @@ final class KnowledgeCompiler {
             "surfaced_in_window",
             "used_during_window",
             "topic_in_focus",
+            "related_topic",
             "uses_tool",
             "supports_project",
+            "works_on_topic",
+            "worked_with_tool",
             "focuses_on_topic",
             "relevant_to_project",
             "blocked_by_issue",
@@ -324,10 +327,16 @@ final class KnowledgeCompiler {
                 return "\(entity.canonicalName) was used in \(count) captured work window\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
             case "topic_in_focus":
                 return "\(entity.canonicalName) appeared as a focus topic in \(count) summary window\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
+            case "related_topic":
+                return "\(entity.canonicalName) was strongly connected to \(count) related topic\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
             case "uses_tool":
                 return "\(entity.canonicalName) was worked on with \(count) tool relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
             case "supports_project":
                 return "\(entity.canonicalName) supported \(count) project relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "works_on_topic":
+                return "\(entity.canonicalName) was used on \(count) topic relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "worked_with_tool":
+                return "\(entity.canonicalName) was worked with \(count) tool relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
             case "focuses_on_topic":
                 return "\(entity.canonicalName) focused on \(count) topic relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
             case "relevant_to_project":
@@ -365,10 +374,16 @@ final class KnowledgeCompiler {
             return object.map { "Advanced in summary window \($0)." } ?? "Advanced in a summary window."
         case "topic_in_focus":
             return object.map { "Appeared as a focus topic for \($0)." } ?? "Appeared as a focus topic."
+        case "related_topic":
+            return object.map { "Closely related to topic \($0)." } ?? "Closely related to another topic."
         case "uses_tool":
             return object.map { "Worked on with \($0)." } ?? "Worked on with a tool."
         case "supports_project":
             return object.map { "Supported work on \($0)." } ?? "Supported work on a project."
+        case "works_on_topic":
+            return object.map { "Used on topic \($0)." } ?? "Used on a topic."
+        case "worked_with_tool":
+            return object.map { "Worked with tool \($0)." } ?? "Worked with a tool."
         case "focuses_on_topic":
             return object.map { "Focused on \($0)." } ?? "Focused on a topic."
         case "relevant_to_project":
@@ -433,7 +448,7 @@ final class KnowledgeCompiler {
         case "focuses_on_topic", "relevant_to_project":
             guard graphShaper.isMeaningfulProjectRelationTopic(object) else { return nil }
             return visibleRelationObjects.isEmpty || visibleRelationObjects.contains(object) ? object : nil
-        case "uses_tool", "supports_project", "uses_model", "used_in_project", "blocked_by_issue",
+        case "related_topic", "uses_tool", "supports_project", "works_on_topic", "worked_with_tool", "uses_model", "used_in_project", "blocked_by_issue",
              "affects_project", "generates_lesson", "derived_from_project", "explains_topic", "documented_in_lesson":
             return visibleRelationObjects.isEmpty || visibleRelationObjects.contains(object) ? object : nil
         default:
@@ -600,6 +615,10 @@ final class KnowledgeCompiler {
         switch (entityType, predicate) {
         case (.project, "uses_tool"), (.tool, "supports_project"):
             return 2
+        case (.tool, "works_on_topic"), (.topic, "worked_with_tool"):
+            return 2
+        case (.topic, "related_topic"):
+            return 2
         default:
             return 1
         }
@@ -611,9 +630,11 @@ final class KnowledgeCompiler {
             return 6
         case "topic_in_focus":
             return entityType == .topic ? 6 : 1
+        case "related_topic":
+            return entityType == .topic ? 5 : 2
         case "blocked_by_issue", "affects_project":
             return 5
-        case "uses_tool", "supports_project":
+        case "uses_tool", "supports_project", "works_on_topic", "worked_with_tool":
             return 4
         case "focuses_on_topic", "relevant_to_project", "uses_model", "used_in_project", "generates_lesson", "derived_from_project":
             return 3
@@ -654,8 +675,10 @@ final class KnowledgeCompiler {
 
     private func relationPriority(_ edgeType: String) -> Int {
         switch edgeType {
-        case "blocked_by_issue", "uses_tool", "focuses_on_topic", "uses_model", "generates_lesson", "explains_topic":
+        case "blocked_by_issue", "uses_tool", "works_on_topic", "focuses_on_topic", "uses_model", "generates_lesson", "explains_topic":
             return 3
+        case "related_topic":
+            return 2
         case "co_occurs_with":
             return 1
         default:
@@ -687,6 +710,12 @@ final class KnowledgeCompiler {
             return relationship.direction == .outgoing
                 ? "tool used in this project"
                 : "project this tool was used in"
+        case "works_on_topic":
+            return relationship.direction == .outgoing
+                ? "topic worked on with this tool"
+                : "tool used for this topic"
+        case "related_topic":
+            return "closely related topic"
         case "focuses_on_topic":
             return relationship.direction == .outgoing
                 ? "focus topic for this project"

@@ -35,6 +35,17 @@ final class ClaimExtractor {
     private let normalizer: EntityNormalizer
     private let dateSupport: LocalDateSupport
     private let graphShaper = GraphShaper()
+    private let toolTopicAffinityMap: [String: Set<String>] = [
+        "obsidian": ["obsidian knowledge graph", "personal knowledge management"],
+        "system settings": [
+            "accessibility permissions",
+            "accessibility api",
+            "full disk access",
+            "privacy & security",
+            "screen recording",
+            "system audio capture"
+        ]
+    ]
     private let relationStopTokens: Set<String> = [
         "the", "and", "for", "with", "from", "into", "onto", "guide",
         "roadmap", "benchmarks", "benchmark", "analysis", "report", "plan",
@@ -131,9 +142,16 @@ final class ClaimExtractor {
             window: window
         )
         claims.append(contentsOf: relationExtraction.claims)
+        let durableTopicRelations = buildDurableTopicRelations(
+            from: allEntities.filter { $0.entityType == .topic },
+            summaryBlocks: summaryBlocks(from: summary.summaryText ?? ""),
+            sessions: sessions,
+            window: window
+        )
+        claims.append(contentsOf: durableTopicRelations.claims)
 
         let fallbackEdges = buildFallbackCoOccurrenceEdges(from: allEntities)
-        let edges = relationExtraction.edges + fallbackEdges
+        let edges = relationExtraction.edges + durableTopicRelations.edges + fallbackEdges
 
         return KnowledgeExtractionResult(
             entities: allEntities.sorted { $0.canonicalName < $1.canonicalName },
@@ -253,6 +271,14 @@ final class ClaimExtractor {
                 confidence: 0.76
             ),
             RelationSpec(
+                fromType: .tool,
+                toType: .topic,
+                edgeType: "works_on_topic",
+                forwardPredicate: "works_on_topic",
+                reversePredicate: "worked_with_tool",
+                confidence: 0.74
+            ),
+            RelationSpec(
                 fromType: .lesson,
                 toType: .topic,
                 edgeType: "explains_topic",
@@ -326,6 +352,13 @@ final class ClaimExtractor {
                 summaryBlocks: summaryBlocks,
                 sessions: sessions
             )
+        case "works_on_topic":
+            return hasToolTopicEvidence(
+                tool: from,
+                topic: to,
+                summaryBlocks: summaryBlocks,
+                sessions: sessions
+            )
         case "explains_topic":
             return hasSemanticNameOverlap(lhs: from.canonicalName, rhs: to.canonicalName)
         default:
@@ -367,6 +400,138 @@ final class ClaimExtractor {
             return projectSessions.contains { sessionMentionsEntity($0, entity: target) }
         default:
             return false
+        }
+    }
+
+    private func hasToolTopicEvidence(
+        tool: KnowledgeEntityCandidate,
+        topic: KnowledgeEntityCandidate,
+        summaryBlocks: [String],
+        sessions: [SessionData]
+    ) -> Bool {
+        guard tool.entityType == .tool, topic.entityType == .topic else { return false }
+        guard graphShaper.isMeaningfulProjectRelationTopic(topic.canonicalName) else { return false }
+
+        let toolSessions = sessions.filter { sessionUsesTool($0, tool: tool) }
+        if toolSessions.contains(where: { sessionMentionsEntity($0, entity: topic) }) {
+            return true
+        }
+
+        guard hasToolTopicAffinity(tool: tool, topic: topic) else { return false }
+        let relevantBlocks = summaryBlocks.filter { blockContainsEntity($0, entity: tool) }
+        return relevantBlocks.contains(where: { blockContainsEntity($0, entity: topic) })
+    }
+
+    private func buildDurableTopicRelations(
+        from topics: [KnowledgeEntityCandidate],
+        summaryBlocks: [String],
+        sessions: [SessionData],
+        window: SummaryWindowDescriptor
+    ) -> (claims: [KnowledgeClaimCandidate], edges: [KnowledgeEdgeCandidate]) {
+        let sortedTopics = topics.sorted { $0.stableKey < $1.stableKey }
+        guard sortedTopics.count > 1 else {
+            return ([], [])
+        }
+
+        var claims: [KnowledgeClaimCandidate] = []
+        var edges: [KnowledgeEdgeCandidate] = []
+
+        for leftIndex in 0..<(sortedTopics.count - 1) {
+            for rightIndex in (leftIndex + 1)..<sortedTopics.count {
+                let lhs = sortedTopics[leftIndex]
+                let rhs = sortedTopics[rightIndex]
+                guard shouldRelateDurableTopics(
+                    lhs,
+                    rhs,
+                    summaryBlocks: summaryBlocks,
+                    sessions: sessions
+                ) else {
+                    continue
+                }
+
+                claims.append(KnowledgeClaimCandidate(
+                    subjectKey: lhs.stableKey,
+                    predicate: "related_topic",
+                    objectText: rhs.canonicalName,
+                    confidence: 0.72,
+                    qualifiers: ["window": timeLabel(window: window)],
+                    sourceKind: "relation_inference"
+                ))
+                claims.append(KnowledgeClaimCandidate(
+                    subjectKey: rhs.stableKey,
+                    predicate: "related_topic",
+                    objectText: lhs.canonicalName,
+                    confidence: 0.72,
+                    qualifiers: ["window": timeLabel(window: window)],
+                    sourceKind: "relation_inference"
+                ))
+                edges.append(KnowledgeEdgeCandidate(
+                    fromKey: lhs.stableKey,
+                    toKey: rhs.stableKey,
+                    edgeType: "related_topic",
+                    weight: 1
+                ))
+            }
+        }
+
+        return (claims, edges)
+    }
+
+    private func shouldRelateDurableTopics(
+        _ lhs: KnowledgeEntityCandidate,
+        _ rhs: KnowledgeEntityCandidate,
+        summaryBlocks: [String],
+        sessions: [SessionData]
+    ) -> Bool {
+        guard lhs.entityType == .topic, rhs.entityType == .topic else { return false }
+        guard graphShaper.isMeaningfulProjectRelationTopic(lhs.canonicalName) else { return false }
+        guard graphShaper.isMeaningfulProjectRelationTopic(rhs.canonicalName) else { return false }
+        guard topicFamilyKey(for: lhs.canonicalName) == topicFamilyKey(for: rhs.canonicalName) else {
+            return false
+        }
+
+        if summaryBlocks.contains(where: { blockContainsEntity($0, entity: lhs) && blockContainsEntity($0, entity: rhs) }) {
+            return true
+        }
+
+        return sessions.contains { session in
+            sessionMentionsEntity(session, entity: lhs) && sessionMentionsEntity(session, entity: rhs)
+        }
+    }
+
+    private func hasToolTopicAffinity(tool: KnowledgeEntityCandidate, topic: KnowledgeEntityCandidate) -> Bool {
+        let toolKey = normalizedKey(tool.canonicalName)
+        let topicKey = normalizedKey(topic.canonicalName)
+        if hasSemanticNameOverlap(lhs: tool.canonicalName, rhs: topic.canonicalName) {
+            return true
+        }
+        return toolTopicAffinityMap[toolKey]?.contains(topicKey) == true
+    }
+
+    private func topicFamilyKey(for topicName: String) -> String? {
+        let key = normalizedKey(topicName)
+        switch key {
+        case "accessibility api",
+             "accessibility permissions",
+             "full disk access",
+             "privacy & security",
+             "privacy-focused ocr",
+             "screen recording",
+             "screencap",
+             "screencapturekit",
+             "system audio capture",
+             "ocr":
+            return "capture-stack"
+        case "hardware for ai",
+             "local llm",
+             "q4 quantization",
+             "vram":
+            return "local-ai"
+        case "obsidian knowledge graph",
+             "personal knowledge management":
+            return "knowledge"
+        default:
+            return nil
         }
     }
 
