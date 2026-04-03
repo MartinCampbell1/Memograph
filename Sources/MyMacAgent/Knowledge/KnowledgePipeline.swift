@@ -14,6 +14,7 @@ final class KnowledgePipeline {
     private let dateSupport: LocalDateSupport
     private let extractor: ClaimExtractor
     private let compiler: KnowledgeCompiler
+    private let maintenance: KnowledgeMaintenance
     private let normalizer: EntityNormalizer
     private let graphShaper: GraphShaper
     private let logger = Logger.knowledge
@@ -24,6 +25,7 @@ final class KnowledgePipeline {
         self.normalizer = EntityNormalizer()
         self.extractor = ClaimExtractor(normalizer: normalizer, timeZone: timeZone)
         self.compiler = KnowledgeCompiler(db: db, timeZone: timeZone, normalizer: normalizer)
+        self.maintenance = KnowledgeMaintenance(db: db, timeZone: timeZone)
         self.graphShaper = GraphShaper()
     }
 
@@ -132,6 +134,9 @@ final class KnowledgePipeline {
         if let exporter {
             let indexMarkdown = try compiler.buildIndexMarkdown()
             _ = try? exporter.exportKnowledgeIndex(indexMarkdown)
+
+            let maintenanceMarkdown = try maintenance.buildMarkdown(materializedEntityIds: materializedIds)
+            _ = try? exporter.exportKnowledgeMaintenance(maintenanceMarkdown)
         }
 
         return noteCount
@@ -343,19 +348,62 @@ final class KnowledgePipeline {
     }
 
     private func loadEntityMetrics() throws -> [KnowledgeEntityMetrics] {
-        try db.query("""
-            SELECT e.*, COUNT(c.id) AS claim_count
-            FROM knowledge_entities e
-            LEFT JOIN knowledge_claims c ON c.subject_entity_id = e.id
-            GROUP BY e.id
-            ORDER BY e.entity_type, e.canonical_name
-        """).compactMap { row in
-            guard let entity = KnowledgeEntityRecord(row: row) else {
-                return nil
+        let entities = try db.query("""
+            SELECT *
+            FROM knowledge_entities
+            ORDER BY entity_type, canonical_name
+        """).compactMap(KnowledgeEntityRecord.init(row:))
+
+        let claimCountRows = try db.query("""
+            SELECT subject_entity_id, COUNT(*) AS claim_count
+            FROM knowledge_claims
+            GROUP BY subject_entity_id
+        """)
+        var claimCounts: [String: Int] = [:]
+        for row in claimCountRows {
+            guard let entityId = row["subject_entity_id"]?.textValue else { continue }
+            claimCounts[entityId] = Int(row["claim_count"]?.intValue ?? 0)
+        }
+
+        let entityTypeById = Dictionary(uniqueKeysWithValues: entities.map { ($0.id, $0.entityType) })
+        let edgeRows = try db.query("""
+            SELECT from_entity_id, to_entity_id, edge_type
+            FROM knowledge_edges
+        """)
+        var typedEdgeCounts: [String: Int] = [:]
+        var coOccurrenceEdgeCounts: [String: Int] = [:]
+        var projectRelationCounts: [String: Int] = [:]
+
+        for row in edgeRows {
+            guard let fromEntityId = row["from_entity_id"]?.textValue,
+                  let toEntityId = row["to_entity_id"]?.textValue,
+                  let edgeType = row["edge_type"]?.textValue else {
+                continue
             }
-            return KnowledgeEntityMetrics(
+
+            if edgeType == "co_occurs_with" {
+                coOccurrenceEdgeCounts[fromEntityId, default: 0] += 1
+                coOccurrenceEdgeCounts[toEntityId, default: 0] += 1
+            } else {
+                typedEdgeCounts[fromEntityId, default: 0] += 1
+                typedEdgeCounts[toEntityId, default: 0] += 1
+            }
+
+            if entityTypeById[toEntityId] == .project {
+                projectRelationCounts[fromEntityId, default: 0] += 1
+            }
+            if entityTypeById[fromEntityId] == .project {
+                projectRelationCounts[toEntityId, default: 0] += 1
+            }
+        }
+
+        return entities.map { entity in
+            KnowledgeEntityMetrics(
                 entity: entity,
-                claimCount: Int(row["claim_count"]?.intValue ?? 0)
+                claimCount: claimCounts[entity.id] ?? 0,
+                typedEdgeCount: typedEdgeCounts[entity.id] ?? 0,
+                coOccurrenceEdgeCount: coOccurrenceEdgeCounts[entity.id] ?? 0,
+                projectRelationCount: projectRelationCounts[entity.id] ?? 0
             )
         }
     }

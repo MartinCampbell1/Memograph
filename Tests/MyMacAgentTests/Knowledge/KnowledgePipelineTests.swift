@@ -137,6 +137,92 @@ struct KnowledgePipelineTests {
         #expect(index.contains("[[Knowledge/Issues/screencapturekit-blink|ScreenCaptureKit Blink]]"))
     }
 
+    @Test("Knowledge sync exports maintenance report with review queue")
+    func exportsKnowledgeMaintenanceReport() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("project-2"), .text("autopilot"), .text("autopilot"), .text("project"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("project-3"), .text("geminicode"), .text("geminicode"), .text("project"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("lesson-1"), .text("macOS System Audio Capture Guide"), .text("macos-system-audio-capture-guide"), .text("lesson"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("project-1"), .text("advanced_during_window"), .text("2026-04-03"), .real(0.9), .text("hourly_summary"),
+            .text("claim-2"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("project-2"), .text("advanced_during_window"), .text("2026-04-03"), .real(0.9), .text("hourly_summary"),
+            .text("claim-3"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("project-3"), .text("advanced_during_window"), .text("2026-04-03"), .real(0.9), .text("hourly_summary"),
+            .text("claim-4"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("lesson-1"), .text("derived_from_project"), .text("Memograph"), .real(0.8), .text("relation_inference")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_edges
+                (id, from_entity_id, to_entity_id, edge_type, weight, updated_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("edge-1"), .text("project-1"), .text("lesson-1"), .text("generates_lesson"), .real(1),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-2"), .text("project-2"), .text("lesson-1"), .text("generates_lesson"), .real(1),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-3"), .text("project-3"), .text("lesson-1"), .text("generates_lesson"), .real(1),
+            .text("2026-04-03T11:01:00Z")
+        ])
+
+        let vaultPath = NSTemporaryDirectory() + "kb_vault_\(UUID().uuidString)/"
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultPath, timeZone: utc)
+        defer { try? FileManager.default.removeItem(atPath: vaultPath) }
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        _ = try pipeline.syncMaterializedKnowledge(exporter: exporter)
+
+        let maintenancePath = (vaultPath as NSString).appendingPathComponent("Knowledge/_maintenance.md")
+        let maintenance = try String(contentsOfFile: maintenancePath, encoding: .utf8)
+
+        #expect(maintenance.contains("# Memograph Knowledge Maintenance"))
+        #expect(maintenance.contains("## Snapshot"))
+        #expect(maintenance.contains("## Review Queue"))
+        #expect(maintenance.contains("## Hotspots"))
+        #expect(maintenance.contains("Broad Lessons"))
+        #expect(maintenance.contains("macOS System Audio Capture Guide"))
+    }
+
     @Test("Knowledge compiler renders readable signals aliases and grouped related entities")
     func rendersReadableKnowledgeNote() throws {
         let (db, path) = try makeDB()

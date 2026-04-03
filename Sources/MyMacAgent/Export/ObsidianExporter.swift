@@ -199,6 +199,15 @@ final class ObsidianExporter {
         return filePath
     }
 
+    func exportKnowledgeMaintenance(_ markdown: String) throws -> String {
+        let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
+        try FileManager.default.createDirectory(atPath: knowledgeRoot, withIntermediateDirectories: true)
+
+        let filePath = (knowledgeRoot as NSString).appendingPathComponent("_maintenance.md")
+        try markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
+        return filePath
+    }
+
     func deleteKnowledgeNote(_ note: KnowledgeNoteRecord) throws {
         let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
         let folder = knowledgeFolderName(for: note.noteType)

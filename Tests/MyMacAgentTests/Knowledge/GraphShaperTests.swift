@@ -273,6 +273,61 @@ struct GraphShaperTests {
         #expect(!ids.contains("topic-4"))
     }
 
+    @Test("Suppresses weak non-durable topics dominated by co-occurrence noise")
+    func suppressesWeakTopicsDominatedByCoOccurrence() {
+        let shaper = GraphShaper()
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "topic-1",
+                    canonicalName: "Apple Notes",
+                    slug: "apple-notes",
+                    entityType: .topic,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 2,
+                typedEdgeCount: 0,
+                coOccurrenceEdgeCount: 18
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "topic-2",
+                    canonicalName: "System Audio Capture",
+                    slug: "system-audio-capture",
+                    entityType: .topic,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 1,
+                typedEdgeCount: 1,
+                coOccurrenceEdgeCount: 25
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "topic-3",
+                    canonicalName: "Local LLM",
+                    slug: "local-llm",
+                    entityType: .topic,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 3,
+                typedEdgeCount: 2,
+                coOccurrenceEdgeCount: 14
+            )
+        ]
+
+        let ids = shaper.materializedEntityIds(from: metrics)
+
+        #expect(!ids.contains("topic-1"))
+        #expect(ids.contains("topic-2"))
+        #expect(ids.contains("topic-3"))
+    }
+
     @Test("Keeps durable topics even when a more specific lesson exists")
     func keepsDurableTopicsAlongsideLessons() {
         let shaper = GraphShaper()

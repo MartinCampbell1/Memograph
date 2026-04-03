@@ -3,6 +3,23 @@ import Foundation
 struct KnowledgeEntityMetrics {
     let entity: KnowledgeEntityRecord
     let claimCount: Int
+    let typedEdgeCount: Int
+    let coOccurrenceEdgeCount: Int
+    let projectRelationCount: Int
+
+    init(
+        entity: KnowledgeEntityRecord,
+        claimCount: Int,
+        typedEdgeCount: Int = 0,
+        coOccurrenceEdgeCount: Int = 0,
+        projectRelationCount: Int = 0
+    ) {
+        self.entity = entity
+        self.claimCount = claimCount
+        self.typedEdgeCount = typedEdgeCount
+        self.coOccurrenceEdgeCount = coOccurrenceEdgeCount
+        self.projectRelationCount = projectRelationCount
+    }
 }
 
 final class GraphShaper {
@@ -178,6 +195,7 @@ final class GraphShaper {
             }
             guard metric.claimCount >= 2 else { return false }
             guard !isGenericTopic(metric.entity.canonicalName) else { return false }
+            guard !isWeakTopic(metric) else { return false }
             guard !hasMoreSpecificSibling(for: metric, in: index) else { return false }
             return isSpecificEnoughTopic(metric.entity.canonicalName)
         }
@@ -238,6 +256,13 @@ final class GraphShaper {
         }
 
         return suppressedModelSignals.contains(where: { lowered.contains($0) })
+    }
+
+    private func isWeakTopic(_ metric: KnowledgeEntityMetrics) -> Bool {
+        guard metric.entity.entityType == .topic else { return false }
+        guard !isDurableTopic(metric.entity.canonicalName) else { return false }
+        guard metric.typedEdgeCount <= 1 else { return false }
+        return metric.coOccurrenceEdgeCount >= 10
     }
 
     private func isVersionedToolVariant(
