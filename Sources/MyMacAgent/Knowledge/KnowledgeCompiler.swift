@@ -239,12 +239,8 @@ final class KnowledgeCompiler {
         )
         if !recentClaims.isEmpty {
             markdown += "## Recent Windows\n"
-            for claim in recentClaims {
-                let when = claim.windowStart.map { dateSupport.localDateTimeString(from: $0) }
-                    ?? claim.sourceSummaryGeneratedAt.map { dateSupport.localDateTimeString(from: $0) }
-                    ?? "unknown time"
-                let description = describe(claim: claim)
-                markdown += "- [\(when)] \(description)\n"
+            for entry in renderRecentWindowEntries(from: recentClaims) {
+                markdown += "- [\(entry.when)] \(entry.description)\n"
             }
             markdown += "\n"
         }
@@ -635,6 +631,41 @@ final class KnowledgeCompiler {
         }
 
         return selected
+    }
+
+    private func renderRecentWindowEntries(
+        from claims: [KnowledgeClaimRecord]
+    ) -> [(when: String, description: String)] {
+        var orderedWindowKeys: [String] = []
+        var claimsByWindow: [String: [KnowledgeClaimRecord]] = [:]
+
+        for claim in claims {
+            let windowKey = claimWindowKey(claim)
+            if claimsByWindow[windowKey] == nil {
+                orderedWindowKeys.append(windowKey)
+            }
+            claimsByWindow[windowKey, default: []].append(claim)
+        }
+
+        return orderedWindowKeys.compactMap { windowKey in
+            guard let windowClaims = claimsByWindow[windowKey], !windowClaims.isEmpty else {
+                return nil
+            }
+
+            let when = windowClaims.first?.windowStart.map { dateSupport.localDateTimeString(from: $0) }
+                ?? windowClaims.first?.sourceSummaryGeneratedAt.map { dateSupport.localDateTimeString(from: $0) }
+                ?? "unknown time"
+
+            var seenDescriptions = Set<String>()
+            let descriptions = windowClaims.compactMap { claim -> String? in
+                let description = describe(claim: claim)
+                guard seenDescriptions.insert(description).inserted else { return nil }
+                return description
+            }
+
+            guard !descriptions.isEmpty else { return nil }
+            return (when: when, description: descriptions.joined(separator: " "))
+        }
     }
 
     private func shouldShowInRecentWindows(

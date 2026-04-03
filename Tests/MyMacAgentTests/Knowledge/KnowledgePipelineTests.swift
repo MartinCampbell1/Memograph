@@ -527,6 +527,7 @@ struct KnowledgePipelineTests {
 
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
+        let windowMarkerCount = note?.bodyMarkdown.components(separatedBy: "[2026-04-03 20:02]").count ?? 0
 
         #expect(note?.bodyMarkdown.contains("Used during 2026-04-03 20:02-21:02.") == true)
         #expect(note?.bodyMarkdown.contains("Advanced in summary window 2026-04-03.") == true)
@@ -534,6 +535,7 @@ struct KnowledgePipelineTests {
         #expect(note?.bodyMarkdown.contains("Worked on with Codex.") == true)
         #expect(note?.bodyMarkdown.contains("Focused on System Audio Capture.") == true)
         #expect(note?.bodyMarkdown.contains("Worked on with Telegram.") == false)
+        #expect(windowMarkerCount == 2)
     }
 
     @Test("Knowledge edge weights stay stable when the same window is reprocessed")
