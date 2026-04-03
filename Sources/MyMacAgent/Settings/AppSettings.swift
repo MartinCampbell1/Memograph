@@ -95,6 +95,9 @@ struct AppSettings {
     private static let hasExternalAPIKeyKey = "hasExternalAPIKey"
     private static let experimentalAudioOptInConfirmedKey = "experimentalAudioOptInConfirmed"
     private static let migratedOffKeychainKey = "migratedOffKeychain"
+    private static let disabledUnsupportedSystemAudioKey = "disabledUnsupportedSystemAudioCapture"
+
+    static let persistentSystemAudioCaptureAvailable = false
 
     static let sharedLegacyCredentialsStore: any CredentialsStore =
         KeychainCredentialsStore(service: "com.memograph.credentials")
@@ -140,6 +143,7 @@ struct AppSettings {
         migrateLegacyCredentialsIfNeeded()
         migrateAwayFromKeychainIfNeeded()
         migrateExperimentalAudioOptInIfNeeded()
+        disableUnsupportedSystemAudioCaptureIfNeeded()
     }
 
     // MARK: - API
@@ -368,8 +372,20 @@ struct AppSettings {
     }
 
     var systemAudioCaptureEnabled: Bool {
-        get { defaults.bool(forKey: "systemAudioCaptureEnabled") }
-        set { defaults.set(newValue, forKey: "systemAudioCaptureEnabled") }
+        get {
+            Self.persistentSystemAudioCaptureAvailable
+                && defaults.bool(forKey: "systemAudioCaptureEnabled")
+        }
+        set {
+            defaults.set(
+                Self.persistentSystemAudioCaptureAvailable && newValue,
+                forKey: "systemAudioCaptureEnabled"
+            )
+        }
+    }
+
+    var resolvedSystemAudioCaptureEnabled: Bool {
+        Self.persistentSystemAudioCaptureAvailable && systemAudioCaptureEnabled
     }
 
     var audioPythonCommand: String {
@@ -498,6 +514,19 @@ struct AppSettings {
         }
 
         defaults.set(false, forKey: Self.experimentalAudioOptInConfirmedKey)
+    }
+
+    private func disableUnsupportedSystemAudioCaptureIfNeeded() {
+        guard !Self.persistentSystemAudioCaptureAvailable,
+              !defaults.bool(forKey: Self.disabledUnsupportedSystemAudioKey) else {
+            return
+        }
+
+        if defaults.bool(forKey: "systemAudioCaptureEnabled") {
+            defaults.set(false, forKey: "systemAudioCaptureEnabled")
+        }
+
+        defaults.set(true, forKey: Self.disabledUnsupportedSystemAudioKey)
     }
 
     private func nonZeroDouble(forKey key: String, defaultValue: Double) -> Double {

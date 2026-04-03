@@ -564,7 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             audioCaptureEngine = audioEngine
         }
 
-        if settings.systemAudioCaptureEnabled && systemAudioEngine == nil {
+        if settings.resolvedSystemAudioCaptureEnabled && systemAudioEngine == nil {
             let systemAudio = SystemAudioCaptureEngine(
                 transcriber: transcriber,
                 sessionManager: sessionMgr,

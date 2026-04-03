@@ -429,7 +429,31 @@ struct SettingsView: View {
         settingsScroll {
             settingsCard("Experimental Capture", subtitle: "Audio stays off by default. Turn it on only if you explicitly want transcripts.") {
                 toggleRow("Microphone transcription", help: "Starts recording only when another app is actively using the microphone.", isOn: $microphoneCaptureEnabled)
-                toggleRow("System audio transcription", help: "Captures speaker output with ScreenCaptureKit when supported.", isOn: $systemAudioCaptureEnabled)
+
+                Divider()
+                    .padding(.vertical, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("System audio transcription")
+                            .fontWeight(.medium)
+                        Spacer()
+                        Text("Temporarily unavailable")
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(Color.orange.opacity(0.16))
+                            )
+                            .foregroundStyle(.orange)
+                    }
+
+                    Text("Disabled in the public build because macOS keeps a persistent screen-sharing indicator on while ScreenCaptureKit system audio is running.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             settingsCard("Runtime") {
@@ -554,7 +578,7 @@ struct SettingsView: View {
         blacklistedWindowPatterns = settings.blacklistedWindowPatterns.joined(separator: "\n")
 
         microphoneCaptureEnabled = settings.microphoneCaptureEnabled
-        systemAudioCaptureEnabled = settings.systemAudioCaptureEnabled
+        systemAudioCaptureEnabled = settings.resolvedSystemAudioCaptureEnabled
         audioPythonCommand = settings.audioPythonCommand
         audioModelName = settings.audioModelName
         audioRuntimeStatus = AudioRuntimeResolver.resolve(settings: settings).description
@@ -595,7 +619,7 @@ struct SettingsView: View {
         metadataOnlyBundleIds = preview.metadataOnlyBundleIds
         blacklistedWindowPatterns = preview.blacklistedWindowPatterns
         microphoneCaptureEnabled = preview.microphoneCaptureEnabled
-        systemAudioCaptureEnabled = preview.systemAudioCaptureEnabled
+        systemAudioCaptureEnabled = AppSettings.persistentSystemAudioCaptureAvailable && preview.systemAudioCaptureEnabled
         audioPythonCommand = preview.audioPythonCommand
         audioModelName = preview.audioModelName
         audioRuntimeStatus = preview.audioRuntimeStatus
@@ -644,9 +668,9 @@ struct SettingsView: View {
         settings.blacklistedWindowPatterns = splitLines(blacklistedWindowPatterns)
 
         settings.microphoneCaptureEnabled = microphoneCaptureEnabled
-        settings.systemAudioCaptureEnabled = systemAudioCaptureEnabled
+        settings.systemAudioCaptureEnabled = AppSettings.persistentSystemAudioCaptureAvailable && systemAudioCaptureEnabled
         settings.experimentalAudioOptInConfirmed =
-            microphoneCaptureEnabled || systemAudioCaptureEnabled
+            microphoneCaptureEnabled || (AppSettings.persistentSystemAudioCaptureAvailable && systemAudioCaptureEnabled)
         settings.audioPythonCommand = audioPythonCommand
         settings.audioModelName = audioModelName
 

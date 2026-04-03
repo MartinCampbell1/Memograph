@@ -157,4 +157,19 @@ struct Phase4IntegrationTests {
         #expect(!reloaded.systemAudioCaptureEnabled)
         #expect(reloaded.experimentalAudioOptInConfirmed)
     }
+
+    @Test("Persistent system audio capture stays disabled in public builds")
+    func persistentSystemAudioCaptureRemainsDisabled() {
+        let suiteName = "test_\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = InMemoryCredentialsStore()
+
+        var settings = AppSettings(defaults: defaults, credentialsStore: store)
+        settings.systemAudioCaptureEnabled = true
+
+        let reloaded = AppSettings(defaults: defaults, credentialsStore: store)
+        #expect(!reloaded.systemAudioCaptureEnabled)
+        #expect(!reloaded.resolvedSystemAudioCaptureEnabled)
+        #expect(!defaults.bool(forKey: "systemAudioCaptureEnabled"))
+    }
 }
