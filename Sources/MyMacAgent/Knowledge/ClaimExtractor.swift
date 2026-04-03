@@ -46,6 +46,80 @@ final class ClaimExtractor {
             "system audio capture"
         ]
     ]
+    private let durableTopicAffinityMap: [String: Set<String>] = [
+        "accessibility api": [
+            "accessibility permissions",
+            "full disk access",
+            "screen recording"
+        ],
+        "accessibility permissions": [
+            "accessibility api",
+            "full disk access",
+            "screen recording",
+            "system audio capture",
+            "privacy & security"
+        ],
+        "screen recording": [
+            "screencap",
+            "screencapturekit",
+            "system audio capture",
+            "accessibility permissions",
+            "full disk access",
+            "ocr"
+        ],
+        "screencap": [
+            "screen recording",
+            "screencapturekit",
+            "ocr"
+        ],
+        "screencapturekit": [
+            "screen recording",
+            "system audio capture",
+            "screencap"
+        ],
+        "system audio capture": [
+            "screen recording",
+            "screencapturekit",
+            "full disk access",
+            "accessibility permissions"
+        ],
+        "ocr": [
+            "screen recording",
+            "screencap",
+            "privacy-focused ocr",
+            "accessibility api"
+        ],
+        "privacy-focused ocr": [
+            "ocr",
+            "privacy & security"
+        ],
+        "hardware for ai": [
+            "local llm",
+            "q4 quantization",
+            "vram"
+        ],
+        "local llm": [
+            "hardware for ai",
+            "q4 quantization",
+            "vram"
+        ],
+        "q4 quantization": [
+            "hardware for ai",
+            "local llm",
+            "vram"
+        ],
+        "vram": [
+            "hardware for ai",
+            "local llm",
+            "q4 quantization"
+        ],
+        "obsidian knowledge graph": [
+            "personal knowledge management"
+        ],
+        "personal knowledge management": [
+            "obsidian knowledge graph"
+        ]
+    ]
     private let relationStopTokens: Set<String> = [
         "the", "and", "for", "with", "from", "into", "onto", "guide",
         "roadmap", "benchmarks", "benchmark", "analysis", "report", "plan",
@@ -494,9 +568,13 @@ final class ClaimExtractor {
             return true
         }
 
-        return sessions.contains { session in
+        if sessions.contains(where: { session in
             sessionMentionsEntity(session, entity: lhs) && sessionMentionsEntity(session, entity: rhs)
+        }) {
+            return true
         }
+
+        return hasDurableTopicAffinity(lhs: lhs, rhs: rhs)
     }
 
     private func hasToolTopicAffinity(tool: KnowledgeEntityCandidate, topic: KnowledgeEntityCandidate) -> Bool {
@@ -506,6 +584,13 @@ final class ClaimExtractor {
             return true
         }
         return toolTopicAffinityMap[toolKey]?.contains(topicKey) == true
+    }
+
+    private func hasDurableTopicAffinity(lhs: KnowledgeEntityCandidate, rhs: KnowledgeEntityCandidate) -> Bool {
+        let lhsKey = normalizedKey(lhs.canonicalName)
+        let rhsKey = normalizedKey(rhs.canonicalName)
+        return durableTopicAffinityMap[lhsKey]?.contains(rhsKey) == true ||
+            durableTopicAffinityMap[rhsKey]?.contains(lhsKey) == true
     }
 
     private func topicFamilyKey(for topicName: String) -> String? {

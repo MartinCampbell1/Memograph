@@ -864,6 +864,85 @@ struct KnowledgePipelineTests {
         })
     }
 
+    @Test("Durable OCR family topics gain typed relations from affinity in the same window")
+    func durableOcrFamilyTopicsGainTypedRelations() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Reviewed capture quality and export polish before the next hourly note.
+            """,
+            topAppsJson: """
+            [{"name":"Memograph","duration_min":20}]
+            """,
+            topTopicsJson: """
+            ["OCR","Screen Recording","Screencap"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T10:00:00Z","window_end":"2026-04-03T11:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-03T11:01:55Z",
+            modelName: "google/gemini-3-flash-preview",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Memograph",
+                bundleId: "com.memograph.app",
+                windowTitles: ["Capture settings"],
+                startedAt: "2026-04-03T10:00:00Z",
+                endedAt: "2026-04-03T10:20:00Z",
+                durationMs: 1_200_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Reviewed retention and export settings"]
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let topicClaims = try db.query("""
+            SELECT kc.predicate, kc.object_text
+            FROM knowledge_claims kc
+            JOIN knowledge_entities ke ON ke.id = kc.subject_entity_id
+            WHERE ke.canonical_name = 'OCR'
+            ORDER BY kc.predicate, kc.object_text
+        """)
+
+        #expect(topicClaims.contains {
+            $0["predicate"]?.textValue == "related_topic" &&
+            $0["object_text"]?.textValue == "Screen Recording"
+        })
+
+        let edgeRows = try db.query("""
+            SELECT e_from.canonical_name AS from_name, e_to.canonical_name AS to_name
+            FROM knowledge_edges edge
+            JOIN knowledge_entities e_from ON e_from.id = edge.from_entity_id
+            JOIN knowledge_entities e_to ON e_to.id = edge.to_entity_id
+            WHERE edge.edge_type = 'related_topic'
+        """)
+
+        #expect(edgeRows.contains {
+            Set([$0["from_name"]?.textValue ?? "", $0["to_name"]?.textValue ?? ""]) == Set(["OCR", "Screen Recording"])
+        })
+    }
+
     @Test("Knowledge entities track window boundaries instead of only summary midnight")
     func knowledgeEntitiesTrackWindowBoundaries() throws {
         let (db, path) = try makeDB()

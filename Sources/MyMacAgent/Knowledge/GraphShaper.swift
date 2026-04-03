@@ -180,10 +180,10 @@ final class GraphShaper {
 
     func isMeaningfulProjectRelationTopic(_ name: String) -> Bool {
         guard !isSuppressedTopic(name) else { return false }
-        guard !isGenericTopic(name) else { return false }
         if isDurableTopic(name) {
             return isSpecificEnoughTopic(name)
         }
+        guard !isGenericTopic(name) else { return false }
         return isSpecificEnoughTopic(name)
     }
 
