@@ -270,6 +270,9 @@ struct GraphShaperTests {
         #expect(shaper.isCommodityWeakTopic("DDR5"))
         #expect(!shaper.isCommodityWeakTopic("SQLite"))
         #expect(!shaper.isCommodityWeakTopic("System Audio Capture"))
+        #expect(shaper.shouldSuppressWeakTopicInMaintenance("OpenAI"))
+        #expect(shaper.shouldSuppressWeakTopicInMaintenance("Private Mode"))
+        #expect(shaper.shouldSuppressWeakTopicInMaintenance("Screenpipe"))
     }
 
     @Test("Materializes durable one-off topics while suppressing topic artifacts")

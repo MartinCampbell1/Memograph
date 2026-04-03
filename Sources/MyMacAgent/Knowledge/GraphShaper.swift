@@ -135,6 +135,11 @@ final class GraphShaper {
         "ai consultant",
         "ai engineering"
     ]
+    private let maintenanceSuppressedWeakTopicNames: Set<String> = [
+        "openai",
+        "private mode",
+        "screenpipe"
+    ]
     private let hotspotDeprioritizedTopicFragments: [String] = [
         "apple silicon",
         "gemma ",
@@ -237,7 +242,12 @@ final class GraphShaper {
     }
 
     func shouldSuppressWeakTopicInMaintenance(_ name: String) -> Bool {
-        isCommodityWeakTopic(name) || isHotspotDeprioritizedTopic(name) || isGenericTopic(name) || isSuppressedTopic(name)
+        let lowered = name.lowercased()
+        return isCommodityWeakTopic(name)
+            || maintenanceSuppressedWeakTopicNames.contains(lowered)
+            || isHotspotDeprioritizedTopic(name)
+            || isGenericTopic(name)
+            || isSuppressedTopic(name)
     }
 
     func shouldHideFromHotspots(_ metric: KnowledgeEntityMetrics) -> Bool {
