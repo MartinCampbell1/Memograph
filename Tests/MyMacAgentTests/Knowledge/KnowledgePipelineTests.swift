@@ -371,7 +371,7 @@ struct KnowledgePipelineTests {
 
         #expect(note != nil)
         #expect(note?.bodyMarkdown.contains("## Overview") == true)
-        #expect(note?.bodyMarkdown.contains("Tool activity captured across 1 recent work window and 1 project.") == true)
+        #expect(note?.bodyMarkdown.contains("Recent activity places this tool across 1 recent work window and 1 project.") == true)
         #expect(note?.bodyMarkdown.contains("## Aliases") == true)
         #expect(note?.bodyMarkdown.contains("Claude.app") == true)
         #expect(note?.bodyMarkdown.contains("## Key Signals") == true)
@@ -1310,10 +1310,10 @@ struct KnowledgePipelineTests {
         #expect(projectNote?.bodyMarkdown.contains("With Codex") == true)
         #expect(projectNote?.bodyMarkdown.contains("focused on System Audio Capture") == true)
         #expect(projectNote?.bodyMarkdown.contains("## Overview") == true)
-        #expect(projectNote?.bodyMarkdown.contains("Project activity linked to 1 tool and 1 focus topic.") == true)
-        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — tool used in this project") == true)
-        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — focus topic for this project") == true)
-        #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — project this tool was used in") == true)
+        #expect(projectNote?.bodyMarkdown.contains("Recent work around this project connects it to 1 tool and 1 focus topic.") == true)
+        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — used while working on this project") == true)
+        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — topic that stayed in focus for this project") == true)
+        #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — project where this tool showed up") == true)
     }
 
     @Test("Lesson notes hide noisy same-window lesson co-occurrence references")
@@ -1377,7 +1377,7 @@ struct KnowledgePipelineTests {
         let note = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
 
         #expect(note?.bodyMarkdown.contains("## Overview") == true)
-        #expect(note?.bodyMarkdown.contains("Durable lesson distilled from 1 source project and 1 documented topic.") == true)
+        #expect(note?.bodyMarkdown.contains("This lesson was distilled from 1 source project and 1 documented topic.") == true)
         #expect(note?.bodyMarkdown.contains("### Projects") == true)
         #expect(note?.bodyMarkdown.contains("### Topics") == true)
         #expect(note?.bodyMarkdown.contains("### Lessons") == false)

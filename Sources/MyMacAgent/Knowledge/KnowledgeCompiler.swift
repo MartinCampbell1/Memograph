@@ -305,15 +305,15 @@ final class KnowledgeCompiler {
                 parts.append("\(lessonCount) durable lesson\(lessonCount == 1 ? "" : "s")")
             }
             guard !parts.isEmpty else { return [] }
-            return ["Project activity linked to \(joinNaturalLanguage(parts))."]
+            return ["Recent work around this project connects it to \(joinNaturalLanguage(parts))."]
 
         case .topic:
             var lines: [String] = []
             if let projectCount = relationCounts[.project], projectCount > 0 {
-                lines.append("This topic is connected to \(projectCount) project\(projectCount == 1 ? "" : "s").")
+                lines.append("This topic stays active across \(projectCount) project\(projectCount == 1 ? "" : "s").")
             }
             if let topicCount = relationCounts[.topic], topicCount > 0 {
-                lines.append("It clusters with \(topicCount) nearby topic\(topicCount == 1 ? "" : "s").")
+                lines.append("Nearby work keeps it close to \(topicCount) related topic\(topicCount == 1 ? "" : "s").")
             }
             if let lessonCount = relationCounts[.lesson], lessonCount > 0 {
                 lines.append("It is documented by \(lessonCount) lesson\(lessonCount == 1 ? "" : "s").")
@@ -329,7 +329,7 @@ final class KnowledgeCompiler {
                 parts.append("\(topicCount) documented topic\(topicCount == 1 ? "" : "s")")
             }
             if !parts.isEmpty {
-                return ["Durable lesson distilled from \(joinNaturalLanguage(parts))."]
+                return ["This lesson was distilled from \(joinNaturalLanguage(parts))."]
             }
             return []
 
@@ -345,7 +345,7 @@ final class KnowledgeCompiler {
                 parts.append("\(topicCount) topic\(topicCount == 1 ? "" : "s")")
             }
             guard !parts.isEmpty else { return [] }
-            return ["Tool activity captured across \(joinNaturalLanguage(parts))."]
+            return ["Recent activity places this tool across \(joinNaturalLanguage(parts))."]
 
         case .issue:
             var parts: [String] = []
@@ -356,15 +356,15 @@ final class KnowledgeCompiler {
                 parts.append("\(recentWindowCount) surfaced window\(recentWindowCount == 1 ? "" : "s")")
             }
             guard !parts.isEmpty else { return [] }
-            return ["Issue evidence spans \(joinNaturalLanguage(parts))."]
+            return ["This issue shows up across \(joinNaturalLanguage(parts))."]
 
         case .model:
             guard let projectCount = relationCounts[.project], projectCount > 0 else { return [] }
-            return ["Model usage was observed in \(projectCount) project\(projectCount == 1 ? "" : "s")."]
+            return ["This model shows up in \(projectCount) project\(projectCount == 1 ? "" : "s")."]
 
         case .site, .person:
             guard recentWindowCount > 0 else { return [] }
-            return ["Captured across \(recentWindowCount) recent window\(recentWindowCount == 1 ? "" : "s")."]
+            return ["Seen across \(recentWindowCount) recent window\(recentWindowCount == 1 ? "" : "s")."]
         }
     }
 
@@ -1353,36 +1353,36 @@ final class KnowledgeCompiler {
         switch relationship.edgeType {
         case "uses_tool":
             return relationship.direction == .outgoing
-                ? "tool used in this project"
-                : "project this tool was used in"
+                ? "used while working on this project"
+                : "project where this tool showed up"
         case "works_on_topic":
             return relationship.direction == .outgoing
-                ? "topic worked on with this tool"
-                : "tool used for this topic"
+                ? "topic explored with this tool"
+                : "tool that showed up around this topic"
         case "related_topic":
-            return "closely related topic"
+            return "often appears nearby"
         case "focuses_on_topic":
             return relationship.direction == .outgoing
-                ? "focus topic for this project"
-                : "project where this topic was in focus"
+                ? "topic that stayed in focus for this project"
+                : "project where this topic stayed in focus"
         case "blocked_by_issue":
             return relationship.direction == .outgoing
-                ? "blocking issue"
-                : "project affected by this issue"
+                ? "issue that blocked this project"
+                : "project impacted by this issue"
         case "uses_model":
             return relationship.direction == .outgoing
                 ? "model used in this project"
-                : "project that used this model"
+                : "project where this model was used"
         case "generates_lesson":
             return relationship.direction == .outgoing
-                ? "durable lesson generated from this project"
-                : "project this lesson came from"
+                ? "lesson distilled from this project"
+                : "project this lesson was distilled from"
         case "explains_topic":
             return relationship.direction == .outgoing
                 ? "topic explained by this lesson"
-                : "lesson that documents this topic"
+                : "lesson that helps explain this topic"
         case "co_occurs_with":
-            return "appeared in the same captured windows"
+            return "often appeared in the same work windows"
         default:
             return relationship.edgeType.replacingOccurrences(of: "_", with: " ")
         }
