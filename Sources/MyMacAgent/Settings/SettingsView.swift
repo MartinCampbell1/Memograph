@@ -97,6 +97,7 @@ struct SettingsView: View {
     @State private var externalProviderName = ""
     @State private var externalBaseURL = ""
     @State private var externalAPIKey = ""
+    @State private var showExternalAPIKey = false
     @State private var summaryProvider: SummaryProvider = .disabled
     @State private var summaryExternalModel = ""
     @State private var summaryLocalModel = ""
@@ -260,8 +261,22 @@ struct SettingsView: View {
                 }
 
                 settingRow("API key", help: "Used only when you enable external summary or vision providers.") {
-                    SecureField("API key", text: $externalAPIKey)
+                    HStack(spacing: 8) {
+                        Group {
+                            if showExternalAPIKey {
+                                TextField("API key", text: $externalAPIKey)
+                            } else {
+                                SecureField("API key", text: $externalAPIKey)
+                            }
+                        }
                         .textFieldStyle(.roundedBorder)
+
+                        Button(showExternalAPIKey ? "Hide" : "Reveal") {
+                            showExternalAPIKey.toggle()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
             }
 
@@ -509,6 +524,7 @@ struct SettingsView: View {
         externalProviderName = settings.externalProviderName
         externalBaseURL = settings.externalBaseURL
         externalAPIKey = settings.externalAPIKey
+        showExternalAPIKey = false
         summaryProvider = settings.summaryProvider
         summaryExternalModel = settings.summaryExternalModel
         summaryLocalModel = settings.summaryLocalModel
@@ -552,6 +568,7 @@ struct SettingsView: View {
         externalProviderName = preview.externalProviderName
         externalBaseURL = preview.externalBaseURL
         externalAPIKey = preview.externalAPIKey
+        showExternalAPIKey = false
         summaryProvider = preview.summaryProvider
         summaryExternalModel = preview.summaryExternalModel
         summaryLocalModel = preview.summaryLocalModel
