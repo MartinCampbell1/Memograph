@@ -232,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
         knowledgePipeline = KnowledgePipeline(db: db)
         logger.info("Phase 3 components initialized (fusion, summary, export)")
+        refreshKnowledgeMaterialization(reason: "startup")
     }
 
     private func initializePhase4() {
@@ -818,6 +819,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         scheduleAutoSummaryTimer()
+        refreshKnowledgeMaterialization(reason: "settings")
         configureAudioEngines(forceRestart: true)
         Task { @MainActor [weak self] in
             await self?.generatePendingDailySummaries(reason: "settings")
@@ -873,6 +875,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleSystemDidWake() {
         Task { @MainActor [weak self] in
             await self?.generatePendingDailySummaries(reason: "wake")
+        }
+    }
+
+    private func refreshKnowledgeMaterialization(reason: String) {
+        guard let knowledgePipeline else { return }
+        do {
+            let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: obsidianExporter)
+            if materializedCount > 0 {
+                logger.info("Knowledge materialization sync completed during \(reason, privacy: .public): \(materializedCount) notes")
+            }
+        } catch {
+            logger.error("Knowledge materialization sync failed during \(reason): \(error.localizedDescription)")
         }
     }
 }

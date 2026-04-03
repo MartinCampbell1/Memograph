@@ -199,6 +199,18 @@ final class ObsidianExporter {
         return filePath
     }
 
+    func deleteKnowledgeNote(_ note: KnowledgeNoteRecord) throws {
+        let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
+        let folder = knowledgeFolderName(for: note.noteType)
+        let directory = (knowledgeRoot as NSString).appendingPathComponent(folder)
+        let slug = knowledgeSlug(for: note.title)
+        let filePath = (directory as NSString).appendingPathComponent("\(slug).md")
+
+        if FileManager.default.fileExists(atPath: filePath) {
+            try FileManager.default.removeItem(atPath: filePath)
+        }
+    }
+
     func enqueueSummaryExport(_ summary: DailySummaryRecord, lastError: String? = nil) throws {
         let entityId = exportEntityId(for: summary)
         let payloadData = try encoder.encode(summary)

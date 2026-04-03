@@ -15,6 +15,7 @@ final class KnowledgePipeline {
     private let extractor: ClaimExtractor
     private let compiler: KnowledgeCompiler
     private let normalizer: EntityNormalizer
+    private let graphShaper: GraphShaper
     private let logger = Logger.knowledge
 
     init(db: DatabaseManager, timeZone: TimeZone = .autoupdatingCurrent) {
@@ -23,6 +24,7 @@ final class KnowledgePipeline {
         self.normalizer = EntityNormalizer()
         self.extractor = ClaimExtractor(normalizer: normalizer, timeZone: timeZone)
         self.compiler = KnowledgeCompiler(db: db, timeZone: timeZone, normalizer: normalizer)
+        self.graphShaper = GraphShaper()
     }
 
     @discardableResult
@@ -64,9 +66,50 @@ final class KnowledgePipeline {
             try upsertEdge(edge, fromEntityId: from.id, toEntityId: to.id, supportingClaimIds: support)
         }
 
+        let noteCount = try syncMaterializedKnowledge(exporter: exporter, sourceDateOverrideByEntityId:
+            Dictionary(uniqueKeysWithValues: persistedEntities.values.map { ($0.id, summary.date) })
+        )
+
+        logger.info("Knowledge pipeline persisted \(persistedEntities.count) entities, \(extraction.claims.count) claims, \(extraction.edges.count) edges")
+        return KnowledgePipelineResult(
+            entityCount: persistedEntities.count,
+            claimCount: extraction.claims.count,
+            edgeCount: extraction.edges.count,
+            noteCount: noteCount
+        )
+    }
+
+    @discardableResult
+    func syncMaterializedKnowledge(
+        exporter: ObsidianExporter? = nil,
+        sourceDateOverrideByEntityId: [String: String] = [:]
+    ) throws -> Int {
+        let metrics = try loadEntityMetrics()
+        let materializedIds = graphShaper.materializedEntityIds(from: metrics)
+
+        let existingNotes = try db.query("SELECT * FROM knowledge_notes").compactMap(KnowledgeNoteRecord.init(row:))
+        let existingNoteByEntityId = Dictionary(uniqueKeysWithValues: existingNotes.compactMap { note in
+            note.id.hasPrefix("knowledge:") ? (String(note.id.dropFirst("knowledge:".count)), note) : nil
+        })
+
+        for note in existingNotes {
+            let entityId = note.id.hasPrefix("knowledge:") ? String(note.id.dropFirst("knowledge:".count)) : nil
+            guard let entityId, !materializedIds.contains(entityId) else { continue }
+            if let exporter {
+                try? exporter.deleteKnowledgeNote(note)
+            }
+            try db.execute("DELETE FROM knowledge_notes WHERE id = ?", params: [.text(note.id)])
+        }
+
         var noteCount = 0
-        for entity in persistedEntities.values {
-            guard let note = try compiler.compileNote(for: entity.id, sourceDate: summary.date) else {
+        for metric in metrics where materializedIds.contains(metric.entity.id) {
+            let sourceDate = sourceDateOverrideByEntityId[metric.entity.id]
+                ?? existingNoteByEntityId[metric.entity.id]?.sourceDate
+            guard let note = try compiler.compileNote(
+                for: metric.entity.id,
+                sourceDate: sourceDate,
+                allowedEntityIds: materializedIds
+            ) else {
                 continue
             }
             try compiler.persist(note: note)
@@ -81,13 +124,7 @@ final class KnowledgePipeline {
             _ = try? exporter.exportKnowledgeIndex(indexMarkdown)
         }
 
-        logger.info("Knowledge pipeline persisted \(persistedEntities.count) entities, \(extraction.claims.count) claims, \(extraction.edges.count) edges")
-        return KnowledgePipelineResult(
-            entityCount: persistedEntities.count,
-            claimCount: extraction.claims.count,
-            edgeCount: extraction.edges.count,
-            noteCount: noteCount
-        )
+        return noteCount
     }
 
     private func upsertEntity(_ entity: KnowledgeEntityCandidate, seenAt: Date) throws -> KnowledgeEntityRecord {
@@ -275,6 +312,24 @@ final class KnowledgePipeline {
             values.formUnion(decoded)
         }
         return Array(values).sorted()
+    }
+
+    private func loadEntityMetrics() throws -> [KnowledgeEntityMetrics] {
+        try db.query("""
+            SELECT e.*, COUNT(c.id) AS claim_count
+            FROM knowledge_entities e
+            LEFT JOIN knowledge_claims c ON c.subject_entity_id = e.id
+            GROUP BY e.id
+            ORDER BY e.entity_type, e.canonical_name
+        """).compactMap { row in
+            guard let entity = KnowledgeEntityRecord(row: row) else {
+                return nil
+            }
+            return KnowledgeEntityMetrics(
+                entity: entity,
+                claimCount: Int(row["claim_count"]?.intValue ?? 0)
+            )
+        }
     }
 
     private func minTimestamp(_ lhs: String?, _ rhs: String?) -> String? {

@@ -16,6 +16,14 @@ final class KnowledgeCompiler {
     }
 
     func compileNote(for entityId: String, sourceDate: String?) throws -> KnowledgeNoteRecord? {
+        try compileNote(for: entityId, sourceDate: sourceDate, allowedEntityIds: nil)
+    }
+
+    func compileNote(
+        for entityId: String,
+        sourceDate: String?,
+        allowedEntityIds: Set<String>?
+    ) throws -> KnowledgeNoteRecord? {
         let entityRows = try db.query(
             "SELECT * FROM knowledge_entities WHERE id = ? LIMIT 1",
             params: [.text(entityId)]
@@ -39,16 +47,18 @@ final class KnowledgeCompiler {
         """, params: [.text(entityId), .text(entityId)]).compactMap(KnowledgeEdgeRecord.init(row:))
 
         let relatedEntities = try fetchRelatedEntities(for: entityId, edges: edges)
+            .filter { allowedEntityIds?.contains($0.id) ?? true }
         let markdown = renderMarkdown(entity: entity, claims: claims, relatedEntities: relatedEntities)
         let links = relatedEntities.map { linkTarget(for: $0) }
         let tags = [entity.entityType.rawValue, "memograph-kb-v1"]
+        let effectiveSourceDate = sourceDate ?? claims.first?.sourceSummaryDate
 
         return KnowledgeNoteRecord(
             id: "knowledge:\(entity.id)",
             noteType: entity.entityType.rawValue,
             title: entity.canonicalName,
             bodyMarkdown: markdown,
-            sourceDate: sourceDate,
+            sourceDate: effectiveSourceDate,
             tagsJson: jsonString(tags),
             linksJson: jsonString(links)
         )
