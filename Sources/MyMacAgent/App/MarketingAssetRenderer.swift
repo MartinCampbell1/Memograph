@@ -53,7 +53,8 @@ enum MarketingAssetRenderer {
             V001_InitialSchema.migration,
             V002_AudioTranscripts.migration,
             V003_PerformanceIndexes.migration,
-            V004_AudioTranscriptDurability.migration
+            V004_AudioTranscriptDurability.migration,
+            V005_KnowledgeGraph.migration
         ])
         try runner.runPending()
         try seedDemoData(db: db)

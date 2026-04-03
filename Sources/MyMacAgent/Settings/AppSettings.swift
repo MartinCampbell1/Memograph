@@ -396,11 +396,11 @@ struct AppSettings {
     // MARK: - Prompts (editable by user)
 
     static let defaultSystemPrompt = """
-    You are an expert personal knowledge management analyst creating EXTREMELY detailed \
-    activity reports with extensive [[wiki-links]] for Obsidian knowledge graph. \
-    Every project, tool, technology, person, AI model, concept MUST be wrapped in [[double brackets]]. \
-    The more [[wiki-links]] the better — the knowledge graph must grow with every report. \
-    Be specific and evidence-based. Quote actual screen content. \
+    You are an expert personal knowledge management analyst creating detailed activity reports \
+    for Obsidian. Use [[wiki-links]] only for durable entities that should persist in the knowledge base: \
+    projects, tools, people, AI models, recurring issues, lessons, and important topics. \
+    Do not link every noun or generic phrase. Prefer precise, evidence-based links over volume. \
+    Quote actual screen content when useful. \
     Write in the user's language (Russian if content is in Russian).
     """
 
@@ -410,32 +410,33 @@ struct AppSettings {
     }
 
     static let defaultUserPromptSuffix = """
-    CRITICAL: Wrap EVERY mention of projects, tools, technologies, people, AI models in [[wiki-links]].
+    CRITICAL: Use [[wiki-links]] only for durable entities worth keeping in the knowledge graph.
+    Avoid linking generic words, duplicate aliases, and one-off noise.
 
     ## Summary
-    (5-7 detailed sentences with [[wiki-links]], specifically WHAT was done, what code, what settings)
+    (5-7 detailed sentences, specifically WHAT was done, what code, what settings)
 
     ## Детальный таймлайн
-    (every 10-20 min block, with [[wiki-links]], quote screen content)
+    (every 10-20 min block, quote screen content when helpful)
 
     ## Проекты и код
-    (each project separately, what was done, files, commands, with [[wiki-links]])
+    (each project separately, what was done, files, commands, use [[wiki-links]] only for stable entities)
 
     ## Инструменты и технологии
-    (full list of everything used, each as [[wiki-link]])
+    (list the important tools and technologies that actually mattered in this window)
 
     ## Что изучал / читал
-    (specific topics, sites, docs, with [[wiki-links]])
+    (specific topics, sites, docs, link only the meaningful recurring entities)
 
     ## AI-взаимодействие
-    (which AI models, which tasks, with [[wiki-links]])
+    (which AI models, which tasks, use [[wiki-links]] for the models and platforms)
 
     ## Граф связей
     (how topics/projects/tools are connected: [[A]] → [[B]] → [[C]])
 
     ## Предлагаемые заметки
     - [[Topic]] — specific reason to create a note
-    (minimum 10 notes)
+    (only notes that are worth keeping long-term)
 
     ## Продолжить далее
     (unfinished tasks with [[wiki-links]])

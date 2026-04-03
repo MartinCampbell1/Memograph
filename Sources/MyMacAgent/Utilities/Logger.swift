@@ -15,4 +15,5 @@ extension Logger {
     static let fusion = Logger(subsystem: subsystem, category: "fusion")
     static let summary = Logger(subsystem: subsystem, category: "summary")
     static let export = Logger(subsystem: subsystem, category: "export")
+    static let knowledge = Logger(subsystem: subsystem, category: "knowledge")
 }

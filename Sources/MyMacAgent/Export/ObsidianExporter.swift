@@ -171,6 +171,34 @@ final class ObsidianExporter {
         return filePath
     }
 
+    func exportKnowledgeNote(_ note: KnowledgeNoteRecord) throws -> String {
+        let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
+        let folder = knowledgeFolderName(for: note.noteType)
+        let directory = (knowledgeRoot as NSString).appendingPathComponent(folder)
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+
+        let slug = knowledgeSlug(for: note.title)
+        let filePath = (directory as NSString).appendingPathComponent("\(slug).md")
+        try note.bodyMarkdown.write(toFile: filePath, atomically: true, encoding: .utf8)
+
+        try? db.execute("""
+            UPDATE knowledge_notes
+            SET export_obsidian_status = 'done'
+            WHERE id = ?
+        """, params: [.text(note.id)])
+
+        return filePath
+    }
+
+    func exportKnowledgeIndex(_ markdown: String) throws -> String {
+        let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
+        try FileManager.default.createDirectory(atPath: knowledgeRoot, withIntermediateDirectories: true)
+
+        let filePath = (knowledgeRoot as NSString).appendingPathComponent("_index.md")
+        try markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
+        return filePath
+    }
+
     func enqueueSummaryExport(_ summary: DailySummaryRecord, lastError: String? = nil) throws {
         let entityId = exportEntityId(for: summary)
         let payloadData = try encoder.encode(summary)
@@ -402,6 +430,24 @@ final class ObsidianExporter {
     private func retryDelay(for retryCount: Int) -> TimeInterval {
         let boundedRetryCount = min(max(retryCount, 1), 6)
         return Double(1 << boundedRetryCount) * 60
+    }
+
+    private func knowledgeFolderName(for noteType: String) -> String {
+        KnowledgeEntityType(rawValue: noteType)?.folderName ?? "Topics"
+    }
+
+    private func knowledgeSlug(for title: String) -> String {
+        let lowered = title.lowercased()
+        let allowed = lowered.map { char -> Character in
+            if char.isLetter || char.isNumber {
+                return char
+            }
+            return "-"
+        }
+        let collapsed = String(allowed)
+            .replacingOccurrences(of: "--+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return collapsed.isEmpty ? "note" : collapsed
     }
 
     private func stripTopHeading(from markdown: String) -> String {

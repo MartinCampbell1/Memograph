@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var contextFusionEngine: ContextFusionEngine?
     private var dailySummarizer: DailySummarizer?
     private var obsidianExporter: ObsidianExporter?
+    private var knowledgePipeline: KnowledgePipeline?
     // Phase 4
     private var retentionWorker: RetentionWorker?
     // Phase 5 — Vision + Audio
@@ -167,7 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 V001_InitialSchema.migration,
                 V002_AudioTranscripts.migration,
                 V003_PerformanceIndexes.migration,
-                V004_AudioTranscriptDurability.migration
+                V004_AudioTranscriptDurability.migration,
+                V005_KnowledgeGraph.migration
             ])
             try runner.runPending()
             databaseManager = db
@@ -228,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dailySummarizer = DailySummarizer(db: db)
         let vaultPath = AppSettings().obsidianVaultPath
         obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
+        knowledgePipeline = KnowledgePipeline(db: db)
         logger.info("Phase 3 components initialized (fusion, summary, export)")
     }
 
@@ -513,6 +516,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        do {
+            let sessions = try summarizer.collectSessionData(for: window)
+            if let knowledgePipeline {
+                let result = try knowledgePipeline.process(
+                    summary: summary,
+                    window: window,
+                    sessions: sessions,
+                    exporter: obsidianExporter
+                )
+                if result.entityCount > 0 || result.noteCount > 0 {
+                    logger.info("Knowledge graph updated for \(windowKey): \(result.entityCount) entities, \(result.noteCount) notes")
+                }
+            }
+        } catch {
+            logger.error("Knowledge graph update failed for \(windowKey): \(error.localizedDescription)")
+        }
+
         scheduleAutoSummaryTimer()
     }
 
@@ -598,6 +618,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let path = try exporter.exportDailyNote(summary: summary)
             logger.info("Backfill window report exported to \(path)")
+            let sessions = try summarizer.collectSessionData(for: window)
+            if let knowledgePipeline {
+                _ = try knowledgePipeline.process(
+                    summary: summary,
+                    window: window,
+                    sessions: sessions,
+                    exporter: exporter
+                )
+            }
             print(path)
         } catch {
             logger.error("Backfill export failed: \(error.localizedDescription)")
@@ -785,6 +814,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             retentionWorker = RetentionWorker(db: db, retentionDays: settings.retentionDays)
             obsidianExporter = ObsidianExporter(db: db, vaultPath: settings.obsidianVaultPath)
             ocrPipeline = OCRPipeline(provider: makeOCRProvider(settings: settings), db: db)
+            knowledgePipeline = KnowledgePipeline(db: db)
         }
 
         scheduleAutoSummaryTimer()
@@ -813,6 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         systemAudioEngine = nil
         dailySummarizer = nil
         obsidianExporter = nil
+        knowledgePipeline = nil
         visionAnalyzer = nil
         databaseManager = nil
 
