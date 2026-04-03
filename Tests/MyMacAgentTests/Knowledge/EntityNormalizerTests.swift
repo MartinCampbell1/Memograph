@@ -98,4 +98,43 @@ struct EntityNormalizerTests {
         #expect(entity?.canonicalName == "App Store")
         #expect(entity?.entityType == .tool)
     }
+
+    @Test("Canonicalizes localized system app names into a consistent English layer")
+    func canonicalizesLocalizedSystemApps() {
+        let normalizer = EntityNormalizer()
+        let terminal = normalizer.normalize(rawName: "Терминал")
+        let settings = normalizer.normalize(rawName: "Системные настройки")
+        let notes = normalizer.normalize(rawName: "Заметки")
+
+        #expect(terminal?.canonicalName == "Terminal")
+        #expect(terminal?.entityType == .tool)
+        #expect(settings?.canonicalName == "System Settings")
+        #expect(settings?.entityType == .tool)
+        #expect(notes?.canonicalName == "Notes")
+        #expect(notes?.entityType == .tool)
+    }
+
+    @Test("Canonicalizes decomposed Cyrillic variants for localized aliases")
+    func canonicalizesDecomposedCyrillicVariants() {
+        let normalizer = EntityNormalizer()
+        let settings = normalizer.normalize(rawName: "Системные настрои\u{0306}ки")
+        let accessibility = normalizer.normalize(rawName: "Универсальныи\u{0306} доступ")
+
+        #expect(settings?.canonicalName == "System Settings")
+        #expect(settings?.entityType == .tool)
+        #expect(accessibility?.canonicalName == "Accessibility Permissions")
+        #expect(accessibility?.entityType == .topic)
+    }
+
+    @Test("Canonicalizes localized permissions topics")
+    func canonicalizesLocalizedPermissionTopics() {
+        let normalizer = EntityNormalizer()
+        let accessibility = normalizer.normalize(rawName: "Универсальный доступ")
+        let privacy = normalizer.normalize(rawName: "Конфиденциальность и безопасность")
+
+        #expect(accessibility?.canonicalName == "Accessibility Permissions")
+        #expect(accessibility?.entityType == .topic)
+        #expect(privacy?.canonicalName == "Privacy & Security")
+        #expect(privacy?.entityType == .topic)
+    }
 }

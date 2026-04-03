@@ -11,7 +11,7 @@ struct KnowledgeEntityCandidate: Hashable {
 }
 
 final class EntityNormalizer {
-    private let aliasMap: [String: (canonicalName: String, entityType: KnowledgeEntityType)] = [
+    private static let rawAliasMap: [String: (canonicalName: String, entityType: KnowledgeEntityType)] = [
         "twitter": ("X", .site),
         "x": ("X", .site),
         "app store": ("App Store", .tool),
@@ -22,25 +22,39 @@ final class EntityNormalizer {
         "obsidian": ("Obsidian", .tool),
         "codex": ("Codex", .tool),
         "chatgpt": ("ChatGPT", .tool),
+        "заметки": ("Notes", .tool),
+        "календарь": ("Calendar", .tool),
+        "почта": ("Mail", .tool),
+        "просмотр": ("Preview", .tool),
+        "системные настройки": ("System Settings", .tool),
         "claude": ("Claude", .tool),
         "claude.app": ("Claude", .tool),
         "claude platform": ("Claude Platform", .site),
         "claude code": ("Claude Code", .tool),
-        "terminal": ("Терминал", .tool),
-        "terminal.app": ("Терминал", .tool),
+        "terminal": ("Terminal", .tool),
+        "terminal.app": ("Terminal", .tool),
+        "терминал": ("Terminal", .tool),
         "lm studio.app": ("LM Studio", .tool),
         "nordvpn.app": ("NordVPN", .tool),
         "vmware fusion.app": ("VMware Fusion", .tool),
         "whatsapp": ("WhatsApp", .tool),
         "google ai studio": ("Google AI Studio", .site),
         "openrouter": ("OpenRouter", .site),
+        "универсальный доступ": ("Accessibility Permissions", .topic),
+        "доступ к диску": ("Full Disk Access", .topic),
+        "конфиденциальность и безопасность": ("Privacy & Security", .topic),
         "memograph": ("Memograph", .project),
         "mymacagent": ("Memograph", .project),
         "geminicode": ("geminicode", .project),
         "autopilot": ("autopilot", .project),
         "founderos": ("FounderOS", .project)
     ]
-    private let canonicalPhraseMap: [String: String] = [
+    private lazy var aliasMap: [String: (canonicalName: String, entityType: KnowledgeEntityType)] = {
+        Self.rawAliasMap.reduce(into: [String: (canonicalName: String, entityType: KnowledgeEntityType)]()) { partial, entry in
+            partial[Self.lookupKey(entry.key)] = entry.value
+        }
+    }()
+    private static let rawCanonicalPhraseMap: [String: String] = [
         "claim extraction methodology": "Claim Extraction Methodology",
         "dpi vs white-listing in moscow": "DPI vs White-listing in Moscow",
         "flywheel effect in agentic ai": "Flywheel Effect in Agentic AI",
@@ -54,8 +68,13 @@ final class EntityNormalizer {
         "tinytroupe for business validation": "TinyTroupe for Business Validation",
         "sshpass for remote sysadmin": "sshpass for Remote Sysadmin"
     ]
+    private lazy var canonicalPhraseMap: [String: String] = {
+        Self.rawCanonicalPhraseMap.reduce(into: [String: String]()) { partial, entry in
+            partial[Self.lookupKey(entry.key)] = entry.value
+        }
+    }()
 
-    private let stopPhrases: Set<String> = [
+    private static let rawStopPhrases: Set<String> = [
         "summary",
         "main topics",
         "suggested notes",
@@ -70,6 +89,7 @@ final class EntityNormalizer {
         "continue next",
         "continue later"
     ]
+    private lazy var stopPhrases: Set<String> = Set(Self.rawStopPhrases.map(Self.lookupKey))
     private let lessonSignals: [String] = [
         "benchmark",
         "benchmarks",
@@ -104,7 +124,8 @@ final class EntityNormalizer {
         let cleaned = clean(rawName)
         guard !cleaned.isEmpty else { return nil }
 
-        let lower = cleaned.lowercased()
+        let lower = Self.lookupKey(cleaned)
+        let normalizedKnownToolNames = Set(knownToolNames.map(Self.lookupKey))
         guard !stopPhrases.contains(lower) else { return nil }
         guard cleaned.count >= 2 else { return nil }
 
@@ -116,7 +137,7 @@ final class EntityNormalizer {
             )
         }
 
-        if knownToolNames.contains(cleaned) {
+        if normalizedKnownToolNames.contains(lower) {
             let canonicalName = canonicalize(cleaned, type: .tool)
             return KnowledgeEntityCandidate(
                 canonicalName: canonicalName,
@@ -189,7 +210,7 @@ final class EntityNormalizer {
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let lower = normalizedWhitespace.lowercased()
+        let lower = Self.lookupKey(normalizedWhitespace)
         if let mapped = canonicalPhraseMap[lower] {
             return mapped
         }
@@ -207,6 +228,13 @@ final class EntityNormalizer {
         }
 
         return normalizedWhitespace
+    }
+
+    private static func lookupKey(_ text: String) -> String {
+        text.precomposedStringWithCanonicalMapping
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     private func stripExplanatorySuffixIfNeeded(from text: String, type: KnowledgeEntityType) -> String {
