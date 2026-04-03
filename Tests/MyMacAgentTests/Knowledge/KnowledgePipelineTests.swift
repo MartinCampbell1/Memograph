@@ -538,6 +538,66 @@ struct KnowledgePipelineTests {
         #expect(windowMarkerCount == 2)
     }
 
+    @Test("Project recent windows include compact summary context when available")
+    func projectRecentWindowsIncludeSummaryContext() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, aliases_json, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text(#"["MyMacAgent"]"#),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("used_during_window"), .text("2026-04-03 20:02-21:02"), .real(0.95), .text("hourly_summary"),
+            .text("claim-2"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("advanced_during_window"), .text("2026-04-03"), .real(0.9), .text("hourly_summary")
+        ])
+
+        try db.execute("""
+            INSERT INTO daily_summaries
+                (date, summary_text, generated_at, generation_status)
+            VALUES (?, ?, ?, ?)
+        """, params: [
+            .text("2026-04-03"),
+            .text("""
+                ## Summary
+                Worked on [[Memograph]] while monitoring background stability.
+
+                ## Проекты и код
+
+                ### [[Memograph]] / [[MyMacAgent]]
+                - **Task**: Stabilize the background runtime.
+                - **Events**: Notifications through [[UserNotificationCenter]] indicated active capture work.
+                """),
+            .text("2026-04-03T21:02:46Z"),
+            .text("success")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
+
+        #expect(note?.bodyMarkdown.contains("Used during 2026-04-03 20:02-21:02.") == true)
+        #expect(note?.bodyMarkdown.contains("Context: Stabilize the background runtime. Notifications through UserNotificationCenter indicated active capture work.") == true)
+    }
+
     @Test("Knowledge edge weights stay stable when the same window is reprocessed")
     func knowledgeEdgesAreIdempotentForReruns() throws {
         let (db, path) = try makeDB()

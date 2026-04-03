@@ -62,7 +62,19 @@ final class KnowledgeCompiler {
 
         let relatedReferences = try fetchRelatedReferences(for: entityId, edges: edges)
             .filter { allowedEntityIds?.contains($0.entity.id) ?? true }
-        let markdown = renderMarkdown(entity: entity, claims: claims, relatedReferences: relatedReferences)
+        let aliases = aliases(for: entity)
+        let windowContexts = try buildWindowContextSnippets(
+            for: entity,
+            aliases: aliases,
+            claims: claims
+        )
+        let markdown = renderMarkdown(
+            entity: entity,
+            claims: claims,
+            relatedReferences: relatedReferences,
+            aliases: aliases,
+            windowContexts: windowContexts
+        )
         let links = relatedReferences.map { linkTarget(for: $0.entity) }
         let tags = [entity.entityType.rawValue, "memograph-kb-v1"]
         let effectiveSourceDate = sourceDate ?? claims.first?.sourceSummaryDate
@@ -185,7 +197,9 @@ final class KnowledgeCompiler {
     private func renderMarkdown(
         entity: KnowledgeEntityRecord,
         claims: [KnowledgeClaimRecord],
-        relatedReferences: [RelatedKnowledgeReference]
+        relatedReferences: [RelatedKnowledgeReference],
+        aliases: [String],
+        windowContexts: [String: String]
     ) -> String {
         let visibleRelationObjects = Set(relatedReferences.map { $0.entity.canonicalName })
         let displayedRelatedReferences = filteredRelatedReferences(relatedReferences, for: entity)
@@ -214,7 +228,6 @@ final class KnowledgeCompiler {
             markdown += "\n"
         }
 
-        let aliases = aliases(for: entity)
         if !aliases.isEmpty {
             markdown += "## Aliases\n"
             for alias in aliases {
@@ -239,7 +252,7 @@ final class KnowledgeCompiler {
         )
         if !recentClaims.isEmpty {
             markdown += "## Recent Windows\n"
-            for entry in renderRecentWindowEntries(from: recentClaims) {
+            for entry in renderRecentWindowEntries(from: recentClaims, windowContexts: windowContexts) {
                 markdown += "- [\(entry.when)] \(entry.description)\n"
             }
             markdown += "\n"
@@ -634,7 +647,8 @@ final class KnowledgeCompiler {
     }
 
     private func renderRecentWindowEntries(
-        from claims: [KnowledgeClaimRecord]
+        from claims: [KnowledgeClaimRecord],
+        windowContexts: [String: String]
     ) -> [(when: String, description: String)] {
         var orderedWindowKeys: [String] = []
         var claimsByWindow: [String: [KnowledgeClaimRecord]] = [:]
@@ -664,8 +678,238 @@ final class KnowledgeCompiler {
             }
 
             guard !descriptions.isEmpty else { return nil }
-            return (when: when, description: descriptions.joined(separator: " "))
+            var description = descriptions.joined(separator: " ")
+            if let context = windowContexts[windowKey], !context.isEmpty {
+                description += " Context: \(context)"
+            }
+            return (when: when, description: description)
         }
+    }
+
+    private func buildWindowContextSnippets(
+        for entity: KnowledgeEntityRecord,
+        aliases: [String],
+        claims: [KnowledgeClaimRecord]
+    ) throws -> [String: String] {
+        guard entity.entityType == .project else { return [:] }
+
+        var snippets: [String: String] = [:]
+        var summaryCache: [String: String?] = [:]
+        for claim in claims {
+            let windowKey = claimWindowKey(claim)
+            guard snippets[windowKey] == nil else { continue }
+
+            let summaryLookupKey = [
+                claim.sourceSummaryDate ?? "",
+                claim.sourceSummaryGeneratedAt ?? ""
+            ].joined(separator: "|")
+
+            let summaryText: String?
+            if let cached = summaryCache[summaryLookupKey] {
+                summaryText = cached
+            } else {
+                let loaded = try loadSummaryText(
+                    date: claim.sourceSummaryDate,
+                    generatedAt: claim.sourceSummaryGeneratedAt
+                )
+                summaryCache[summaryLookupKey] = loaded
+                summaryText = loaded
+            }
+
+            guard let summaryText,
+                  let snippet = extractProjectContextSnippet(
+                    from: summaryText,
+                    canonicalName: entity.canonicalName,
+                    aliases: aliases
+                  ) else {
+                continue
+            }
+            snippets[windowKey] = snippet
+        }
+
+        return snippets
+    }
+
+    private func loadSummaryText(date: String?, generatedAt: String?) throws -> String? {
+        if let generatedAt, !generatedAt.isEmpty {
+            let rows = try db.query("""
+                SELECT summary_text
+                FROM daily_summaries
+                WHERE generated_at = ?
+                LIMIT 1
+            """, params: [.text(generatedAt)])
+            return rows.first?["summary_text"]?.textValue
+        }
+
+        guard let date, !date.isEmpty else { return nil }
+        let rows = try db.query("""
+            SELECT summary_text
+            FROM daily_summaries
+            WHERE date = ?
+            LIMIT 1
+        """, params: [.text(date)])
+        return rows.first?["summary_text"]?.textValue
+    }
+
+    private func extractProjectContextSnippet(
+        from summaryText: String,
+        canonicalName: String,
+        aliases: [String]
+    ) -> String? {
+        let matchingNames = [canonicalName] + aliases
+        if let projectSectionSnippet = extractProjectSectionSnippet(
+            from: summaryText,
+            matchingNames: matchingNames
+        ) {
+            return projectSectionSnippet
+        }
+        return extractFallbackSummarySentence(
+            from: summaryText,
+            matchingNames: matchingNames
+        )
+    }
+
+    private func extractProjectSectionSnippet(
+        from summaryText: String,
+        matchingNames: [String]
+    ) -> String? {
+        let lines = summaryText.components(separatedBy: .newlines)
+        var inProjectsSection = false
+        var collectingTarget = false
+        var detailLines: [String] = []
+
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("## ") {
+                let heading = stripKnowledgeMarkdown(String(line.dropFirst(3)))
+                if heading.caseInsensitiveCompare("Проекты и код") == .orderedSame {
+                    inProjectsSection = true
+                    collectingTarget = false
+                    detailLines = []
+                    continue
+                }
+                if inProjectsSection {
+                    break
+                }
+            }
+
+            guard inProjectsSection else { continue }
+
+            if line.hasPrefix("### ") {
+                if collectingTarget && !detailLines.isEmpty {
+                    break
+                }
+                let heading = stripKnowledgeMarkdown(String(line.dropFirst(4)))
+                collectingTarget = matchesAnyKnowledgeName(heading, names: matchingNames)
+                detailLines = []
+                continue
+            }
+
+            guard collectingTarget else { continue }
+            if line.hasPrefix("- ") {
+                let cleaned = extractBulletDetail(from: line)
+                if !cleaned.isEmpty {
+                    detailLines.append(cleaned)
+                }
+            } else if !line.isEmpty && !detailLines.isEmpty {
+                break
+            }
+        }
+
+        guard !detailLines.isEmpty else { return nil }
+        return condensedContextSnippet(from: Array(detailLines.prefix(2)))
+    }
+
+    private func extractFallbackSummarySentence(
+        from summaryText: String,
+        matchingNames: [String]
+    ) -> String? {
+        let summarySection = summaryText
+            .components(separatedBy: "\n## ")
+            .first ?? summaryText
+        let plain = stripKnowledgeMarkdown(summarySection)
+        let sentences = plain.split(whereSeparator: \.isNewline)
+            .flatMap { $0.split(separator: ".", omittingEmptySubsequences: true) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for sentence in sentences {
+            if matchesAnyKnowledgeName(sentence, names: matchingNames) {
+                return condensedContextSnippet(from: [sentence + "."])
+            }
+        }
+
+        return nil
+    }
+
+    private func extractBulletDetail(from line: String) -> String {
+        let withoutBullet = line.replacingOccurrences(
+            of: #"^\-\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        let plain = stripKnowledgeMarkdown(withoutBullet)
+        let value: String
+        if let colonIndex = plain.firstIndex(of: ":") {
+            value = String(plain[plain.index(after: colonIndex)...])
+        } else {
+            value = plain
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func condensedContextSnippet(from parts: [String], maxLength: Int = 220) -> String {
+        let joined = parts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard joined.count > maxLength else { return joined }
+        let cutoffIndex = joined.index(joined.startIndex, offsetBy: maxLength)
+        let truncated = String(joined[..<cutoffIndex])
+        if let lastSpace = truncated.lastIndex(of: " ") {
+            return String(truncated[..<lastSpace]).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        }
+        return truncated.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    private func matchesAnyKnowledgeName(_ text: String, names: [String]) -> Bool {
+        let normalizedText = normalizedKnowledgeText(text)
+        guard !normalizedText.isEmpty else { return false }
+        return names.contains { name in
+            let normalizedName = normalizedKnowledgeText(name)
+            return !normalizedName.isEmpty && normalizedText.contains(normalizedName)
+        }
+    }
+
+    private func normalizedKnowledgeText(_ value: String) -> String {
+        stripKnowledgeMarkdown(value)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .replacingOccurrences(of: #"[^\p{L}\p{N}\s]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private func stripKnowledgeMarkdown(_ value: String) -> String {
+        var cleaned = value
+        cleaned = cleaned.replacingOccurrences(
+            of: #"\[\[([^\]|]+)\|([^\]]+)\]\]"#,
+            with: "$2",
+            options: .regularExpression
+        )
+        cleaned = cleaned.replacingOccurrences(
+            of: #"\[\[([^\]]+)\]\]"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        cleaned = cleaned.replacingOccurrences(of: "**", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "`", with: "")
+        return cleaned
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func shouldShowInRecentWindows(
