@@ -86,4 +86,128 @@ struct GraphShaperTests {
         #expect(!ids.contains("topic-1"))
         #expect(ids.contains("topic-2"))
     }
+
+    @Test("Suppresses helper tools and misclassified lesson-like models")
+    func suppressesHelperToolsAndNoisyModels() {
+        let shaper = GraphShaper()
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "tool-1",
+                    canonicalName: "UserNotificationCenter",
+                    slug: "usernotificationcenter",
+                    entityType: .tool,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 5
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "tool-2",
+                    canonicalName: "Safari",
+                    slug: "safari",
+                    entityType: .tool,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 2
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "model-1",
+                    canonicalName: "Gemini 3 Flash Preview Benchmarks",
+                    slug: "gemini-3-flash-preview-benchmarks",
+                    entityType: .model,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 3
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "model-2",
+                    canonicalName: "Gemini 3 Flash Preview",
+                    slug: "gemini-3-flash-preview",
+                    entityType: .model,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 3
+            )
+        ]
+
+        let ids = shaper.materializedEntityIds(from: metrics)
+
+        #expect(!ids.contains("tool-1"))
+        #expect(ids.contains("tool-2"))
+        #expect(!ids.contains("model-1"))
+        #expect(ids.contains("model-2"))
+    }
+
+    @Test("Suppresses versioned tool variants and generic lessons when a stronger sibling exists")
+    func suppressesVersionedToolsAndGenericLessons() {
+        let shaper = GraphShaper()
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "tool-1",
+                    canonicalName: "Claude Code",
+                    slug: "claude-code",
+                    entityType: .tool,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 2
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "tool-2",
+                    canonicalName: "Claude Code v2.1.90",
+                    slug: "claude-code-v2-1-90",
+                    entityType: .tool,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 2
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "lesson-1",
+                    canonicalName: "VRAM requirements",
+                    slug: "vram-requirements",
+                    entityType: .lesson,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "lesson-2",
+                    canonicalName: "VRAM Requirements for Agentic AI",
+                    slug: "vram-requirements-for-agentic-ai",
+                    entityType: .lesson,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 2
+            )
+        ]
+
+        let ids = shaper.materializedEntityIds(from: metrics)
+
+        #expect(ids.contains("tool-1"))
+        #expect(!ids.contains("tool-2"))
+        #expect(!ids.contains("lesson-1"))
+        #expect(ids.contains("lesson-2"))
+    }
 }

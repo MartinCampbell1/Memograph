@@ -62,6 +62,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if shouldRebuildKnowledgeGraph() {
+            logger.info("Running knowledge graph rebuild")
+            initializeDatabase()
+            initializePhase3()
+            Task { @MainActor [weak self] in
+                await self?.runKnowledgeGraphRebuild()
+            }
+            return
+        }
+
         logger.info("MyMacAgent launched")
         registerObservers()
         initializeDatabase()
@@ -156,6 +166,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return (start, end)
+    }
+
+    private func shouldRebuildKnowledgeGraph() -> Bool {
+        CommandLine.arguments.contains("--rebuild-knowledge-graph")
     }
 
     private func initializeDatabase() {
@@ -632,6 +646,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             logger.error("Backfill export failed: \(error.localizedDescription)")
         }
+    }
+
+    private func runKnowledgeGraphRebuild() async {
+        defer {
+            NSApp.terminate(nil)
+        }
+
+        guard let db = databaseManager,
+              let summarizer = dailySummarizer,
+              let knowledgePipeline else {
+            logger.error("Knowledge graph rebuild failed: phase 3 is not initialized")
+            return
+        }
+
+        do {
+            try knowledgePipeline.resetKnowledgeStore(exporter: obsidianExporter)
+
+            let rows = try db.query("""
+                SELECT *
+                FROM daily_summaries
+                ORDER BY COALESCE(generated_at, date), date
+            """)
+
+            var rebuiltWindows = 0
+            for row in rows {
+                guard let summary = DailySummaryRecord(row: row),
+                      let window = summaryWindowDescriptor(from: summary) else {
+                    continue
+                }
+
+                let sessions = try summarizer.collectSessionData(for: window)
+                _ = try knowledgePipeline.process(
+                    summary: summary,
+                    window: window,
+                    sessions: sessions,
+                    exporter: nil,
+                    materialize: false
+                )
+                rebuiltWindows += 1
+            }
+
+            let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: obsidianExporter)
+            logger.info("Knowledge graph rebuild finished: \(rebuiltWindows) windows, \(materializedCount) notes")
+        } catch {
+            logger.error("Knowledge graph rebuild failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func summaryWindowDescriptor(from summary: DailySummaryRecord) -> SummaryWindowDescriptor? {
+        if let json = summary.contextSwitchesJson,
+           let data = json.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let startString = object["window_start"] as? String,
+           let endString = object["window_end"] as? String,
+           let start = dateSupport.parseDateTime(startString),
+           let end = dateSupport.parseDateTime(endString),
+           end > start {
+            return SummaryWindowDescriptor(date: summary.date, start: start, end: end)
+        }
+
+        guard let start = dateSupport.startOfLocalDay(for: summary.date),
+              let end = dateSupport.endOfLocalDay(for: summary.date),
+              end > start else {
+            return nil
+        }
+
+        return SummaryWindowDescriptor(date: summary.date, start: start, end: end)
     }
 
     private func scheduleRetentionTimer() {

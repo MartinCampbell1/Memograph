@@ -23,6 +23,36 @@ final class GraphShaper {
         "topic",
         "topics"
     ]
+    private let genericLessonNames: Set<String> = [
+        "report generation"
+    ]
+    private let suppressedToolNames: Set<String> = [
+        "coreautha",
+        "loginwindow",
+        "universalaccessauthwarn",
+        "usernotificationcenter"
+    ]
+    private let suppressedToolFragments: [String] = [
+        "вспомогательное приложение",
+        "extension helper",
+        "helper",
+        "authwarn"
+    ]
+    private let suppressedModelSignals: [String] = [
+        "benchmark",
+        "benchmarks",
+        "roadmap",
+        "guide",
+        "expansion",
+        "requirements",
+        "methodology",
+        "conflict",
+        "conflicts",
+        "technology",
+        "plan",
+        "report",
+        "audit"
+    ]
 
     private let stopTokens: Set<String> = [
         "the", "and", "for", "with", "from", "into", "onto", "that",
@@ -42,11 +72,26 @@ final class GraphShaper {
     ) -> Bool {
         switch metric.entity.entityType {
         case .project, .tool, .model:
-            return metric.claimCount >= 1
+            switch metric.entity.entityType {
+            case .project:
+                return metric.claimCount >= 1
+            case .tool:
+                return metric.claimCount >= 1
+                    && !isSuppressedTool(metric.entity.canonicalName)
+                    && !isVersionedToolVariant(metric, in: index)
+                    && isSpecificEnough(metric.entity.canonicalName, minimumTokens: 1, minimumLength: 4)
+            case .model:
+                return metric.claimCount >= 1 && !isSuppressedModel(metric.entity.canonicalName)
+            default:
+                return false
+            }
         case .issue:
             return metric.claimCount >= 1 && isSpecificEnough(metric.entity.canonicalName, minimumTokens: 2, minimumLength: 10)
         case .lesson:
-            return metric.claimCount >= 1 && isSpecificEnough(metric.entity.canonicalName, minimumTokens: 2, minimumLength: 14)
+            guard metric.claimCount >= 1 else { return false }
+            guard !isGenericLesson(metric.entity.canonicalName) else { return false }
+            guard !hasMoreSpecificSibling(for: metric, in: index) else { return false }
+            return isSpecificEnough(metric.entity.canonicalName, minimumTokens: 2, minimumLength: 14)
         case .site, .person:
             return metric.claimCount >= 2 && isSpecificEnough(metric.entity.canonicalName, minimumTokens: 1, minimumLength: 4)
         case .topic:
@@ -68,6 +113,48 @@ final class GraphShaper {
         }
 
         return false
+    }
+
+    private func isGenericLesson(_ name: String) -> Bool {
+        genericLessonNames.contains(name.lowercased())
+    }
+
+    private func isSuppressedTool(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        if suppressedToolNames.contains(lowered) {
+            return true
+        }
+
+        return suppressedToolFragments.contains(where: { lowered.contains($0) })
+    }
+
+    private func isSuppressedModel(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        if lowered.hasSuffix(".app") {
+            return true
+        }
+
+        if lowered == "geminicode" {
+            return true
+        }
+
+        return suppressedModelSignals.contains(where: { lowered.contains($0) })
+    }
+
+    private func isVersionedToolVariant(
+        _ metric: KnowledgeEntityMetrics,
+        in index: [String: KnowledgeEntityMetrics]
+    ) -> Bool {
+        let name = metric.entity.canonicalName
+        guard let baseName = versionlessToolName(from: name) else {
+            return false
+        }
+
+        return index.values.contains { candidate in
+            candidate.entity.id != metric.entity.id
+                && candidate.entity.entityType == .tool
+                && candidate.entity.canonicalName.caseInsensitiveCompare(baseName) == .orderedSame
+        }
     }
 
     private func hasMoreSpecificSibling(
@@ -104,6 +191,20 @@ final class GraphShaper {
             return true
         }
         return name.count >= minimumLength
+    }
+
+    private func versionlessToolName(from name: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"^(.*?)(?:\s+v\d+(?:\.\d+)+)$"#, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(name.startIndex..<name.endIndex, in: name)
+        guard let match = regex.firstMatch(in: name, range: range),
+              match.numberOfRanges > 1,
+              let baseRange = Range(match.range(at: 1), in: name) else {
+            return nil
+        }
+        let base = String(name[baseRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return base.isEmpty ? nil : base
     }
 
     private func tokenSet(for name: String) -> Set<String> {

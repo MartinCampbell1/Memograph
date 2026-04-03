@@ -21,11 +21,36 @@ final class EntityNormalizer {
         "codex": ("Codex", .tool),
         "chatgpt": ("ChatGPT", .tool),
         "claude": ("Claude", .tool),
+        "claude.app": ("Claude", .tool),
+        "claude platform": ("Claude Platform", .site),
         "claude code": ("Claude Code", .tool),
+        "terminal": ("Терминал", .tool),
+        "terminal.app": ("Терминал", .tool),
+        "lm studio.app": ("LM Studio", .tool),
+        "nordvpn.app": ("NordVPN", .tool),
+        "vmware fusion.app": ("VMware Fusion", .tool),
+        "whatsapp": ("WhatsApp", .tool),
         "google ai studio": ("Google AI Studio", .site),
         "openrouter": ("OpenRouter", .site),
         "memograph": ("Memograph", .project),
-        "mymacagent": ("Memograph", .project)
+        "mymacagent": ("Memograph", .project),
+        "geminicode": ("geminicode", .project),
+        "autopilot": ("autopilot", .project),
+        "founderos": ("FounderOS", .project)
+    ]
+    private let canonicalPhraseMap: [String: String] = [
+        "claim extraction methodology": "Claim Extraction Methodology",
+        "dpi vs white-listing in moscow": "DPI vs White-listing in Moscow",
+        "flywheel effect in agentic ai": "Flywheel Effect in Agentic AI",
+        "founderos v8 merge report": "FounderOS v8 Merge Report",
+        "graphrag noise reduction": "GraphRAG Noise Reduction",
+        "memograph kb graph v1 plan": "Memograph KB Graph v1 Plan",
+        "nginx websocket origin conflict fix": "Nginx WebSocket Origin Conflict Fix",
+        "three-layer kb": "Three-Layer Knowledge Base Architecture",
+        "three-layer knowledge base": "Three-Layer Knowledge Base Architecture",
+        "three-layer knowledge base architecture": "Three-Layer Knowledge Base Architecture",
+        "tinytroupe for business validation": "TinyTroupe for Business Validation",
+        "sshpass for remote sysadmin": "sshpass for Remote Sysadmin"
     ]
 
     private let stopPhrases: Set<String> = [
@@ -42,6 +67,31 @@ final class EntityNormalizer {
         "continue tomorrow",
         "continue next",
         "continue later"
+    ]
+    private let lessonSignals: [String] = [
+        "benchmark",
+        "benchmarks",
+        "roadmap",
+        "guide",
+        "expansion",
+        "requirements",
+        "methodology",
+        "conflict",
+        "conflicts",
+        "technology",
+        "plan",
+        "report",
+        "audit",
+        "playbook",
+        "strategy",
+        "pattern"
+    ]
+    private let knownProjects: Set<String> = [
+        "memograph",
+        "mymacagent",
+        "geminicode",
+        "autopilot",
+        "founderos"
     ]
 
     func normalize(
@@ -65,8 +115,9 @@ final class EntityNormalizer {
         }
 
         if knownToolNames.contains(cleaned) {
+            let canonicalName = canonicalize(cleaned, type: .tool)
             return KnowledgeEntityCandidate(
-                canonicalName: cleaned,
+                canonicalName: canonicalName,
                 entityType: .tool,
                 aliases: [cleaned]
             )
@@ -75,8 +126,10 @@ final class EntityNormalizer {
         let inferredType = typeHint ?? classify(cleaned)
         guard let inferredType else { return nil }
 
+        let canonicalName = canonicalize(cleaned, type: inferredType)
+
         return KnowledgeEntityCandidate(
-            canonicalName: canonicalize(cleaned),
+            canonicalName: canonicalName,
             entityType: inferredType,
             aliases: [cleaned]
         )
@@ -114,30 +167,81 @@ final class EntityNormalizer {
             .replacingOccurrences(of: "]]", with: "")
             .replacingOccurrences(of: "`", with: "")
             .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\u{200E}", with: "")
+            .replacingOccurrences(of: "\u{200F}", with: "")
+            .replacingOccurrences(of: "\u{202A}", with: "")
+            .replacingOccurrences(of: "\u{202B}", with: "")
+            .replacingOccurrences(of: "\u{202C}", with: "")
+            .replacingOccurrences(of: "\u{2066}", with: "")
+            .replacingOccurrences(of: "\u{2067}", with: "")
+            .replacingOccurrences(of: "\u{2068}", with: "")
+            .replacingOccurrences(of: "\u{2069}", with: "")
+            .replacingOccurrences(of: "\u{FEFF}", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
     }
 
-    private func canonicalize(_ text: String) -> String {
-        if text == text.uppercased(), text.count <= 6 {
+    private func canonicalize(_ text: String, type: KnowledgeEntityType) -> String {
+        let stripped = stripExplanatorySuffixIfNeeded(from: text, type: type)
+        let normalizedWhitespace = stripped
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let lower = normalizedWhitespace.lowercased()
+        if let mapped = canonicalPhraseMap[lower] {
+            return mapped
+        }
+
+        if type == .tool, lower.hasSuffix(".app") {
+            let base = normalizedWhitespace.dropLast(4).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !base.isEmpty {
+                return base
+            }
+        }
+
+        if normalizedWhitespace == normalizedWhitespace.uppercased(),
+           normalizedWhitespace.count <= 6 {
+            return normalizedWhitespace
+        }
+
+        return normalizedWhitespace
+    }
+
+    private func stripExplanatorySuffixIfNeeded(from text: String, type: KnowledgeEntityType) -> String {
+        switch type {
+        case .lesson, .topic, .issue:
+            break
+        default:
             return text
         }
+
+        let separators = [" — ", " – ", ": "]
+        for separator in separators {
+            guard let range = text.range(of: separator) else { continue }
+            let head = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let tail = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard head.count >= 4, tail.count >= 8 else { continue }
+
+            let tokenCount = head
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+                .count
+            if tokenCount >= 2 {
+                return head
+            }
+        }
+
         return text
     }
 
     private func classify(_ text: String) -> KnowledgeEntityType? {
         let lower = text.lowercased()
 
-        if lower.contains("gpt")
-            || lower.contains("claude")
-            || lower.contains("gemini")
-            || lower.contains("qwen")
-            || lower.contains("deepseek")
-            || lower.contains("glm")
-            || lower.contains("minimax")
-            || lower.contains("opus")
-            || lower.contains("haiku")
-            || lower.contains("sonnet") {
-            return .model
+        if knownProjects.contains(lower) {
+            return .project
+        }
+
+        if lower.hasSuffix(".app") || lower.contains(" app") {
+            return .tool
         }
 
         if lower.contains("error")
@@ -152,10 +256,7 @@ final class EntityNormalizer {
             return .issue
         }
 
-        if lower.contains("lesson")
-            || lower.contains("pattern")
-            || lower.contains("playbook")
-            || lower.contains("strategy") {
+        if lessonSignals.contains(where: { lower.contains($0) }) || lower.contains("lesson") {
             return .lesson
         }
 
@@ -169,8 +270,21 @@ final class EntityNormalizer {
             return .site
         }
 
-        if lower == "memograph" || lower == "mymacagent" {
-            return .project
+        if lower.contains("claude code v") {
+            return .tool
+        }
+
+        if lower.contains("gpt")
+            || lower.contains("claude")
+            || lower.contains("gemini")
+            || lower.contains("qwen")
+            || lower.contains("deepseek")
+            || lower.contains("glm")
+            || lower.contains("minimax")
+            || lower.contains("opus")
+            || lower.contains("haiku")
+            || lower.contains("sonnet") {
+            return .model
         }
 
         if text.first?.isUppercase == true {

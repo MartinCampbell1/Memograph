@@ -32,7 +32,8 @@ final class KnowledgePipeline {
         summary: DailySummaryRecord,
         window: SummaryWindowDescriptor,
         sessions: [SessionData],
-        exporter: ObsidianExporter? = nil
+        exporter: ObsidianExporter? = nil,
+        materialize: Bool = true
     ) throws -> KnowledgePipelineResult {
         let extraction = extractor.extract(summary: summary, window: window, sessions: sessions)
         guard !extraction.entities.isEmpty else {
@@ -66,9 +67,14 @@ final class KnowledgePipeline {
             try upsertEdge(edge, fromEntityId: from.id, toEntityId: to.id, supportingClaimIds: support)
         }
 
-        let noteCount = try syncMaterializedKnowledge(exporter: exporter, sourceDateOverrideByEntityId:
-            Dictionary(uniqueKeysWithValues: persistedEntities.values.map { ($0.id, summary.date) })
-        )
+        let noteCount: Int
+        if materialize {
+            noteCount = try syncMaterializedKnowledge(exporter: exporter, sourceDateOverrideByEntityId:
+                Dictionary(uniqueKeysWithValues: persistedEntities.values.map { ($0.id, summary.date) })
+            )
+        } else {
+            noteCount = 0
+        }
 
         logger.info("Knowledge pipeline persisted \(persistedEntities.count) entities, \(extraction.claims.count) claims, \(extraction.edges.count) edges")
         return KnowledgePipelineResult(
@@ -125,6 +131,20 @@ final class KnowledgePipeline {
         }
 
         return noteCount
+    }
+
+    func resetKnowledgeStore(exporter: ObsidianExporter? = nil) throws {
+        if let exporter {
+            let notes = try db.query("SELECT * FROM knowledge_notes").compactMap(KnowledgeNoteRecord.init(row:))
+            for note in notes {
+                try? exporter.deleteKnowledgeNote(note)
+            }
+        }
+
+        try db.execute("DELETE FROM knowledge_notes")
+        try db.execute("DELETE FROM knowledge_edges")
+        try db.execute("DELETE FROM knowledge_claims")
+        try db.execute("DELETE FROM knowledge_entities")
     }
 
     private func upsertEntity(_ entity: KnowledgeEntityCandidate, seenAt: Date) throws -> KnowledgeEntityRecord {
