@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var captureHashTracker = CaptureHashTracker()
     private let captureGate = CaptureGate(maxConcurrent: 1)
     private var privacyGuard = PrivacyGuard.fromSettings()
-    private var summaryDatesInFlight = Set<String>()
+    private var summaryWindowsInFlight = Set<String>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.applicationIconImage = AppIconArtwork.makeImage()
@@ -291,9 +291,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let sessionManager, let sessionId = sessionManager.currentSessionId,
               let captureEngine, let imageProcessor, let db = databaseManager else { return }
 
+        let currentWindowTitle = windowMonitor?.currentWindowTitle
+
         guard privacyGuard.shouldCapture(
             bundleId: appInfo.bundleId,
-            windowTitle: windowMonitor?.currentWindowTitle
+            windowTitle: currentWindowTitle
         ) else {
             logger.info("Skipping capture: blocked by privacy rules (\(appInfo.bundleId))")
             return
@@ -386,7 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let ctxSnapshot = fusionEngine.fuse(
                         sessionId: sessionId, captureId: captureId,
                         appName: appInfo.appName, bundleId: appInfo.bundleId,
-                        windowTitle: self.windowMonitor?.currentWindowTitle,
+                        windowTitle: currentWindowTitle,
                         ax: axSnapshot, ocr: ocrSnapshot,
                         readableScore: readScore, uncertaintyScore: 1.0 - readScore
                     )
@@ -418,13 +420,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func runDailySummary(for date: String, apiKey: String? = nil) async {
-        guard !summaryDatesInFlight.contains(date) else {
-            logger.info("Skipping summary generation for \(date): already running")
+        guard let summarizer = dailySummarizer else {
+            logger.error("Daily summary failed: summarizer is not initialized")
             return
         }
 
-        summaryDatesInFlight.insert(date)
-        defer { summaryDatesInFlight.remove(date) }
+        guard let window = try? summarizer.summaryWindow(for: date) else {
+            logger.error("Daily summary failed: could not derive window for \(date)")
+            return
+        }
+
+        await runDailySummary(for: window, apiKey: apiKey)
+    }
+
+    private func runDailySummary(for window: SummaryWindowDescriptor, apiKey: String? = nil) async {
+        let windowKey = summaryWindowKey(for: window)
+        guard !summaryWindowsInFlight.contains(windowKey) else {
+            logger.info("Skipping summary generation for \(windowKey): already running")
+            return
+        }
+
+        summaryWindowsInFlight.insert(windowKey)
+        defer { summaryWindowsInFlight.remove(windowKey) }
 
         guard let summarizer = dailySummarizer else {
             logger.error("Daily summary failed: summarizer is not initialized")
@@ -433,12 +450,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let analyzer = visionAnalyzer {
             do {
-                let count = try await analyzer.analyzeAllLowReadability(for: date)
+                let count = try await analyzer.analyzeAllLowReadability(for: window.date)
                 if count > 0 {
                     logger.info("Analyzed \(count) low-readability screenshots before summary")
                 }
             } catch {
-                logger.error("Vision pre-pass failed for \(date): \(error.localizedDescription)")
+                logger.error("Vision pre-pass failed for \(window.date): \(error.localizedDescription)")
             }
         }
 
@@ -447,20 +464,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             if let client = LLMClient.client(for: settings, apiKeyOverride: apiKey) {
-                summary = try await summarizer.summarize(for: date, using: client)
+                summary = try await summarizer.summarize(for: window, using: client)
             } else {
-                logger.info("No summary provider configured for \(date), writing local fallback report")
+                logger.info("No summary provider configured for \(windowKey), writing local fallback report")
                 summary = try summarizer.buildFallbackSummary(
-                    for: date,
+                    for: window,
                     failureReason: "No configured summary provider"
                 )
             }
         } catch {
             let sanitizedReason = sanitizedSummaryFailureReason(for: error)
-            logger.error("Daily summary model step failed for \(date): \(sanitizedReason, privacy: .public)")
+            logger.error("Daily summary model step failed for \(windowKey): \(sanitizedReason, privacy: .public)")
             do {
                 summary = try summarizer.buildFallbackSummary(
-                    for: date,
+                    for: window,
                     failureReason: sanitizedReason
                 )
             } catch {
@@ -474,7 +491,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let path = try exporter.exportDailyNote(summary: summary)
                 logger.info("Daily note exported to \(path)")
             } catch {
-                logger.error("Daily summary export failed for \(date): \(error.localizedDescription)")
+                logger.error("Daily summary export failed for \(windowKey): \(error.localizedDescription)")
+                do {
+                    try exporter.enqueueSummaryExport(summary, lastError: error.localizedDescription)
+                } catch {
+                    logger.error("Failed to enqueue summary export retry for \(windowKey): \(error.localizedDescription)")
+                }
             }
         }
 
@@ -483,6 +505,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func generatePendingDailySummaries(reason: String) async {
         let settings = AppSettings()
+        drainPendingSummaryExports(reason: reason)
+
         guard settings.resolvedSummaryProvider != .disabled else {
             logger.info("Skipping auto-summary: summary provider is disabled")
             return
@@ -494,16 +518,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         for date in dates {
             do {
-                guard try summarizer.shouldGenerateSummary(
+                let windows = try summarizer.pendingSummaryWindows(
                     for: date,
                     currentLocalDate: today,
                     minimumIntervalMinutes: settings.summaryIntervalMinutes
-                ) else {
-                    continue
-                }
+                )
 
-                logger.info("Auto-summary catch-up (\(reason, privacy: .public)) for \(date)")
-                await runDailySummary(for: date, apiKey: settings.externalAPIKey)
+                for window in windows {
+                    logger.info("Auto-summary catch-up (\(reason, privacy: .public)) for \(window.date) [\(self.dateSupport.localTimeString(from: window.start))-\(self.dateSupport.localTimeString(from: window.end))]")
+                    await runDailySummary(for: window, apiKey: settings.externalAPIKey)
+                }
             } catch {
                 logger.error("Failed to evaluate summary schedule for \(date): \(error.localizedDescription)")
             }
@@ -597,10 +621,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             let today = dateSupport.currentLocalDateString()
-            if let generatedAt = try summarizer.summaryRecord(for: today)?
-                .generatedAt
-                .flatMap(dateSupport.parseDateTime) {
-                let dueAt = generatedAt.addingTimeInterval(interval)
+            let pendingWindows = try summarizer.pendingSummaryWindows(
+                for: today,
+                currentLocalDate: today,
+                minimumIntervalMinutes: Int(interval / 60)
+            )
+            if !pendingWindows.isEmpty {
+                return minimumDelay
+            }
+
+            if let coveredUntil = try summarizer.coveredUntil(for: today) {
+                let dueAt = coveredUntil.addingTimeInterval(interval)
+                return max(minimumDelay, dueAt.timeIntervalSinceNow)
+            }
+
+            if let startOfDay = dateSupport.startOfLocalDay(for: today) {
+                let dueAt = startOfDay.addingTimeInterval(interval)
                 return max(minimumDelay, dueAt.timeIntervalSinceNow)
             }
         } catch {
@@ -608,6 +644,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return interval
+    }
+
+    private func summaryWindowKey(for window: SummaryWindowDescriptor) -> String {
+        [
+            window.date,
+            dateSupport.isoString(from: window.start),
+            dateSupport.isoString(from: window.end)
+        ].joined(separator: "|")
+    }
+
+    private func drainPendingSummaryExports(reason: String) {
+        guard let exporter = obsidianExporter else { return }
+
+        do {
+            let drained = try exporter.drainQueuedExports()
+            if drained > 0 {
+                logger.info("Drained \(drained) queued Obsidian exports during \(reason, privacy: .public)")
+            }
+        } catch {
+            logger.error("Failed to drain queued Obsidian exports during \(reason): \(error.localizedDescription)")
+        }
     }
 
     private func sanitizedSummaryFailureReason(for error: Error) -> String {

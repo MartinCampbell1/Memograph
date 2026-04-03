@@ -96,6 +96,27 @@ struct LocalDateSupport {
         return max(storedActiveDurationMs, computedDurationMs)
     }
 
+    func overlapDurationMs(
+        startedAt: String,
+        endedAt: String?,
+        rangeStart: Date,
+        rangeEnd: Date,
+        now: Date = Date()
+    ) -> Int64 {
+        guard let sessionStart = parseDateTime(startedAt) else {
+            return 0
+        }
+
+        let sessionEnd = endedAt.flatMap(parseDateTime) ?? now
+        let overlapStart = max(sessionStart, rangeStart)
+        let overlapEnd = min(sessionEnd, rangeEnd)
+        guard overlapEnd > overlapStart else {
+            return 0
+        }
+
+        return Int64(overlapEnd.timeIntervalSince(overlapStart) * 1000)
+    }
+
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone

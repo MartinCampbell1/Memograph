@@ -179,4 +179,56 @@ struct ObsidianExporterTests {
         #expect(ObsidianExporter.formatDuration(minutes: 60) == "1h 00m")
         #expect(ObsidianExporter.formatDuration(minutes: 0) == "0m")
     }
+
+    @Test("Queues failed exports and drains them later")
+    func queuesAndDrainsExports() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_vault_queue_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: "Queued note body.",
+            topAppsJson: nil,
+            topTopicsJson: nil,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T03:01:55Z","window_end":"2026-04-03T04:01:55Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-03T04:02:10Z",
+            modelName: "test",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        try exporter.enqueueSummaryExport(summary, lastError: "simulated failure")
+
+        let queued = try db.query("""
+            SELECT status, last_error
+            FROM sync_queue
+            WHERE job_type = ?
+        """, params: [.text("obsidian_export_summary")])
+        #expect(queued.count == 1)
+        #expect(queued[0]["status"]?.textValue == "pending")
+        #expect(queued[0]["last_error"]?.textValue == "simulated failure")
+
+        let drained = try exporter.drainQueuedExports()
+        #expect(drained == 1)
+
+        let filePath = (vaultDir as NSString).appendingPathComponent("Daily/2026-04-03_03-01-04-01.md")
+        #expect(FileManager.default.fileExists(atPath: filePath))
+
+        let finished = try db.query("""
+            SELECT status
+            FROM sync_queue
+            WHERE job_type = ?
+        """, params: [.text("obsidian_export_summary")])
+        #expect(finished.first?["status"]?.textValue == "done")
+    }
 }

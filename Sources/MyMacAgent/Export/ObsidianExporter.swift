@@ -21,6 +21,8 @@ final class ObsidianExporter {
     private let vaultPath: String
     private let logger = Logger.export
     private let dateSupport: LocalDateSupport
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
 
     init(db: DatabaseManager, vaultPath: String = "", timeZone: TimeZone = .autoupdatingCurrent) {
         self.db = db
@@ -148,6 +150,114 @@ final class ObsidianExporter {
         return filePath
     }
 
+    func enqueueSummaryExport(_ summary: DailySummaryRecord, lastError: String? = nil) throws {
+        let entityId = exportEntityId(for: summary)
+        let payloadData = try encoder.encode(summary)
+        guard let payloadJson = String(data: payloadData, encoding: .utf8) else {
+            throw DatabaseError.executeFailed("Failed to encode export payload")
+        }
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let existing = try db.query("""
+            SELECT id, retry_count
+            FROM sync_queue
+            WHERE job_type = ? AND entity_id = ?
+              AND status IN ('pending', 'running', 'failed')
+            ORDER BY id DESC
+            LIMIT 1
+        """, params: [.text("obsidian_export_summary"), .text(entityId)])
+
+        if let row = existing.first,
+           let id = row["id"]?.intValue {
+            try db.execute("""
+                UPDATE sync_queue
+                SET payload_json = ?, status = 'pending', scheduled_at = ?, last_error = ?, finished_at = NULL
+                WHERE id = ?
+            """, params: [
+                .text(payloadJson),
+                .text(now),
+                lastError.map { .text($0) } ?? .null,
+                .integer(id)
+            ])
+        } else {
+            try db.execute("""
+                INSERT INTO sync_queue (job_type, entity_id, payload_json, status, retry_count, scheduled_at, last_error)
+                VALUES (?, ?, ?, 'pending', 0, ?, ?)
+            """, params: [
+                .text("obsidian_export_summary"),
+                .text(entityId),
+                .text(payloadJson),
+                .text(now),
+                lastError.map { .text($0) } ?? .null
+            ])
+        }
+    }
+
+    @discardableResult
+    func drainQueuedExports(limit: Int = 8) throws -> Int {
+        let now = Date()
+        let nowString = ISO8601DateFormatter().string(from: now)
+        let rows = try db.query("""
+            SELECT id, payload_json, retry_count
+            FROM sync_queue
+            WHERE job_type = ?
+              AND status IN ('pending', 'failed')
+              AND (scheduled_at IS NULL OR scheduled_at <= ?)
+            ORDER BY id
+            LIMIT ?
+        """, params: [
+            .text("obsidian_export_summary"),
+            .text(nowString),
+            .integer(Int64(limit))
+        ])
+
+        var exportedCount = 0
+        for row in rows {
+            guard let id = row["id"]?.intValue else { continue }
+            let retryCount = Int(row["retry_count"]?.intValue ?? 0)
+
+            try db.execute("""
+                UPDATE sync_queue
+                SET status = 'running', started_at = ?, last_error = NULL
+                WHERE id = ?
+            """, params: [.text(nowString), .integer(id)])
+
+            do {
+                guard let payloadJson = row["payload_json"]?.textValue,
+                      let payloadData = payloadJson.data(using: .utf8) else {
+                    throw DatabaseError.executeFailed("Missing export payload")
+                }
+
+                let summary = try decoder.decode(DailySummaryRecord.self, from: payloadData)
+                _ = try exportDailyNote(summary: summary)
+
+                try db.execute("""
+                    UPDATE sync_queue
+                    SET status = 'done', finished_at = ?, started_at = COALESCE(started_at, ?), last_error = NULL
+                    WHERE id = ?
+                """, params: [.text(nowString), .text(nowString), .integer(id)])
+                exportedCount += 1
+            } catch {
+                let nextRetry = ISO8601DateFormatter().string(
+                    from: now.addingTimeInterval(retryDelay(for: retryCount + 1))
+                )
+                try db.execute("""
+                    UPDATE sync_queue
+                    SET status = 'failed', retry_count = ?, scheduled_at = ?, finished_at = ?, last_error = ?
+                    WHERE id = ?
+                """, params: [
+                    .integer(Int64(retryCount + 1)),
+                    .text(nextRetry),
+                    .text(nowString),
+                    .text(error.localizedDescription),
+                    .integer(id)
+                ])
+            }
+        }
+
+        return exportedCount
+    }
+
     static func formatDuration(minutes: Int) -> String {
         if minutes < 60 {
             return "\(minutes)m"
@@ -197,6 +307,16 @@ final class ObsidianExporter {
         return "\(summary.date)_\(timeStamp).md"
     }
 
+    private func exportEntityId(for summary: DailySummaryRecord) -> String {
+        if let metadata = summaryWindowMetadata(from: summary.contextSwitchesJson),
+           let windowStart = metadata.windowStart,
+           let windowEnd = metadata.windowEnd {
+            return "\(summary.date)|\(dateSupport.isoString(from: windowStart))|\(dateSupport.isoString(from: windowEnd))"
+        }
+
+        return "\(summary.date)|daily"
+    }
+
     private func summaryWindowMetadata(from json: String?) -> SummaryWindowMetadata? {
         guard let json,
               let data = json.data(using: .utf8),
@@ -209,6 +329,11 @@ final class ObsidianExporter {
         let windowEnd = (object["window_end"] as? String).flatMap(dateSupport.parseDateTime)
         let mode = object["mode"] as? String
         return SummaryWindowMetadata(count: count, windowStart: windowStart, windowEnd: windowEnd, mode: mode)
+    }
+
+    private func retryDelay(for retryCount: Int) -> TimeInterval {
+        let boundedRetryCount = min(max(retryCount, 1), 6)
+        return Double(1 << boundedRetryCount) * 60
     }
 
     private func stripTopHeading(from markdown: String) -> String {

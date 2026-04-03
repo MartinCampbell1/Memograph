@@ -107,6 +107,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
 
     private func checkOutputState() {
         let now = Date()
+        refreshOutputDeviceIfNeeded()
         let observation = currentOutputObservation()
         updateStableOutputObservation(observation, now: now)
 
@@ -238,7 +239,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
             let config = SCStreamConfiguration()
 
             config.capturesAudio = true
-            config.excludesCurrentProcessAudio = false
+            config.excludesCurrentProcessAudio = true
             config.width = 2
             config.height = 2
             config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
@@ -356,6 +357,20 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private func clearSilentSignatureSuppression() {
         suppressedSilentSignature = nil
         suppressedSilentSignatureUntil = .distantPast
+    }
+
+    private func refreshOutputDeviceIfNeeded() {
+        guard let deviceID = resolveDefaultOutputDevice(), deviceID != outputDeviceID else {
+            return
+        }
+
+        outputDeviceID = deviceID
+        stableOutputSignature = nil
+        stableOutputObservedSince = nil
+        retryCaptureAfter = .distantPast
+        globalSilentCooldownUntil = .distantPast
+        clearSilentSignatureSuppression()
+        logger.info("SystemAudio: switched to output device \(deviceID)")
     }
 
     private func updateStableOutputObservation(_ observation: OutputObservation, now: Date) {

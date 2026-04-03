@@ -34,6 +34,17 @@ struct SummaryWindowDescriptor {
     var duration: TimeInterval { end.timeIntervalSince(start) }
 }
 
+private struct SummaryProgressMetadata {
+    let windowStart: Date?
+    let windowEnd: Date?
+    let mode: String?
+}
+
+private struct SessionContextSnapshot {
+    let windowTitle: String?
+    let mergedText: String
+}
+
 final class DailySummarizer: @unchecked Sendable {
     private let db: DatabaseManager
     private let logger = Logger.summary
@@ -61,8 +72,8 @@ final class DailySummarizer: @unchecked Sendable {
         let rows = try db.query("""
             SELECT COUNT(*) as count
             FROM sessions
-            WHERE started_at >= ? AND started_at < ?
-        """, params: [.text(range.start), .text(range.end)])
+            WHERE started_at < ? AND COALESCE(ended_at, ?) >= ?
+        """, params: [.text(range.end), .text(range.end), .text(range.start)])
 
         return rows.first?["count"]?.intValue.flatMap(Int.init) ?? 0
     }
@@ -92,12 +103,10 @@ final class DailySummarizer: @unchecked Sendable {
             return SummaryWindowDescriptor(date: date, start: startOfDay, end: endOfDay)
         }
 
-        let previousGeneratedAt = try summaryRecord(for: date)?
-            .generatedAt
-            .flatMap(dateSupport.parseDateTime)
-
-        let windowStart = max(previousGeneratedAt ?? startOfDay, startOfDay)
-        return SummaryWindowDescriptor(date: date, start: windowStart, end: now())
+        let currentTime = now()
+        let previousCoveredUntil = try lastCoveredUntil(for: date)
+        let windowStart = min(max(previousCoveredUntil ?? startOfDay, startOfDay), currentTime)
+        return SummaryWindowDescriptor(date: date, start: windowStart, end: currentTime)
     }
 
     func summaryWindow(for date: String, start: Date, end: Date) -> SummaryWindowDescriptor {
@@ -109,29 +118,52 @@ final class DailySummarizer: @unchecked Sendable {
         currentLocalDate: String,
         minimumIntervalMinutes: Int
     ) throws -> Bool {
-        let existingSummary = try summaryRecord(for: date)
-        let sessionCount = try sessionCount(for: date)
+        let windows = try pendingSummaryWindows(
+            for: date,
+            currentLocalDate: currentLocalDate,
+            minimumIntervalMinutes: minimumIntervalMinutes
+        )
+        return !windows.isEmpty
+    }
 
-        guard let existingSummary else {
-            return true
+    func pendingSummaryWindows(
+        for date: String,
+        currentLocalDate: String,
+        minimumIntervalMinutes: Int
+    ) throws -> [SummaryWindowDescriptor] {
+        guard let startOfDay = dateSupport.startOfLocalDay(for: date) else {
+            return []
         }
 
         if date != currentLocalDate {
-            return false
+            guard try summaryRecord(for: date) == nil,
+                  let endOfDay = dateSupport.endOfLocalDay(for: date) else {
+                return []
+            }
+
+            let fullDayWindow = SummaryWindowDescriptor(date: date, start: startOfDay, end: endOfDay)
+            return try hasActivity(in: fullDayWindow) ? [fullDayWindow] : []
         }
 
-        if sessionCount == 0 {
-            return false
+        let intervalSeconds = Double(max(15, minimumIntervalMinutes) * 60)
+        let currentTime = now()
+        var windowStart = min(max(try lastCoveredUntil(for: date) ?? startOfDay, startOfDay), currentTime)
+        var windows: [SummaryWindowDescriptor] = []
+
+        while windowStart.addingTimeInterval(intervalSeconds) <= currentTime {
+            let windowEnd = windowStart.addingTimeInterval(intervalSeconds)
+            let window = SummaryWindowDescriptor(date: date, start: windowStart, end: windowEnd)
+            if try hasActivity(in: window) {
+                windows.append(window)
+            }
+            windowStart = windowEnd
         }
 
-        guard let generatedAt = existingSummary.generatedAt,
-              let generatedDate = dateSupport.parseDateTime(generatedAt) else {
-            return true
-        }
+        return windows
+    }
 
-        let minimumInterval = max(15, minimumIntervalMinutes)
-        let elapsed = now().timeIntervalSince(generatedDate)
-        return elapsed >= Double(minimumInterval * 60)
+    func coveredUntil(for date: String) throws -> Date? {
+        try lastCoveredUntil(for: date)
     }
 
     func collectSessionData(for date: String) throws -> [SessionData] {
@@ -150,36 +182,39 @@ final class DailySummarizer: @unchecked Sendable {
                    s.uncertainty_mode, a.app_name, a.bundle_id
             FROM sessions s
             JOIN apps a ON s.app_id = a.id
-            WHERE s.started_at < ? AND COALESCE(s.ended_at, s.started_at) >= ?
+            WHERE s.started_at < ? AND COALESCE(s.ended_at, ?) >= ?
             ORDER BY s.started_at
-        """, params: [.text(rangeEnd), .text(rangeStart)])
+        """, params: [.text(rangeEnd), .text(rangeEnd), .text(rangeStart)])
 
-        return try sessions.compactMap { row -> SessionData? in
+        let sessionIds = sessions.compactMap { $0["id"]?.textValue }
+        let contextsBySession = try windowScopedContexts(
+            sessionIds: sessionIds,
+            rangeStart: rangeStart,
+            rangeEnd: rangeEnd
+        )
+
+        return sessions.compactMap { row -> SessionData? in
             guard let sessionId = row["id"]?.textValue,
                   let appName = row["app_name"]?.textValue,
                   let bundleId = row["bundle_id"]?.textValue,
                   let startedAt = row["started_at"]?.textValue else { return nil }
 
-            // Get ALL context text — full OCR + AX merged text, not truncated
-            let contexts = try db.query("""
-                SELECT window_title, merged_text FROM context_snapshots
-                WHERE session_id = ? ORDER BY timestamp
-            """, params: [.text(sessionId)])
-
-            let windowTitles = contexts.compactMap { $0["window_title"]?.textValue }
-            let contextTexts = contexts.compactMap { $0["merged_text"]?.textValue }
+            let contexts = contextsBySession[sessionId] ?? []
+            let windowTitles = orderedUniqueStrings(contexts.compactMap(\.windowTitle))
+            let contextTexts = contexts.map(\.mergedText)
 
             return SessionData(
                 sessionId: sessionId,
                 appName: appName, bundleId: bundleId,
-                windowTitles: Array(Set(windowTitles)),
+                windowTitles: windowTitles,
                 startedAt: startedAt,
                 endedAt: row["ended_at"]?.textValue,
-                durationMs: dateSupport.effectiveDurationMs(
+                durationMs: dateSupport.overlapDurationMs(
                     startedAt: startedAt,
                     endedAt: row["ended_at"]?.textValue,
-                    storedActiveDurationMs: row["active_duration_ms"]?.intValue ?? 0,
-                    now: now()
+                    rangeStart: window.start,
+                    rangeEnd: window.end,
+                    now: window.end
                 ),
                 uncertaintyMode: row["uncertainty_mode"]?.textValue ?? "normal",
                 contextTexts: contextTexts
@@ -337,15 +372,10 @@ final class DailySummarizer: @unchecked Sendable {
         }
 
         // 2.5 Audio transcripts
-        let audioTranscriber = AudioTranscriber(db: db, timeZone: dateSupport.timeZone, now: now)
-        if let transcripts = try? audioTranscriber.getTranscriptsForDate(window.date), !transcripts.isEmpty {
+        let transcripts = try collectAudioTranscripts(for: window)
+        if !transcripts.isEmpty {
             prompt += "## Audio Transcripts\n\n"
             for transcript in transcripts {
-                guard let transcriptDate = dateSupport.parseDateTime(transcript.timestamp),
-                      transcriptDate >= window.start,
-                      transcriptDate < window.end else {
-                    continue
-                }
                 let time = dateSupport.localDateTimeString(from: transcript.timestamp)
                 let lang = transcript.language ?? "?"
                 prompt += "[\(time)] (\(lang)): \(transcript.text)\n"
@@ -637,6 +667,157 @@ final class DailySummarizer: @unchecked Sendable {
         }
 
         return matchCount >= 2
+    }
+
+    private func lastCoveredUntil(for date: String) throws -> Date? {
+        guard let summary = try summaryRecord(for: date) else {
+            return nil
+        }
+
+        if let metadata = summaryProgressMetadata(from: summary.contextSwitchesJson),
+           let windowEnd = metadata.windowEnd {
+            return windowEnd
+        }
+
+        return summary.generatedAt.flatMap(dateSupport.parseDateTime)
+    }
+
+    private func summaryProgressMetadata(from json: String?) -> SummaryProgressMetadata? {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        return SummaryProgressMetadata(
+            windowStart: (object["window_start"] as? String).flatMap(dateSupport.parseDateTime),
+            windowEnd: (object["window_end"] as? String).flatMap(dateSupport.parseDateTime),
+            mode: object["mode"] as? String
+        )
+    }
+
+    private func hasActivity(in window: SummaryWindowDescriptor) throws -> Bool {
+        let rangeStart = dateSupport.isoString(from: window.start)
+        let rangeEnd = dateSupport.isoString(from: window.end)
+
+        let sessions = try db.query("""
+            SELECT 1
+            FROM sessions
+            WHERE started_at < ? AND COALESCE(ended_at, ?) >= ?
+            LIMIT 1
+        """, params: [.text(rangeEnd), .text(rangeEnd), .text(rangeStart)])
+        if !sessions.isEmpty {
+            return true
+        }
+
+        let contextRows = try db.query("""
+            SELECT 1
+            FROM context_snapshots
+            WHERE timestamp >= ? AND timestamp < ?
+            LIMIT 1
+        """, params: [.text(rangeStart), .text(rangeEnd)])
+        if !contextRows.isEmpty {
+            return true
+        }
+
+        let transcriptRows = try db.query("""
+            SELECT 1
+            FROM audio_transcripts
+            WHERE timestamp >= ? AND timestamp < ?
+            LIMIT 1
+        """, params: [.text(rangeStart), .text(rangeEnd)])
+        if !transcriptRows.isEmpty {
+            return true
+        }
+
+        let eventRows = try db.query("""
+            SELECT 1
+            FROM session_events
+            WHERE timestamp >= ? AND timestamp < ?
+            LIMIT 1
+        """, params: [.text(rangeStart), .text(rangeEnd)])
+        return !eventRows.isEmpty
+    }
+
+    private func windowScopedContexts(
+        sessionIds: [String],
+        rangeStart: String,
+        rangeEnd: String
+    ) throws -> [String: [SessionContextSnapshot]] {
+        guard !sessionIds.isEmpty else {
+            return [:]
+        }
+
+        let placeholders = Array(repeating: "?", count: sessionIds.count).joined(separator: ",")
+        let sql = """
+            SELECT session_id, window_title, merged_text
+            FROM context_snapshots
+            WHERE session_id IN (\(placeholders))
+              AND timestamp >= ? AND timestamp < ?
+              AND merged_text IS NOT NULL
+            ORDER BY timestamp
+        """
+
+        let params = sessionIds.map(SQLiteValue.text) + [.text(rangeStart), .text(rangeEnd)]
+        let rows = try db.query(sql, params: params)
+
+        var grouped: [String: [SessionContextSnapshot]] = [:]
+        for row in rows {
+            guard let sessionId = row["session_id"]?.textValue,
+                  let mergedText = row["merged_text"]?.textValue else {
+                continue
+            }
+
+            grouped[sessionId, default: []].append(
+                SessionContextSnapshot(
+                    windowTitle: row["window_title"]?.textValue,
+                    mergedText: mergedText
+                )
+            )
+        }
+
+        return grouped
+    }
+
+    private func collectAudioTranscripts(for window: SummaryWindowDescriptor) throws -> [AudioTranscript] {
+        let rangeStart = dateSupport.isoString(from: window.start)
+        let rangeEnd = dateSupport.isoString(from: window.end)
+        let rows = try db.query("""
+            SELECT id, session_id, timestamp, duration_seconds, transcript, language, source
+            FROM audio_transcripts
+            WHERE timestamp >= ? AND timestamp < ?
+            ORDER BY timestamp
+        """, params: [.text(rangeStart), .text(rangeEnd)])
+
+        return rows.compactMap { row in
+            guard let id = row["id"]?.textValue,
+                  let timestamp = row["timestamp"]?.textValue,
+                  let text = row["transcript"]?.textValue else {
+                return nil
+            }
+
+            return AudioTranscript(
+                id: id,
+                sessionId: row["session_id"]?.textValue,
+                timestamp: timestamp,
+                durationSeconds: row["duration_seconds"]?.realValue ?? 0,
+                text: text,
+                language: row["language"]?.textValue,
+                source: row["source"]?.textValue
+            )
+        }
+    }
+
+    private func orderedUniqueStrings(_ strings: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+
+        for string in strings where !seen.contains(string) {
+            seen.insert(string)
+            result.append(string)
+        }
+
+        return result
     }
 
     private func jsonString(_ object: Any) -> String? {

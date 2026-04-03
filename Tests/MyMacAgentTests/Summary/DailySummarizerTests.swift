@@ -9,7 +9,10 @@ struct DailySummarizerTests {
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
-        let runner = MigrationRunner(db: db, migrations: [V001_InitialSchema.migration])
+        let runner = MigrationRunner(db: db, migrations: [
+            V001_InitialSchema.migration,
+            V002_AudioTranscripts.migration
+        ])
         try runner.runPending()
         return (db, path)
     }
@@ -227,5 +230,117 @@ struct DailySummarizerTests {
         )
 
         #expect(!shouldGenerate)
+    }
+
+    @Test("pendingSummaryWindows advance from covered window end instead of generated_at")
+    func pendingSummaryWindowsUseCoveredWindowEnd() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summarizer = DailySummarizer(
+            db: db,
+            timeZone: makassar,
+            now: { ISO8601DateFormatter().date(from: "2026-04-03T04:05:00Z")! }
+        )
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.cursor"), .text("Cursor")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms, uncertainty_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("sess-window"), .integer(1),
+            .text("2026-04-03T02:10:00Z"), .text("2026-04-03T03:40:00Z"),
+            .integer(5400000), .text("normal")
+        ])
+
+        try summarizer.persistSummary(
+            DailySummaryRecord(
+                date: "2026-04-03",
+                summaryText: "Earlier hour",
+                topAppsJson: nil,
+                topTopicsJson: nil,
+                aiSessionsJson: nil,
+                contextSwitchesJson: """
+                {"window_start":"2026-04-03T02:01:55Z","window_end":"2026-04-03T03:01:55Z","mode":"hourly"}
+                """,
+                unfinishedItemsJson: nil,
+                suggestedNotesJson: nil,
+                generatedAt: "2026-04-03T03:09:55Z",
+                modelName: "test",
+                tokenUsageInput: 0,
+                tokenUsageOutput: 0,
+                generationStatus: "success"
+            )
+        )
+
+        let windows = try summarizer.pendingSummaryWindows(
+            for: "2026-04-03",
+            currentLocalDate: "2026-04-03",
+            minimumIntervalMinutes: 60
+        )
+        let activeWindow = try summarizer.summaryWindow(for: "2026-04-03")
+
+        #expect(windows.count == 1)
+        #expect(activeWindow?.start == ISO8601DateFormatter().date(from: "2026-04-03T03:01:55Z"))
+        #expect(windows.first?.start == ISO8601DateFormatter().date(from: "2026-04-03T03:01:55Z"))
+        #expect(windows.first?.end == ISO8601DateFormatter().date(from: "2026-04-03T04:01:55Z"))
+    }
+
+    @Test("collectSessionData includes overlapping sessions and filters context to the report window")
+    func collectSessionDataUsesWindowOverlap() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.cursor"), .text("Cursor")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms, uncertainty_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("sess-overlap"), .integer(1),
+            .text("2026-04-03T01:50:00Z"), .null,
+            .integer(0), .text("normal")
+        ])
+        try db.execute("""
+            INSERT INTO context_snapshots (id, session_id, timestamp, app_name, bundle_id,
+                window_title, text_source, merged_text, readable_score, uncertainty_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("ctx-before"), .text("sess-overlap"), .text("2026-04-03T01:55:00Z"),
+            .text("Cursor"), .text("com.cursor"),
+            .text("before.swift"), .text("ax+ocr"),
+            .text("Context before the window"),
+            .real(0.9), .real(0.05)
+        ])
+        try db.execute("""
+            INSERT INTO context_snapshots (id, session_id, timestamp, app_name, bundle_id,
+                window_title, text_source, merged_text, readable_score, uncertainty_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("ctx-inside"), .text("sess-overlap"), .text("2026-04-03T02:15:00Z"),
+            .text("Cursor"), .text("com.cursor"),
+            .text("inside.swift"), .text("ax+ocr"),
+            .text("Context inside the window"),
+            .real(0.9), .real(0.05)
+        ])
+
+        let summarizer = DailySummarizer(
+            db: db,
+            timeZone: utc,
+            now: { ISO8601DateFormatter().date(from: "2026-04-03T03:00:00Z")! }
+        )
+        let window = summarizer.summaryWindow(
+            for: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T02:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T03:00:00Z")!
+        )
+
+        let sessions = try summarizer.collectSessionData(for: window)
+
+        #expect(sessions.count == 1)
+        #expect(sessions[0].contextTexts == ["Context inside the window"])
+        #expect(sessions[0].windowTitles == ["inside.swift"])
+        #expect(sessions[0].durationMs == 3_600_000)
     }
 }

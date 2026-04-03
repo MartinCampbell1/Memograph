@@ -1,6 +1,6 @@
 import Foundation
 
-struct DailySummaryRecord {
+struct DailySummaryRecord: Codable {
     let date: String
     let summaryText: String?
     let topAppsJson: String?
