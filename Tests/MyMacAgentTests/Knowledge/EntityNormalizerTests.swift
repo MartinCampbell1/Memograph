@@ -86,4 +86,16 @@ struct EntityNormalizerTests {
         #expect(entity?.canonicalName == "LM Studio")
         #expect(entity?.entityType == .tool)
     }
+
+    @Test("Canonicalizes app store nonbreaking space variant")
+    func canonicalizesAppStoreVariant() {
+        let normalizer = EntityNormalizer()
+        let entity = normalizer.normalize(
+            rawName: "App\u{00A0}Store",
+            knownToolNames: ["App\u{00A0}Store"]
+        )
+
+        #expect(entity?.canonicalName == "App Store")
+        #expect(entity?.entityType == .tool)
+    }
 }

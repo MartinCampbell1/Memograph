@@ -14,6 +14,8 @@ final class EntityNormalizer {
     private let aliasMap: [String: (canonicalName: String, entityType: KnowledgeEntityType)] = [
         "twitter": ("X", .site),
         "x": ("X", .site),
+        "app store": ("App Store", .tool),
+        "app store": ("App Store", .tool),
         "google chrome": ("Google Chrome", .tool),
         "chrome": ("Google Chrome", .tool),
         "safari": ("Safari", .tool),
@@ -167,6 +169,7 @@ final class EntityNormalizer {
             .replacingOccurrences(of: "]]", with: "")
             .replacingOccurrences(of: "`", with: "")
             .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
             .replacingOccurrences(of: "\u{200E}", with: "")
             .replacingOccurrences(of: "\u{200F}", with: "")
             .replacingOccurrences(of: "\u{202A}", with: "")

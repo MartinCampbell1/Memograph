@@ -137,6 +137,67 @@ struct KnowledgePipelineTests {
         #expect(index.contains("[[Knowledge/Issues/screencapturekit-blink|ScreenCaptureKit Blink]]"))
     }
 
+    @Test("Knowledge compiler renders readable signals aliases and grouped related entities")
+    func rendersReadableKnowledgeNote() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, aliases_json, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("tool-1"), .text("Claude"), .text("claude"), .text("tool"),
+            .text("[\"Claude.app\"]"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .null,
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("tool-1"), .text("used_during_window"), .text("2026-04-03 10:00-11:00"), .real(0.9), .text("hourly_summary"),
+            .text("claim-2"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("tool-1"), .text("topic_in_focus"), .text("2026-04-03"), .real(0.7), .text("hourly_summary")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_edges
+                (id, from_entity_id, to_entity_id, edge_type, weight, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("edge-1"), .text("tool-1"), .text("project-1"), .text("co_occurs_with"), .real(2),
+            .text("2026-04-03T11:01:00Z")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-03")
+
+        #expect(note != nil)
+        #expect(note?.bodyMarkdown.contains("## Aliases") == true)
+        #expect(note?.bodyMarkdown.contains("Claude.app") == true)
+        #expect(note?.bodyMarkdown.contains("## Key Signals") == true)
+        #expect(note?.bodyMarkdown.contains("was used in 1 captured work window") == true)
+        #expect(note?.bodyMarkdown.contains("## Recent Windows") == true)
+        #expect(note?.bodyMarkdown.contains("Used during 2026-04-03 10:00-11:00.") == true)
+        #expect(note?.bodyMarkdown.contains("### Projects") == true)
+        #expect(note?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]]") == true)
+    }
+
     @Test("Knowledge edge weights stay stable when the same window is reprocessed")
     func knowledgeEdgesAreIdempotentForReruns() throws {
         let (db, path) = try makeDB()
