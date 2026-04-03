@@ -90,7 +90,6 @@ struct SettingsView: View {
     private let previewState: SettingsPreviewState?
 
     @State private var selectedTab = 0
-    @State private var hasStoredExternalAPIKey = false
     @State private var saved = false
     @State private var showDeleteDataAlert = false
 
@@ -232,16 +231,10 @@ struct SettingsView: View {
                 diagnosticsRow("Data folder", value: dataDirectoryPath)
                 diagnosticsRow("Summary provider", value: summaryProvider.label)
                 diagnosticsRow("Vision provider", value: visionProvider.label)
-                diagnosticsRow("Stored API key", value: hasStoredExternalAPIKey ? "Saved locally in Memograph" : "Not set")
             }
 
             settingsCard("Danger Zone") {
                 HStack(spacing: 8) {
-                    Button("Forget external credentials") {
-                        forgetStoredAPIKey()
-                    }
-                    .foregroundStyle(.orange)
-
                     Button("Delete all local data") {
                         showDeleteDataAlert = true
                     }
@@ -266,28 +259,9 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                settingRow("API key", help: "Stored locally in Memograph settings on this Mac. The field stays empty unless you paste a replacement key.") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        SecureField(hasStoredExternalAPIKey ? "Key already stored. Paste a new key to replace it." : "Paste API key", text: $externalAPIKey)
-                            .textFieldStyle(.roundedBorder)
-
-                        HStack(spacing: 8) {
-                            Label(
-                                hasStoredExternalAPIKey ? "Saved locally in Memograph" : "No stored key yet",
-                                systemImage: hasStoredExternalAPIKey ? "checkmark.circle.fill" : "key.slash"
-                            )
-                            .font(.caption)
-                            .foregroundStyle(hasStoredExternalAPIKey ? .green : .secondary)
-
-                            if hasStoredExternalAPIKey {
-                                Button("Forget stored key") {
-                                    forgetStoredAPIKey()
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                        }
-                    }
+                settingRow("API key", help: "Used only when you enable external summary or vision providers.") {
+                    SecureField("API key", text: $externalAPIKey)
+                        .textFieldStyle(.roundedBorder)
                 }
             }
 
@@ -534,8 +508,7 @@ struct SettingsView: View {
         operatingMode = settings.operatingMode
         externalProviderName = settings.externalProviderName
         externalBaseURL = settings.externalBaseURL
-        externalAPIKey = ""
-        hasStoredExternalAPIKey = settings.hasApiKey
+        externalAPIKey = settings.externalAPIKey
         summaryProvider = settings.summaryProvider
         summaryExternalModel = settings.summaryExternalModel
         summaryLocalModel = settings.summaryLocalModel
@@ -579,7 +552,6 @@ struct SettingsView: View {
         externalProviderName = preview.externalProviderName
         externalBaseURL = preview.externalBaseURL
         externalAPIKey = preview.externalAPIKey
-        hasStoredExternalAPIKey = !preview.externalAPIKey.isEmpty
         summaryProvider = preview.summaryProvider
         summaryExternalModel = preview.summaryExternalModel
         summaryLocalModel = preview.summaryLocalModel
@@ -625,13 +597,7 @@ struct SettingsView: View {
         settings.externalProviderName = externalProviderName
         settings.externalBaseURL = externalBaseURL
         let trimmedAPIKey = externalAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedAPIKey.isEmpty {
-            settings.externalAPIKey = trimmedAPIKey
-            hasStoredExternalAPIKey = true
-            externalAPIKey = ""
-        } else if !hasStoredExternalAPIKey {
-            settings.externalAPIKey = ""
-        }
+        settings.externalAPIKey = trimmedAPIKey
         settings.summaryProvider = summaryProvider
         settings.summaryExternalModel = summaryExternalModel
         settings.summaryLocalModel = summaryLocalModel
@@ -698,13 +664,6 @@ struct SettingsView: View {
 
     private func deleteAllData() {
         NotificationCenter.default.post(name: .deleteAllLocalDataRequested, object: nil)
-    }
-
-    private func forgetStoredAPIKey() {
-        let settings = AppSettings()
-        settings.forgetCredentials()
-        externalAPIKey = ""
-        hasStoredExternalAPIKey = false
     }
 
     private func diagnosticsRow(_ label: String, value: String) -> some View {
