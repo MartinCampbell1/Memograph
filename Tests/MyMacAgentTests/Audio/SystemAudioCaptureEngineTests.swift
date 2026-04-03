@@ -138,13 +138,14 @@ struct SystemAudioUsageEvaluatorTests {
             !SystemAudioProbePolicy.shouldAttemptCapture(
                 now: now,
                 hasExternalOutput: true,
-                isCapturing: false,
+                phase: .idle,
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.WebKit.GPU",
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
-                suppressedSilentSignatureUntil: now.addingTimeInterval(30),
+                requiresSilentSignatureReset: true,
+                knownAudibleSignatures: [],
                 globalSilentCooldownUntil: .distantPast
             )
         )
@@ -158,33 +159,35 @@ struct SystemAudioUsageEvaluatorTests {
             SystemAudioProbePolicy.shouldAttemptCapture(
                 now: now,
                 hasExternalOutput: true,
-                isCapturing: false,
+                phase: .idle,
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.Safari",
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
-                suppressedSilentSignatureUntil: now.addingTimeInterval(30),
+                requiresSilentSignatureReset: true,
+                knownAudibleSignatures: [],
                 globalSilentCooldownUntil: .distantPast
             )
         )
     }
 
-    @Test("Allows probe again after suppression expires")
-    func allowsProbeAfterSuppressionExpires() {
+    @Test("Keeps silent signatures blocked until they re-arm")
+    func keepsSilentSignaturesBlockedUntilRearm() {
         let now = Date()
 
         #expect(
-            SystemAudioProbePolicy.shouldAttemptCapture(
+            !SystemAudioProbePolicy.shouldAttemptCapture(
                 now: now,
                 hasExternalOutput: true,
-                isCapturing: false,
+                phase: .idle,
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.WebKit.GPU",
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
-                suppressedSilentSignatureUntil: now.addingTimeInterval(-1),
+                requiresSilentSignatureReset: true,
+                knownAudibleSignatures: [],
                 globalSilentCooldownUntil: .distantPast
             )
         )
@@ -198,13 +201,14 @@ struct SystemAudioUsageEvaluatorTests {
             !SystemAudioProbePolicy.shouldAttemptCapture(
                 now: now,
                 hasExternalOutput: true,
-                isCapturing: false,
+                phase: .idle,
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-1),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.WebKit.GPU",
                 suppressedSilentSignature: nil,
-                suppressedSilentSignatureUntil: .distantPast,
+                requiresSilentSignatureReset: false,
+                knownAudibleSignatures: [],
                 globalSilentCooldownUntil: .distantPast
             )
         )
@@ -218,14 +222,36 @@ struct SystemAudioUsageEvaluatorTests {
             !SystemAudioProbePolicy.shouldAttemptCapture(
                 now: now,
                 hasExternalOutput: true,
-                isCapturing: false,
+                phase: .idle,
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.Safari",
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
-                suppressedSilentSignatureUntil: now.addingTimeInterval(-1),
+                requiresSilentSignatureReset: false,
+                knownAudibleSignatures: [],
                 globalSilentCooldownUntil: now.addingTimeInterval(10)
+            )
+        )
+    }
+
+    @Test("Allows known audible signature after cooldown once phase is idle")
+    func allowsKnownAudibleSignature() {
+        let now = Date()
+
+        #expect(
+            SystemAudioProbePolicy.shouldAttemptCapture(
+                now: now,
+                hasExternalOutput: true,
+                phase: .idle,
+                retryCaptureAfter: .distantPast,
+                stableOutputObservedSince: now.addingTimeInterval(-12),
+                minimumStableObservation: 3,
+                outputSignature: "com.apple.Safari",
+                suppressedSilentSignature: "com.apple.WebKit.GPU",
+                requiresSilentSignatureReset: true,
+                knownAudibleSignatures: ["com.apple.Safari"],
+                globalSilentCooldownUntil: .distantPast
             )
         )
     }

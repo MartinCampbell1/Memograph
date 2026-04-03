@@ -305,16 +305,17 @@ enum SystemAudioProbePolicy {
     static func shouldAttemptCapture(
         now: Date,
         hasExternalOutput: Bool,
-        isCapturing: Bool,
+        phase: SystemAudioCapturePhase,
         retryCaptureAfter: Date,
         stableOutputObservedSince: Date?,
         minimumStableObservation: TimeInterval,
         outputSignature: String?,
         suppressedSilentSignature: String?,
-        suppressedSilentSignatureUntil: Date,
+        requiresSilentSignatureReset: Bool,
+        knownAudibleSignatures: Set<String>,
         globalSilentCooldownUntil: Date
     ) -> Bool {
-        guard hasExternalOutput, !isCapturing, now >= retryCaptureAfter else {
+        guard hasExternalOutput, phase == .idle, now >= retryCaptureAfter else {
             return false
         }
 
@@ -328,9 +329,17 @@ enum SystemAudioProbePolicy {
         }
 
         guard let outputSignature else {
+            return false
+        }
+
+        if requiresSilentSignatureReset && outputSignature == suppressedSilentSignature {
+            return false
+        }
+
+        if knownAudibleSignatures.contains(outputSignature) {
             return true
         }
 
-        return outputSignature != suppressedSilentSignature || now >= suppressedSilentSignatureUntil
+        return true
     }
 }
