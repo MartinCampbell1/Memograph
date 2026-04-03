@@ -51,6 +51,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if let backfillArguments = parseBackfillWindowArguments() {
+            logger.info("Running backfill window report renderer")
+            initializeDatabase()
+            initializePhase3()
+            Task { @MainActor [weak self] in
+                await self?.runBackfillWindowReport(arguments: backfillArguments)
+            }
+            return
+        }
+
         logger.info("MyMacAgent launched")
         registerObservers()
         initializeDatabase()
@@ -130,6 +140,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             window.makeKeyAndOrderFront(nil)
         }
+    }
+
+    private func parseBackfillWindowArguments() -> (start: Date, end: Date)? {
+        guard let flagIndex = CommandLine.arguments.firstIndex(of: "--generate-window-report"),
+              CommandLine.arguments.count > flagIndex + 2 else {
+            return nil
+        }
+
+        let parser = LocalDateSupport()
+        guard let start = parser.parseDateTime(CommandLine.arguments[flagIndex + 1]),
+              let end = parser.parseDateTime(CommandLine.arguments[flagIndex + 2]) else {
+            return nil
+        }
+
+        return (start, end)
     }
 
     private func initializeDatabase() {
@@ -452,6 +477,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 logger.error("Daily summary export failed for \(date): \(error.localizedDescription)")
             }
         }
+
+        scheduleAutoSummaryTimer()
     }
 
     private func generatePendingDailySummaries(reason: String) async {
@@ -483,6 +510,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func runBackfillWindowReport(arguments: (start: Date, end: Date)) async {
+        defer {
+            NSApp.terminate(nil)
+        }
+
+        guard let summarizer = dailySummarizer else {
+            logger.error("Backfill window report failed: summarizer is not initialized")
+            return
+        }
+
+        let settings = AppSettings()
+        let localDate = dateSupport.localDateString(from: arguments.start)
+        let window = summarizer.summaryWindow(for: localDate, start: arguments.start, end: arguments.end)
+        let summary: DailySummaryRecord
+
+        do {
+            if let client = LLMClient.client(for: settings) {
+                summary = try await summarizer.summarize(for: window, using: client, persist: false)
+            } else {
+                summary = try summarizer.buildFallbackSummary(
+                    for: window,
+                    failureReason: "No configured summary provider",
+                    persist: false
+                )
+            }
+        } catch {
+            let sanitizedReason = sanitizedSummaryFailureReason(for: error)
+            logger.error("Backfill model step failed for \(localDate): \(sanitizedReason, privacy: .public)")
+            do {
+                summary = try summarizer.buildFallbackSummary(
+                    for: window,
+                    failureReason: sanitizedReason,
+                    persist: false
+                )
+            } catch {
+                logger.error("Backfill fallback failed: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        guard let exporter = obsidianExporter else {
+            logger.error("Backfill export failed: exporter is not initialized")
+            return
+        }
+
+        do {
+            let path = try exporter.exportDailyNote(summary: summary)
+            logger.info("Backfill window report exported to \(path)")
+            print(path)
+        } catch {
+            logger.error("Backfill export failed: \(error.localizedDescription)")
+        }
+    }
+
     private func scheduleRetentionTimer() {
         retentionTimer?.invalidate()
         retentionTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
@@ -496,13 +577,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoSummaryTimer?.invalidate()
         let minutes = max(15, AppSettings().summaryIntervalMinutes)
         let interval = TimeInterval(minutes * 60)
-        autoSummaryTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+
+        let delay = nextAutoSummaryDelay(interval: interval)
+        autoSummaryTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.autoGenerateSummaryIfActive()
+                self?.scheduleAutoSummaryTimer()
             }
         }
-        autoSummaryTimer?.tolerance = min(60, interval * 0.1)
-        logger.info("Auto-summary timer scheduled every \(minutes) minutes")
+        autoSummaryTimer?.tolerance = min(60, max(5, delay * 0.1))
+        logger.info("Auto-summary timer scheduled in \(Int(delay))s (interval \(minutes) minutes)")
+    }
+
+    private func nextAutoSummaryDelay(interval: TimeInterval) -> TimeInterval {
+        let minimumDelay: TimeInterval = 5
+        guard let summarizer = dailySummarizer else {
+            return interval
+        }
+
+        do {
+            let today = dateSupport.currentLocalDateString()
+            if let generatedAt = try summarizer.summaryRecord(for: today)?
+                .generatedAt
+                .flatMap(dateSupport.parseDateTime) {
+                let dueAt = generatedAt.addingTimeInterval(interval)
+                return max(minimumDelay, dueAt.timeIntervalSinceNow)
+            }
+        } catch {
+            logger.error("Failed to compute next auto-summary delay: \(error.localizedDescription)")
+        }
+
+        return interval
     }
 
     private func sanitizedSummaryFailureReason(for error: Error) -> String {

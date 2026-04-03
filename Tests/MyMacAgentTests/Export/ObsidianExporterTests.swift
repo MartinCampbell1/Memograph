@@ -40,7 +40,7 @@ struct ObsidianExporterTests {
             summaryText: "Productive day focused on Swift development and testing.",
             topAppsJson: "[{\"name\":\"Cursor\",\"duration_min\":134},{\"name\":\"Safari\",\"duration_min\":68}]",
             topTopicsJson: "[\"Swift concurrency\",\"Testing\"]",
-            aiSessionsJson: nil, contextSwitchesJson: "{\"count\":5}",
+            aiSessionsJson: nil, contextSwitchesJson: "{\"count\":5,\"window_start\":\"2026-04-02T09:00:00Z\",\"window_end\":\"2026-04-02T12:22:00Z\",\"mode\":\"hourly\"}",
             unfinishedItemsJson: nil,
             suggestedNotesJson: "[\"Swift Testing patterns\"]",
             generatedAt: "2026-04-02T23:00:00Z", modelName: "claude-3-haiku",
@@ -51,7 +51,7 @@ struct ObsidianExporterTests {
         let exporter = ObsidianExporter(db: db, timeZone: utc)
         let markdown = try exporter.renderDailyNote(summary: summary)
 
-        #expect(markdown.contains("# Daily Log — 2026-04-02"))
+        #expect(markdown.contains("# Hourly Log — 2026-04-02 09:00–12:22"))
         #expect(markdown.contains("## Summary"))
         #expect(markdown.contains("Productive day"))
         #expect(markdown.contains("## Main apps"))
@@ -125,6 +125,7 @@ struct ObsidianExporterTests {
         #expect(FileManager.default.fileExists(atPath: filePath))
         let content = try String(contentsOfFile: filePath, encoding: .utf8)
         #expect(content.contains("# Daily Log — 2026-04-02"))
+        #expect(filePath.contains("/Daily/2026-04-02_"))
     }
 
     @Test("Generates timeline from sessions")

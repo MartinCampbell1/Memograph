@@ -268,11 +268,23 @@ enum SystemAudioProbePolicy {
         hasExternalOutput: Bool,
         isCapturing: Bool,
         retryCaptureAfter: Date,
+        stableOutputObservedSince: Date?,
+        minimumStableObservation: TimeInterval,
         outputSignature: String?,
         suppressedSilentSignature: String?,
-        suppressedSilentSignatureUntil: Date
+        suppressedSilentSignatureUntil: Date,
+        globalSilentCooldownUntil: Date
     ) -> Bool {
         guard hasExternalOutput, !isCapturing, now >= retryCaptureAfter else {
+            return false
+        }
+
+        guard now >= globalSilentCooldownUntil else {
+            return false
+        }
+
+        guard let stableOutputObservedSince,
+              now.timeIntervalSince(stableOutputObservedSince) >= minimumStableObservation else {
             return false
         }
 

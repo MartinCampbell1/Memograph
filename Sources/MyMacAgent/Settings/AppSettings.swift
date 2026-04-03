@@ -397,7 +397,7 @@ struct AppSettings {
 
     static let defaultSystemPrompt = """
     You are an expert personal knowledge management analyst creating EXTREMELY detailed \
-    daily reports with extensive [[wiki-links]] for Obsidian knowledge graph. \
+    activity reports with extensive [[wiki-links]] for Obsidian knowledge graph. \
     Every project, tool, technology, person, AI model, concept MUST be wrapped in [[double brackets]]. \
     The more [[wiki-links]] the better — the knowledge graph must grow with every report. \
     Be specific and evidence-based. Quote actual screen content. \

@@ -1,5 +1,6 @@
 import AppKit
-@preconcurrency import ScreenCaptureKit
+import CoreGraphics
+import Foundation
 import os
 
 struct CaptureResult: @unchecked Sendable {
@@ -16,57 +17,26 @@ final class ScreenCaptureEngine: Sendable {
         guard CGPreflightScreenCaptureAccess() else {
             throw CaptureError.windowNotFound
         }
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-
-        guard let window = content.windows.first(where: {
-            $0.owningApplication?.processID == pid && $0.isOnScreen
-        }) else {
+        guard let window = frontmostWindow(for: pid) else {
             throw CaptureError.windowNotFound
         }
-
-        let filter = SCContentFilter(desktopIndependentWindow: window)
-        let config = SCStreamConfiguration()
-        config.width = Int(window.frame.width) * 2
-        config.height = Int(window.frame.height) * 2
-        config.showsCursor = false
-
-        let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-
-        let width = Int(window.frame.width)
-        let height = Int(window.frame.height)
-        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
+        let result = try captureViaScreencapture(arguments: ["-x", "-o", "-l", String(window.windowID)])
 
         return CaptureResult(
-            image: nsImage,
-            width: width,
-            height: height,
+            image: result.image,
+            width: result.width,
+            height: result.height,
             timestamp: Date()
         )
     }
 
     func captureScreen() async throws -> CaptureResult {
-        let content = try await SCShareableContent.current
-
-        guard let display = content.displays.first else {
-            throw CaptureError.displayNotFound
-        }
-
-        let filter = SCContentFilter(display: display, excludingWindows: [])
-        let config = SCStreamConfiguration()
-        config.width = Int(display.width) * 2
-        config.height = Int(display.height) * 2
-        config.showsCursor = false
-
-        let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-
-        let width = Int(display.width)
-        let height = Int(display.height)
-        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
+        let result = try captureViaScreencapture(arguments: ["-x"])
 
         return CaptureResult(
-            image: nsImage,
-            width: width,
-            height: height,
+            image: result.image,
+            width: result.width,
+            height: result.height,
             timestamp: Date()
         )
     }
@@ -85,6 +55,61 @@ final class ScreenCaptureEngine: Sendable {
         try jpegData.write(to: URL(fileURLWithPath: path))
 
         return path
+    }
+
+    private func frontmostWindow(for pid: pid_t) -> (windowID: CGWindowID, bounds: CGRect)? {
+        guard let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else {
+            return nil
+        }
+
+        for info in infoList {
+            guard let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
+                  ownerPID == pid,
+                  let layer = info[kCGWindowLayer as String] as? Int,
+                  layer == 0,
+                  let windowNumber = info[kCGWindowNumber as String] as? UInt32,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
+                  bounds.width > 1,
+                  bounds.height > 1 else {
+                continue
+            }
+
+            return (CGWindowID(windowNumber), bounds)
+        }
+
+        logger.info("Capture: no suitable on-screen window found for pid \(pid)")
+        return nil
+    }
+
+    private func captureViaScreencapture(arguments: [String]) throws -> (image: NSImage, width: Int, height: Int) {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("png")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        process.arguments = arguments + [outputURL.path]
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw CaptureError.windowNotFound
+        }
+
+        guard process.terminationStatus == 0,
+              let image = NSImage(contentsOf: outputURL) else {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw CaptureError.windowNotFound
+        }
+
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let width = Int(image.size.width)
+        let height = Int(image.size.height)
+        return (image, width, height)
     }
 }
 

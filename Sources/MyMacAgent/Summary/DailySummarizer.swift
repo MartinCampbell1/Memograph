@@ -13,11 +13,25 @@ struct SessionData {
     let contextTexts: [String]
 }
 
+struct SessionEventData {
+    let timestamp: String
+    let eventType: String
+    let payloadJson: String?
+}
+
 struct ParsedSummary {
     let summaryText: String
     let topics: [String]
     let suggestedNotes: [String]
     let continueTomorrow: String?
+}
+
+struct SummaryWindowDescriptor {
+    let date: String
+    let start: Date
+    let end: Date
+
+    var duration: TimeInterval { end.timeIntervalSince(start) }
 }
 
 final class DailySummarizer: @unchecked Sendable {
@@ -65,6 +79,31 @@ final class DailySummarizer: @unchecked Sendable {
         return DailySummaryRecord(row: row)
     }
 
+    func summaryWindow(for date: String) throws -> SummaryWindowDescriptor? {
+        guard let startOfDay = dateSupport.startOfLocalDay(for: date) else {
+            return nil
+        }
+
+        let currentLocalDate = dateSupport.currentLocalDateString(now: now())
+        if date != currentLocalDate {
+            guard let endOfDay = dateSupport.endOfLocalDay(for: date) else {
+                return nil
+            }
+            return SummaryWindowDescriptor(date: date, start: startOfDay, end: endOfDay)
+        }
+
+        let previousGeneratedAt = try summaryRecord(for: date)?
+            .generatedAt
+            .flatMap(dateSupport.parseDateTime)
+
+        let windowStart = max(previousGeneratedAt ?? startOfDay, startOfDay)
+        return SummaryWindowDescriptor(date: date, start: windowStart, end: now())
+    }
+
+    func summaryWindow(for date: String, start: Date, end: Date) -> SummaryWindowDescriptor {
+        SummaryWindowDescriptor(date: date, start: start, end: end)
+    }
+
     func shouldGenerateSummary(
         for date: String,
         currentLocalDate: String,
@@ -96,18 +135,24 @@ final class DailySummarizer: @unchecked Sendable {
     }
 
     func collectSessionData(for date: String) throws -> [SessionData] {
-        guard let range = dateSupport.utcRange(forLocalDate: date) else {
-            logger.error("Invalid local date requested for summarizer: \(date)")
+        guard let window = try summaryWindow(for: date) else {
+            logger.error("Invalid summary window requested for \(date)")
             return []
         }
+        return try collectSessionData(for: window)
+    }
+
+    func collectSessionData(for window: SummaryWindowDescriptor) throws -> [SessionData] {
+        let rangeStart = dateSupport.isoString(from: window.start)
+        let rangeEnd = dateSupport.isoString(from: window.end)
         let sessions = try db.query("""
             SELECT s.id, s.started_at, s.ended_at, s.active_duration_ms,
                    s.uncertainty_mode, a.app_name, a.bundle_id
             FROM sessions s
             JOIN apps a ON s.app_id = a.id
-            WHERE s.started_at >= ? AND s.started_at < ?
+            WHERE s.started_at < ? AND COALESCE(s.ended_at, s.started_at) >= ?
             ORDER BY s.started_at
-        """, params: [.text(range.start), .text(range.end)])
+        """, params: [.text(rangeEnd), .text(rangeStart)])
 
         return try sessions.compactMap { row -> SessionData? in
             guard let sessionId = row["id"]?.textValue,
@@ -183,21 +228,61 @@ final class DailySummarizer: @unchecked Sendable {
         return "Earlier summary today (generated at \(generatedAt)):\n\(summary)"
     }
 
+    func collectSessionEvents(for window: SummaryWindowDescriptor) throws -> [SessionEventData] {
+        let rangeStart = dateSupport.isoString(from: window.start)
+        let rangeEnd = dateSupport.isoString(from: window.end)
+
+        let rows = try db.query("""
+            SELECT timestamp, event_type, payload_json
+            FROM session_events
+            WHERE timestamp >= ? AND timestamp < ?
+              AND event_type IN ('app_activated', 'window_changed', 'idle_started', 'idle_ended')
+            ORDER BY timestamp
+        """, params: [.text(rangeStart), .text(rangeEnd)])
+
+        return rows.compactMap { row in
+            guard let timestamp = row["timestamp"]?.textValue,
+                  let eventType = row["event_type"]?.textValue else {
+                return nil
+            }
+            return SessionEventData(
+                timestamp: timestamp,
+                eventType: eventType,
+                payloadJson: row["payload_json"]?.textValue
+            )
+        }
+    }
+
     func buildDailyPrompt(for date: String) throws -> String {
-        let sessions = try collectSessionData(for: date)
+        guard let window = try summaryWindow(for: date) else {
+            return "\n---\n" + AppSettings().userPromptSuffix
+        }
+        return try buildPrompt(for: window)
+    }
+
+    func buildPrompt(for window: SummaryWindowDescriptor) throws -> String {
+        let sessions = try collectSessionData(for: window)
+        let events = try collectSessionEvents(for: window)
 
         var prompt = ""
 
         // 1. Compressed memory — previous day + earlier today
-        if let prevDay = try loadPreviousSummary(before: date) {
+        if let prevDay = try loadPreviousSummary(before: window.date) {
             prompt += "## Previous context (compressed memory)\n\(prevDay)\n\n"
         }
-        if let earlierToday = try loadCurrentDaySummary(for: date) {
+        if let earlierToday = try loadCurrentDaySummary(for: window.date),
+           window.duration < 23 * 3600 {
             prompt += "## Earlier today\n\(earlierToday)\n\n"
         }
 
-        // 2. Today's sessions with FULL text
-        prompt += "## Today's sessions (\(date))\n\n"
+        prompt += "## Report window\n"
+        prompt += "Local date: \(window.date)\n"
+        prompt += "Cover ONLY this window: \(dateSupport.localDateTimeString(from: window.start)) — "
+        prompt += "\(dateSupport.localDateTimeString(from: window.end)) (\(dateSupport.timeZone.identifier))\n"
+        prompt += "If this is an hourly update, focus on new work in this window and only reference earlier work for continuity.\n\n"
+
+        // 2. Sessions with FULL text
+        prompt += "## Sessions in this window\n\n"
 
         var totalChars = prompt.count
         let charBudgetPerSession = max(1000, (maxPromptChars - totalChars) / max(sessions.count, 1))
@@ -238,11 +323,29 @@ final class DailySummarizer: @unchecked Sendable {
             totalChars = prompt.count
         }
 
+        if !events.isEmpty {
+            prompt += "## Session events\n"
+            for event in events {
+                let payload = event.payloadJson?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                prompt += "[\(dateSupport.localDateTimeString(from: event.timestamp))] \(event.eventType)"
+                if !payload.isEmpty {
+                    prompt += ": \(payload)"
+                }
+                prompt += "\n"
+            }
+            prompt += "\n"
+        }
+
         // 2.5 Audio transcripts
         let audioTranscriber = AudioTranscriber(db: db, timeZone: dateSupport.timeZone, now: now)
-        if let transcripts = try? audioTranscriber.getTranscriptsForDate(date), !transcripts.isEmpty {
+        if let transcripts = try? audioTranscriber.getTranscriptsForDate(window.date), !transcripts.isEmpty {
             prompt += "## Audio Transcripts\n\n"
             for transcript in transcripts {
+                guard let transcriptDate = dateSupport.parseDateTime(transcript.timestamp),
+                      transcriptDate >= window.start,
+                      transcriptDate < window.end else {
+                    continue
+                }
                 let time = dateSupport.localDateTimeString(from: transcript.timestamp)
                 let lang = transcript.language ?? "?"
                 prompt += "[\(time)] (\(lang)): \(transcript.text)\n"
@@ -251,7 +354,9 @@ final class DailySummarizer: @unchecked Sendable {
         }
 
         // 2.6 Vision analysis of unreadable screenshots
-        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+        let rangeStart = dateSupport.isoString(from: window.start)
+        let rangeEnd = dateSupport.isoString(from: window.end)
+        guard !rangeStart.isEmpty, !rangeEnd.isEmpty else {
             return prompt + "\n---\n" + AppSettings().userPromptSuffix
         }
         let visionSnapshots = try db.query("""
@@ -260,7 +365,7 @@ final class DailySummarizer: @unchecked Sendable {
             WHERE timestamp >= ? AND timestamp < ?
               AND text_source = 'vision' AND merged_text IS NOT NULL
             ORDER BY timestamp
-        """, params: [.text(range.start), .text(range.end)])
+        """, params: [.text(rangeStart), .text(rangeEnd)])
 
         if !visionSnapshots.isEmpty {
             prompt += "## Vision Analysis (screenshots that couldn't be OCR'd)\n\n"
@@ -279,13 +384,20 @@ final class DailySummarizer: @unchecked Sendable {
         return prompt
     }
 
-    func summarize(for date: String, using client: LLMClient) async throws -> DailySummaryRecord {
-        let prompt = try buildDailyPrompt(for: date)
+    func summarize(for date: String, using client: LLMClient, persist: Bool = true) async throws -> DailySummaryRecord {
+        guard let window = try summaryWindow(for: date) else {
+            throw LLMError.parseError("Failed to derive summary window")
+        }
+        return try await summarize(for: window, using: client, persist: persist)
+    }
+
+    func summarize(for window: SummaryWindowDescriptor, using client: LLMClient, persist: Bool = true) async throws -> DailySummaryRecord {
+        let prompt = try buildPrompt(for: window)
 
         // System prompt from Settings (user-editable)
         let systemPrompt = AppSettings().systemPrompt
 
-        logger.info("Generating daily summary for \(date), prompt length: \(prompt.count) chars")
+        logger.info("Generating summary for \(window.date) [\(self.dateSupport.localTimeString(from: window.start))-\(self.dateSupport.localTimeString(from: window.end))], prompt length: \(prompt.count) chars")
 
         let response = try await client.complete(
             systemPrompt: systemPrompt,
@@ -310,7 +422,7 @@ final class DailySummarizer: @unchecked Sendable {
         )
 
         // Collect app durations
-        let sessions = try collectSessionData(for: date)
+        let sessions = try collectSessionData(for: window)
         let appDurations = Dictionary(grouping: sessions, by: \.appName)
             .mapValues { $0.reduce(0) { $0 + $1.durationMs } / 60000 }
             .sorted { $0.value > $1.value }
@@ -321,12 +433,12 @@ final class DailySummarizer: @unchecked Sendable {
         )
 
         let summary = DailySummaryRecord(
-            date: date,
+            date: window.date,
             summaryText: summaryText,
             topAppsJson: appsJson,
             topTopicsJson: topicsJson,
             aiSessionsJson: nil,
-            contextSwitchesJson: "{\"count\":\(sessions.count)}",
+            contextSwitchesJson: summaryWindowMetadataJson(window: window, sessionCount: sessions.count),
             unfinishedItemsJson: parsed.continueTomorrow.map { "{\"items\":[\"\($0)\"]}" },
             suggestedNotesJson: notesJson,
             generatedAt: now,
@@ -336,14 +448,23 @@ final class DailySummarizer: @unchecked Sendable {
             generationStatus: "success"
         )
 
-        try persistSummary(summary)
-        logger.info("Daily summary saved for \(date), tokens: \(response.promptTokens)+\(response.completionTokens)")
+        if persist {
+            try persistSummary(summary)
+            logger.info("Summary saved for \(window.date), tokens: \(response.promptTokens)+\(response.completionTokens)")
+        }
 
         return summary
     }
 
-    func buildFallbackSummary(for date: String, failureReason: String? = nil) throws -> DailySummaryRecord {
-        let sessions = try collectSessionData(for: date)
+    func buildFallbackSummary(for date: String, failureReason: String? = nil, persist: Bool = true) throws -> DailySummaryRecord {
+        guard let window = try summaryWindow(for: date) else {
+            throw DatabaseError.executeFailed("Failed to derive summary window")
+        }
+        return try buildFallbackSummary(for: window, failureReason: failureReason, persist: persist)
+    }
+
+    func buildFallbackSummary(for window: SummaryWindowDescriptor, failureReason: String? = nil, persist: Bool = true) throws -> DailySummaryRecord {
+        let sessions = try collectSessionData(for: window)
         let totalMinutes = sessions.reduce(0) { $0 + Int($1.durationMs / 60000) }
         let distinctApps = Array(Set(sessions.map(\.appName))).sorted()
         let appDurations = Dictionary(grouping: sessions, by: \.appName)
@@ -364,7 +485,7 @@ final class DailySummarizer: @unchecked Sendable {
         let summaryText: String
         if sessions.isEmpty {
             summaryText = """
-            No recorded activity for \(date). Memograph generated a local fallback report because the configured summary provider did not return a usable result.
+            No recorded activity for \(window.date) in the window \(dateSupport.localTimeString(from: window.start))–\(dateSupport.localTimeString(from: window.end)). Memograph generated a local fallback report because the configured summary provider did not return a usable result.
             """
         } else {
             let reasonSuffix: String
@@ -376,7 +497,7 @@ final class DailySummarizer: @unchecked Sendable {
             }
 
             summaryText = """
-            Recorded \(sessions.count) sessions across \(distinctApps.count) apps for about \(totalMinutes) active minutes on \(date). Main apps: \(topAppSummary.isEmpty ? "none" : topAppSummary).\(reasonSuffix)
+            Recorded \(sessions.count) sessions across \(distinctApps.count) apps for about \(totalMinutes) active minutes on \(window.date) in the window \(dateSupport.localTimeString(from: window.start))–\(dateSupport.localTimeString(from: window.end)). Main apps: \(topAppSummary.isEmpty ? "none" : topAppSummary).\(reasonSuffix)
             """
         }
 
@@ -385,12 +506,12 @@ final class DailySummarizer: @unchecked Sendable {
         let nowString = ISO8601DateFormatter().string(from: now())
 
         let summary = DailySummaryRecord(
-            date: date,
+            date: window.date,
             summaryText: summaryText,
             topAppsJson: jsonString(appDurationPayload),
             topTopicsJson: jsonString(topics),
             aiSessionsJson: nil,
-            contextSwitchesJson: "{\"count\":\(sessions.count)}",
+            contextSwitchesJson: summaryWindowMetadataJson(window: window, sessionCount: sessions.count),
             unfinishedItemsJson: nil,
             suggestedNotesJson: jsonString(suggestedNotes),
             generatedAt: nowString,
@@ -400,8 +521,10 @@ final class DailySummarizer: @unchecked Sendable {
             generationStatus: "fallback"
         )
 
-        try persistSummary(summary)
-        logger.info("Daily fallback summary saved for \(date)")
+        if persist {
+            try persistSummary(summary)
+            logger.info("Fallback summary saved for \(window.date)")
+        }
         return summary
     }
 
@@ -522,5 +645,16 @@ final class DailySummarizer: @unchecked Sendable {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+
+    private func summaryWindowMetadataJson(window: SummaryWindowDescriptor, sessionCount: Int) -> String? {
+        jsonString([
+            "count": sessionCount,
+            "window_start": dateSupport.isoString(from: window.start),
+            "window_end": dateSupport.isoString(from: window.end),
+            "window_start_local": dateSupport.localDateTimeString(from: window.start),
+            "window_end_local": dateSupport.localDateTimeString(from: window.end),
+            "mode": window.duration < 23 * 3600 ? "hourly" : "daily"
+        ])
     }
 }

@@ -106,9 +106,12 @@ struct SystemAudioUsageEvaluatorTests {
                 hasExternalOutput: true,
                 isCapturing: false,
                 retryCaptureAfter: .distantPast,
+                stableOutputObservedSince: now.addingTimeInterval(-5),
+                minimumStableObservation: 3,
                 outputSignature: "1255,2347",
                 suppressedSilentSignature: "1255,2347",
-                suppressedSilentSignatureUntil: now.addingTimeInterval(30)
+                suppressedSilentSignatureUntil: now.addingTimeInterval(30),
+                globalSilentCooldownUntil: .distantPast
             )
         )
     }
@@ -123,9 +126,12 @@ struct SystemAudioUsageEvaluatorTests {
                 hasExternalOutput: true,
                 isCapturing: false,
                 retryCaptureAfter: .distantPast,
+                stableOutputObservedSince: now.addingTimeInterval(-5),
+                minimumStableObservation: 3,
                 outputSignature: "4444",
                 suppressedSilentSignature: "1255,2347",
-                suppressedSilentSignatureUntil: now.addingTimeInterval(30)
+                suppressedSilentSignatureUntil: now.addingTimeInterval(30),
+                globalSilentCooldownUntil: .distantPast
             )
         )
     }
@@ -140,9 +146,52 @@ struct SystemAudioUsageEvaluatorTests {
                 hasExternalOutput: true,
                 isCapturing: false,
                 retryCaptureAfter: .distantPast,
+                stableOutputObservedSince: now.addingTimeInterval(-5),
+                minimumStableObservation: 3,
                 outputSignature: "1255,2347",
                 suppressedSilentSignature: "1255,2347",
-                suppressedSilentSignatureUntil: now.addingTimeInterval(-1)
+                suppressedSilentSignatureUntil: now.addingTimeInterval(-1),
+                globalSilentCooldownUntil: .distantPast
+            )
+        )
+    }
+
+    @Test("Requires a stable output observation before probing")
+    func requiresStableOutputObservation() {
+        let now = Date()
+
+        #expect(
+            !SystemAudioProbePolicy.shouldAttemptCapture(
+                now: now,
+                hasExternalOutput: true,
+                isCapturing: false,
+                retryCaptureAfter: .distantPast,
+                stableOutputObservedSince: now.addingTimeInterval(-1),
+                minimumStableObservation: 3,
+                outputSignature: "1255,2347",
+                suppressedSilentSignature: nil,
+                suppressedSilentSignatureUntil: .distantPast,
+                globalSilentCooldownUntil: .distantPast
+            )
+        )
+    }
+
+    @Test("Honors a global silent cooldown even if signature changes")
+    func honorsGlobalSilentCooldown() {
+        let now = Date()
+
+        #expect(
+            !SystemAudioProbePolicy.shouldAttemptCapture(
+                now: now,
+                hasExternalOutput: true,
+                isCapturing: false,
+                retryCaptureAfter: .distantPast,
+                stableOutputObservedSince: now.addingTimeInterval(-5),
+                minimumStableObservation: 3,
+                outputSignature: "new-renderer",
+                suppressedSilentSignature: "old-renderer",
+                suppressedSilentSignatureUntil: now.addingTimeInterval(-1),
+                globalSilentCooldownUntil: now.addingTimeInterval(10)
             )
         )
     }

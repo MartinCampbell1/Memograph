@@ -19,6 +19,31 @@ struct LocalDateSupport {
         return (utcFormatter.string(from: startOfDay), utcFormatter.string(from: endOfDay))
     }
 
+    func startOfLocalDay(for dateString: String) -> Date? {
+        localDayFormatter.date(from: dateString)
+    }
+
+    func endOfLocalDay(for dateString: String) -> Date? {
+        guard let startOfDay = startOfLocalDay(for: dateString) else { return nil }
+        return calendar.date(byAdding: .day, value: 1, to: startOfDay)
+    }
+
+    func localDateString(from date: Date) -> String {
+        localDayFormatter.string(from: date)
+    }
+
+    func localTimeString(from date: Date) -> String {
+        localTimeFormatter.string(from: date)
+    }
+
+    func localDateTimeString(from date: Date) -> String {
+        localDateTimeFormatter.string(from: date)
+    }
+
+    func isoString(from date: Date) -> String {
+        utcFormatter.string(from: date)
+    }
+
     func localDateString(from isoString: String) -> String? {
         guard let date = parseDateTime(isoString) else { return nil }
         return localDayFormatter.string(from: date)

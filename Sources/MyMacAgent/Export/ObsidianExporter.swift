@@ -2,6 +2,21 @@ import Foundation
 import os
 
 final class ObsidianExporter {
+    private struct SummaryWindowMetadata {
+        let count: Int?
+        let windowStart: Date?
+        let windowEnd: Date?
+        let mode: String?
+
+        var isHourly: Bool {
+            guard let windowStart, let windowEnd else { return false }
+            if mode == "hourly" {
+                return true
+            }
+            return windowEnd.timeIntervalSince(windowStart) < 23 * 3600
+        }
+    }
+
     private let db: DatabaseManager
     private let vaultPath: String
     private let logger = Logger.export
@@ -14,18 +29,24 @@ final class ObsidianExporter {
     }
 
     func renderDailyNote(summary: DailySummaryRecord) throws -> String {
-        var md = "# Daily Log — \(summary.date)\n\n"
+        let metadata = summaryWindowMetadata(from: summary.contextSwitchesJson)
+        let title = noteTitle(for: summary, metadata: metadata)
+        var md = "# \(title)\n\n"
 
         // Navigation links (graph connections between days)
         let prevDay = offsetDate(summary.date, by: -1)
         let nextDay = offsetDate(summary.date, by: 1)
         md += "← [[Daily/\(prevDay)|\(prevDay)]] | [[Daily/\(nextDay)|\(nextDay)]] →\n\n"
 
+        if let metadata, metadata.isHourly,
+           let windowStart = metadata.windowStart,
+           let windowEnd = metadata.windowEnd {
+            md += "_Окно отчёта: \(dateSupport.localDateTimeString(from: windowStart)) → "
+            md += "\(dateSupport.localDateTimeString(from: windowEnd)) (\(dateSupport.timeZone.identifier))_\n\n"
+        }
+
         if let richBody = richStructuredBody(from: summary.summaryText) {
-            if richBody.hasPrefix("# Daily Log —") {
-                return richBody + (richBody.hasSuffix("\n") ? "" : "\n")
-            }
-            return md + richBody + (richBody.hasSuffix("\n") ? "" : "\n")
+            return md + stripTopHeading(from: richBody) + (richBody.hasSuffix("\n") ? "" : "\n")
         }
 
         // Summary
@@ -118,10 +139,7 @@ final class ObsidianExporter {
         let dailyDir = (vaultPath as NSString).appendingPathComponent("Daily")
         try FileManager.default.createDirectory(atPath: dailyDir, withIntermediateDirectories: true)
 
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "HH-mm"
-        let timeStr = timeFormatter.string(from: Date())
-        let filename = "\(summary.date)_\(timeStr).md"
+        let filename = noteFilename(for: summary)
         let filePath = (dailyDir as NSString).appendingPathComponent(filename)
 
         try markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
@@ -151,12 +169,64 @@ final class ObsidianExporter {
         dateSupport.localTimeString(from: isoString)
     }
 
+    private func noteTitle(for summary: DailySummaryRecord, metadata: SummaryWindowMetadata?) -> String {
+        guard let metadata, metadata.isHourly,
+              let windowStart = metadata.windowStart,
+              let windowEnd = metadata.windowEnd else {
+            return "Daily Log — \(summary.date)"
+        }
+
+        return "Hourly Log — \(dateSupport.localDateString(from: windowStart)) "
+            + "\(dateSupport.localTimeString(from: windowStart))–\(dateSupport.localTimeString(from: windowEnd))"
+    }
+
+    private func noteFilename(for summary: DailySummaryRecord) -> String {
+        if let metadata = summaryWindowMetadata(from: summary.contextSwitchesJson),
+           metadata.isHourly,
+           let windowStart = metadata.windowStart,
+           let windowEnd = metadata.windowEnd {
+            return "\(dateSupport.localDateString(from: windowStart))_"
+                + "\(dateSupport.localTimeString(from: windowStart).replacingOccurrences(of: ":", with: "-"))-"
+                + "\(dateSupport.localTimeString(from: windowEnd).replacingOccurrences(of: ":", with: "-")).md"
+        }
+
+        let timeStamp = summary.generatedAt
+            .flatMap(dateSupport.parseDateTime)
+            .map { dateSupport.localTimeString(from: $0).replacingOccurrences(of: ":", with: "-") }
+            ?? dateSupport.localTimeString(from: Date()).replacingOccurrences(of: ":", with: "-")
+        return "\(summary.date)_\(timeStamp).md"
+    }
+
+    private func summaryWindowMetadata(from json: String?) -> SummaryWindowMetadata? {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        let count = object["count"] as? Int
+        let windowStart = (object["window_start"] as? String).flatMap(dateSupport.parseDateTime)
+        let windowEnd = (object["window_end"] as? String).flatMap(dateSupport.parseDateTime)
+        let mode = object["mode"] as? String
+        return SummaryWindowMetadata(count: count, windowStart: windowStart, windowEnd: windowEnd, mode: mode)
+    }
+
+    private func stripTopHeading(from markdown: String) -> String {
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = trimmed.components(separatedBy: "\n")
+        guard let first = lines.first,
+              first.hasPrefix("# ") else {
+            return trimmed + "\n"
+        }
+        return lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+    }
+
     private func richStructuredBody(from text: String?) -> String? {
         guard let text else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if trimmed.hasPrefix("# Daily Log —") {
+        if trimmed.hasPrefix("# Daily Log —") || trimmed.hasPrefix("# Hourly Log —") {
             return trimmed
         }
 

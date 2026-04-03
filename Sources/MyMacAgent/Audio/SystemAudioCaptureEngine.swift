@@ -14,9 +14,10 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
 
     private let silenceTimeout: TimeInterval = 1.5
     private let signalWarmupWindow: TimeInterval = 2.0
+    private let minimumStableObservationBeforeProbe: TimeInterval = 3.0
     private let retryCooldownAfterSilence: TimeInterval = 4.0
     private let retryCooldownAfterPermissionFailure: TimeInterval = 30.0
-    private let retryCooldownAfterSilentRenderer: TimeInterval = 45.0
+    private let retryCooldownAfterSilentRenderer: TimeInterval = 20.0
     private let audibleThreshold: Float = 0.003
     private var stream: SCStream?
     private var currentFile: AVAudioFile?
@@ -38,6 +39,9 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private var retryCaptureAfter = Date.distantPast
     private var suppressedSilentSignature: String?
     private var suppressedSilentSignatureUntil = Date.distantPast
+    private var globalSilentCooldownUntil = Date.distantPast
+    private var stableOutputSignature: String?
+    private var stableOutputObservedSince: Date?
     private var audioFormat: AVAudioFormat?
     private var outputDeviceID: AudioDeviceID = 0
     private let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
@@ -104,15 +108,11 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private func checkOutputState() {
         let now = Date()
         let observation = currentOutputObservation()
-
-        if observation.signature == nil {
-            clearSilentSignatureSuppression()
-        } else if observation.signature != suppressedSilentSignature {
-            clearSilentSignatureSuppression()
-        }
+        updateStableOutputObservation(observation, now: now)
 
         if isCapturing, shouldStopForSilence(now: now) {
             retryCaptureAfter = now.addingTimeInterval(retryCooldownAfterSilence)
+            globalSilentCooldownUntil = now.addingTimeInterval(retryCooldownAfterSilentRenderer)
             if let signature = observation.signature {
                 suppressedSilentSignature = signature
                 suppressedSilentSignatureUntil = now.addingTimeInterval(retryCooldownAfterSilentRenderer)
@@ -132,9 +132,12 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
             hasExternalOutput: externalOutputInUse,
             isCapturing: isCapturing,
             retryCaptureAfter: retryCaptureAfter,
+            stableOutputObservedSince: stableOutputObservedSince,
+            minimumStableObservation: minimumStableObservationBeforeProbe,
             outputSignature: observation.signature,
             suppressedSilentSignature: suppressedSilentSignature,
-            suppressedSilentSignatureUntil: suppressedSilentSignatureUntil
+            suppressedSilentSignatureUntil: suppressedSilentSignatureUntil,
+            globalSilentCooldownUntil: globalSilentCooldownUntil
         ) {
             Task { await startCaptureIfNeeded() }
         } else if !externalOutputInUse && isCapturing && pendingStopWorkItem == nil {
@@ -353,6 +356,22 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private func clearSilentSignatureSuppression() {
         suppressedSilentSignature = nil
         suppressedSilentSignatureUntil = .distantPast
+    }
+
+    private func updateStableOutputObservation(_ observation: OutputObservation, now: Date) {
+        guard observation.hasExternalOutput else {
+            stableOutputSignature = nil
+            stableOutputObservedSince = nil
+            return
+        }
+
+        let signature = observation.signature ?? "device-\(outputDeviceID)"
+        if stableOutputSignature == signature {
+            return
+        }
+
+        stableOutputSignature = signature
+        stableOutputObservedSince = now
     }
 
     private func shouldStopForSilence(now: Date) -> Bool {
