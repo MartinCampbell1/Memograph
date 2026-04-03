@@ -641,8 +641,74 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "topic-1", sourceDate: "2026-04-03")
 
-        #expect(note?.bodyMarkdown.contains("In focus for the summary.") == true)
+        #expect(note?.bodyMarkdown.contains("In focus during the summary.") == true)
         #expect(note?.bodyMarkdown.contains("Context: Work on Memograph included planning System Audio Capture through ScreenCaptureKit to reduce background blinking.") == true)
+    }
+
+    @Test("Tool notes prioritize project and topic evidence in signals and recent windows")
+    func toolNotesPrioritizeProjectAndTopicEvidence() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("tool-1"), .text("Codex"), .text("codex"), .text("tool"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("topic-1"), .text("OCR"), .text("ocr"), .text("topic"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("2026-04-04"), .text("2026-04-04T05:01:00Z"),
+            .text("tool-1"), .text("used_during_window"), .text("2026-04-04 04:00-05:00"), .real(0.9), .text("hourly_summary"),
+            .text("claim-2"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("2026-04-04"), .text("2026-04-04T05:01:00Z"),
+            .text("tool-1"), .text("supports_project"), .text("Memograph"), .real(0.9), .text("relation_inference"),
+            .text("claim-3"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("2026-04-04"), .text("2026-04-04T05:01:00Z"),
+            .text("tool-1"), .text("works_on_topic"), .text("OCR"), .real(0.8), .text("relation_inference")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_edges
+                (id, from_entity_id, to_entity_id, edge_type, weight, updated_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("edge-1"), .text("tool-1"), .text("project-1"), .text("co_occurs_with"), .real(2),
+            .text("2026-04-04T05:01:00Z"),
+            .text("edge-2"), .text("tool-1"), .text("topic-1"), .text("works_on_topic"), .real(1),
+            .text("2026-04-04T05:01:00Z")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-04")
+
+        #expect(note?.bodyMarkdown.contains("Main projects: Memograph;") == true)
+        #expect(note?.bodyMarkdown.contains("Commonly used for: OCR;") == true)
+        #expect(note?.bodyMarkdown.contains("used while working on Memograph") == true)
+        #expect(note?.bodyMarkdown.contains("exploring OCR") == true)
     }
 
     @Test("Lesson recent windows include proposed note context when available")

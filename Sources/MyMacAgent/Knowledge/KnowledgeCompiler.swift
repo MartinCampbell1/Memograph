@@ -13,6 +13,13 @@ private struct RelatedKnowledgeReference {
     let weight: Double
 }
 
+private struct PredicateSignalSummary {
+    let predicate: String
+    let count: Int
+    let examples: [String]
+    let latest: String?
+}
+
 final class KnowledgeCompiler {
     private let db: DatabaseManager
     private let dateSupport: LocalDateSupport
@@ -410,7 +417,7 @@ final class KnowledgeCompiler {
             "worth_capturing"
         ]
 
-        return orderedPredicates.compactMap { predicate in
+        let summaries = orderedPredicates.compactMap { predicate -> PredicateSignalSummary? in
             guard let predicateClaims = grouped[predicate], !predicateClaims.isEmpty else {
                 return nil
             }
@@ -432,51 +439,24 @@ final class KnowledgeCompiler {
                     ?? claim.sourceSummaryGeneratedAt
             }.max()
 
-            switch predicate {
-            case "advanced_during_window":
-                return "Advanced in \(count) summary window\(count == 1 ? "" : "s"); last seen \(formatTimestamp(latest))."
-            case "surfaced_in_window":
-                return "Surfaced as an issue in \(count) summary window\(count == 1 ? "" : "s"); last seen \(formatTimestamp(latest))."
-            case "used_during_window":
-                return "Seen in \(count) captured work window\(count == 1 ? "" : "s"); last seen \(formatTimestamp(latest))."
-            case "topic_in_focus":
-                return "Focus topic in \(count) summary window\(count == 1 ? "" : "s"); last seen \(formatTimestamp(latest))."
-            case "related_topic":
-                return "Related to \(summarizeExamples(examples, totalCount: count, fallbackNoun: "topic")); last seen \(formatTimestamp(latest))."
-            case "uses_tool":
-                return "Worked with \(summarizeExamples(examples, totalCount: count, fallbackNoun: "tool")); last seen \(formatTimestamp(latest))."
-            case "supports_project":
-                return "Supported \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
-            case "works_on_topic":
-                return "Used on \(summarizeExamples(examples, totalCount: count, fallbackNoun: "topic")); last seen \(formatTimestamp(latest))."
-            case "worked_with_tool":
-                return "Worked with \(summarizeExamples(examples, totalCount: count, fallbackNoun: "tool")); last seen \(formatTimestamp(latest))."
-            case "focuses_on_topic":
-                return "Focus topic: \(summarizeExamples(examples, totalCount: count, fallbackNoun: "topic")); last seen \(formatTimestamp(latest))."
-            case "relevant_to_project":
-                return "Relevant to \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
-            case "blocked_by_issue":
-                return "Blocked by \(summarizeExamples(examples, totalCount: count, fallbackNoun: "issue")); last seen \(formatTimestamp(latest))."
-            case "affects_project":
-                return "Affected \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
-            case "uses_model":
-                return "Used with \(summarizeExamples(examples, totalCount: count, fallbackNoun: "model")); last seen \(formatTimestamp(latest))."
-            case "used_in_project":
-                return "Used in \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
-            case "generates_lesson":
-                return "Generated \(summarizeExamples(examples, totalCount: count, fallbackNoun: "lesson")); last seen \(formatTimestamp(latest))."
-            case "derived_from_project":
-                return "Derived from \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
-            case "explains_topic":
-                return "Explains \(summarizeExamples(examples, totalCount: count, fallbackNoun: "topic")); last seen \(formatTimestamp(latest))."
-            case "documented_in_lesson":
-                return "Documented in \(summarizeExamples(examples, totalCount: count, fallbackNoun: "lesson")); last seen \(formatTimestamp(latest))."
-            case "worth_capturing":
-                return "Promoted to a durable note candidate \(count == 1 ? "once" : "\(count) times"); last seen \(formatTimestamp(latest))."
-            default:
-                return nil
-            }
+            return PredicateSignalSummary(
+                predicate: predicate,
+                count: count,
+                examples: examples,
+                latest: latest
+            )
         }
+
+        let summaryByPredicate = Dictionary(uniqueKeysWithValues: summaries.map { ($0.predicate, $0) })
+        let entitySpecific = entitySpecificKeySignals(
+            for: entity.entityType,
+            summaries: summaryByPredicate
+        )
+        if !entitySpecific.isEmpty {
+            return entitySpecific
+        }
+
+        return summaries.compactMap(renderGenericSignal)
     }
 
     private func describe(claim: KnowledgeClaimRecord) -> String {
@@ -532,18 +512,177 @@ final class KnowledgeCompiler {
         return dateSupport.localDateTimeString(from: value)
     }
 
-    private func predicateExamples(
-        from claims: [KnowledgeClaimRecord],
-        predicate: String,
-        visibleRelationObjects: Set<String>
-    ) -> String {
-        let examples = predicateExampleObjects(
-            from: claims,
-            predicate: predicate,
-            visibleRelationObjects: visibleRelationObjects
+    private func entitySpecificKeySignals(
+        for entityType: KnowledgeEntityType,
+        summaries: [String: PredicateSignalSummary]
+    ) -> [String] {
+        switch entityType {
+        case .project:
+            return compactSignalLines([
+                signalLine("advanced_during_window", label: "Advanced", summaries: summaries, unit: "summary window"),
+                signalLine("used_during_window", label: "Seen", summaries: summaries, unit: "captured work window"),
+                signalLine(["uses_tool", "worked_with_tool"], label: "Main tools", summaries: summaries, fallbackNoun: "tool"),
+                signalLine("focuses_on_topic", label: "Main focus", summaries: summaries, fallbackNoun: "topic"),
+                signalLine("blocked_by_issue", label: "Recent blocker", summaries: summaries, fallbackNoun: "issue"),
+                signalLine("generates_lesson", label: "Produced lesson", summaries: summaries, fallbackNoun: "lesson")
+            ])
+        case .tool:
+            return compactSignalLines([
+                signalLine("used_during_window", label: "Seen", summaries: summaries, unit: "captured work window"),
+                signalLine(["supports_project", "used_in_project"], label: "Main projects", summaries: summaries, fallbackNoun: "project"),
+                signalLine("works_on_topic", label: "Commonly used for", summaries: summaries, fallbackNoun: "topic"),
+                signalLine("topic_in_focus", label: "Mentioned in summary focus", summaries: summaries, unit: "summary window")
+            ])
+        case .topic:
+            return compactSignalLines([
+                signalLine("topic_in_focus", label: "In focus", summaries: summaries, unit: "summary window"),
+                signalLine("relevant_to_project", label: "Project trail", summaries: summaries, fallbackNoun: "project"),
+                signalLine("related_topic", label: "Often appears near", summaries: summaries, fallbackNoun: "topic"),
+                signalLine("documented_in_lesson", label: "Explained in", summaries: summaries, fallbackNoun: "lesson")
+            ])
+        case .lesson:
+            return compactSignalLines([
+                signalLine("derived_from_project", label: "Distilled from", summaries: summaries, fallbackNoun: "project"),
+                signalLine("explains_topic", label: "Covers", summaries: summaries, fallbackNoun: "topic"),
+                signalLine("worth_capturing", label: nil, summaries: summaries)
+            ])
+        case .issue:
+            return compactSignalLines([
+                signalLine("surfaced_in_window", label: "Surfaced", summaries: summaries, unit: "summary window"),
+                signalLine("affects_project", label: "Affected", summaries: summaries, fallbackNoun: "project")
+            ])
+        case .model:
+            return compactSignalLines([
+                signalLine(["used_in_project", "uses_model"], label: "Seen on", summaries: summaries, fallbackNoun: "project")
+            ])
+        case .site, .person:
+            return compactSignalLines([
+                signalLine("used_during_window", label: "Seen", summaries: summaries, unit: "captured work window")
+            ])
+        }
+    }
+
+    private func compactSignalLines(_ lines: [String?]) -> [String] {
+        Array(lines.compactMap { $0 }.prefix(4))
+    }
+
+    private func signalLine(
+        _ predicate: String,
+        label: String?,
+        summaries: [String: PredicateSignalSummary],
+        fallbackNoun: String? = nil,
+        unit: String? = nil
+    ) -> String? {
+        guard let summary = summaries[predicate] else { return nil }
+        return renderSignalLine(
+            summary,
+            label: label,
+            fallbackNoun: fallbackNoun,
+            unit: unit
         )
-        guard !examples.isEmpty else { return "" }
-        return " (\(examples.prefix(3).joined(separator: ", ")))"
+    }
+
+    private func signalLine(
+        _ predicates: [String],
+        label: String?,
+        summaries: [String: PredicateSignalSummary],
+        fallbackNoun: String? = nil,
+        unit: String? = nil
+    ) -> String? {
+        let matching = predicates.compactMap { summaries[$0] }
+        guard !matching.isEmpty else { return nil }
+        return renderSignalLine(
+            mergeSignalSummaries(matching),
+            label: label,
+            fallbackNoun: fallbackNoun,
+            unit: unit
+        )
+    }
+
+    private func renderSignalLine(
+        _ summary: PredicateSignalSummary,
+        label: String?,
+        fallbackNoun: String?,
+        unit: String?
+    ) -> String {
+        if summary.predicate == "worth_capturing" {
+            return "Promoted to a durable note candidate \(summary.count == 1 ? "once" : "\(summary.count) times"); last seen \(formatTimestamp(summary.latest))."
+        }
+
+        if let unit {
+            let phrase = "\(summary.count) \(unit)\(summary.count == 1 ? "" : "s")"
+            if let label {
+                return "\(label) in \(phrase); last seen \(formatTimestamp(summary.latest))."
+            }
+            return "\(phrase.capitalized); last seen \(formatTimestamp(summary.latest))."
+        }
+
+        let objectSummary = summarizeExamples(
+            summary.examples,
+            totalCount: summary.count,
+            fallbackNoun: fallbackNoun ?? "item"
+        )
+        if let label {
+            return "\(label): \(objectSummary); last seen \(formatTimestamp(summary.latest))."
+        }
+        return "\(objectSummary); last seen \(formatTimestamp(summary.latest))."
+    }
+
+    private func mergeSignalSummaries(_ summaries: [PredicateSignalSummary]) -> PredicateSignalSummary {
+        let count = summaries.reduce(0) { $0 + $1.count }
+        let examples = Array(Set(summaries.flatMap(\.examples))).sorted()
+        let latest = summaries.compactMap(\.latest).max()
+        return PredicateSignalSummary(
+            predicate: summaries.first?.predicate ?? "",
+            count: count,
+            examples: examples,
+            latest: latest
+        )
+    }
+
+    private func renderGenericSignal(_ summary: PredicateSignalSummary) -> String? {
+        switch summary.predicate {
+        case "advanced_during_window":
+            return "Advanced in \(summary.count) summary window\(summary.count == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+        case "surfaced_in_window":
+            return "Surfaced as an issue in \(summary.count) summary window\(summary.count == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+        case "used_during_window":
+            return "Seen in \(summary.count) captured work window\(summary.count == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+        case "topic_in_focus":
+            return "Focus topic in \(summary.count) summary window\(summary.count == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+        case "related_topic":
+            return "Related to \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+        case "uses_tool", "worked_with_tool":
+            return "Worked with \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "tool")); last seen \(formatTimestamp(summary.latest))."
+        case "supports_project":
+            return "Supported \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+        case "works_on_topic":
+            return "Used on \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+        case "focuses_on_topic":
+            return "Focus topic: \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+        case "relevant_to_project":
+            return "Relevant to \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+        case "blocked_by_issue":
+            return "Blocked by \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "issue")); last seen \(formatTimestamp(summary.latest))."
+        case "affects_project":
+            return "Affected \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+        case "uses_model":
+            return "Used with \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "model")); last seen \(formatTimestamp(summary.latest))."
+        case "used_in_project":
+            return "Used in \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+        case "generates_lesson":
+            return "Generated \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
+        case "derived_from_project":
+            return "Derived from \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+        case "explains_topic":
+            return "Explains \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+        case "documented_in_lesson":
+            return "Documented in \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
+        case "worth_capturing":
+            return "Promoted to a durable note candidate \(summary.count == 1 ? "once" : "\(summary.count) times"); last seen \(formatTimestamp(summary.latest))."
+        default:
+            return nil
+        }
     }
 
     private func predicateExampleObjects(
@@ -706,7 +845,7 @@ final class KnowledgeCompiler {
 
             var seenFragments = Set<String>()
             let fragments = windowClaims.compactMap { claim -> String? in
-                let fragment = describeRecentWindowClaim(claim)
+                let fragment = describeRecentWindowClaim(claim, entityType: entityType)
                 guard seenFragments.insert(fragment).inserted else { return nil }
                 return fragment
             }
@@ -723,7 +862,7 @@ final class KnowledgeCompiler {
         }
     }
 
-    private func describeRecentWindowClaim(_ claim: KnowledgeClaimRecord) -> String {
+    private func describeRecentWindowClaim(_ claim: KnowledgeClaimRecord, entityType: KnowledgeEntityType) -> String {
         let object = claim.objectText?.trimmingCharacters(in: .whitespacesAndNewlines)
         switch claim.predicate {
         case "used_during_window":
@@ -731,20 +870,29 @@ final class KnowledgeCompiler {
         case "advanced_during_window":
             return "advanced in the summary"
         case "topic_in_focus":
-            return "in focus for the summary"
+            return entityType == .topic ? "in focus during the summary" : "in focus for the summary"
         case "related_topic":
             return object.map { "near \($0)" } ?? "near another topic"
         case "uses_tool":
             return object.map { "with \($0)" } ?? "with a tool"
         case "supports_project":
+            if entityType == .tool {
+                return object.map { "used while working on \($0)" } ?? "used while working on a project"
+            }
             return object.map { "supporting \($0)" } ?? "supporting a project"
         case "works_on_topic":
+            if entityType == .tool {
+                return object.map { "exploring \($0)" } ?? "exploring a topic"
+            }
             return object.map { "used on \($0)" } ?? "used on a topic"
         case "worked_with_tool":
             return object.map { "with \($0)" } ?? "with a tool"
         case "focuses_on_topic":
             return object.map { "focused on \($0)" } ?? "focused on a topic"
         case "relevant_to_project":
+            if entityType == .topic {
+                return object.map { "active around \($0)" } ?? "active around a project"
+            }
             return object.map { "tied to \($0)" } ?? "tied to a project"
         case "blocked_by_issue":
             return object.map { "blocked by \($0)" } ?? "blocked by an issue"
@@ -753,14 +901,26 @@ final class KnowledgeCompiler {
         case "uses_model":
             return object.map { "using \($0)" } ?? "using a model"
         case "used_in_project":
+            if entityType == .model {
+                return object.map { "used on \($0)" } ?? "used on a project"
+            }
             return object.map { "used in \($0)" } ?? "used in a project"
         case "generates_lesson":
             return object.map { "generated lesson \($0)" } ?? "generated a lesson"
         case "derived_from_project":
+            if entityType == .lesson {
+                return object.map { "distilled from \($0)" } ?? "distilled from a project"
+            }
             return object.map { "derived from \($0)" } ?? "derived from a project"
         case "explains_topic":
+            if entityType == .lesson {
+                return object.map { "covering \($0)" } ?? "covering a topic"
+            }
             return object.map { "explains \($0)" } ?? "explains a topic"
         case "documented_in_lesson":
+            if entityType == .topic {
+                return object.map { "explained in \($0)" } ?? "explained in a lesson"
+            }
             return object.map { "documented in \($0)" } ?? "documented in a lesson"
         case "worth_capturing":
             return "captured as a durable note candidate"
@@ -801,16 +961,20 @@ final class KnowledgeCompiler {
         if normalized.hasPrefix("active during") || normalized.hasPrefix("surfaced as an issue") {
             return 6
         }
-        if normalized.hasPrefix("advanced in the summary") || normalized.hasPrefix("in focus for the summary") {
+        if normalized.hasPrefix("advanced in the summary")
+            || normalized.hasPrefix("in focus for the summary")
+            || normalized.hasPrefix("in focus during the summary") {
             return 5
         }
-        if normalized.hasPrefix("with ") || normalized.hasPrefix("focused on ") || normalized.hasPrefix("using ") {
+        if normalized.hasPrefix("with ") || normalized.hasPrefix("focused on ") || normalized.hasPrefix("using ")
+            || normalized.hasPrefix("used while working on ") || normalized.hasPrefix("exploring ") {
             return entityType == .project ? 4 : 3
         }
-        if normalized.hasPrefix("derived from ") || normalized.hasPrefix("explains ") {
+        if normalized.hasPrefix("derived from ") || normalized.hasPrefix("distilled from ")
+            || normalized.hasPrefix("explains ") || normalized.hasPrefix("covering ") {
             return entityType == .lesson ? 4 : 3
         }
-        if normalized.hasPrefix("near ") || normalized.hasPrefix("tied to ") {
+        if normalized.hasPrefix("near ") || normalized.hasPrefix("tied to ") || normalized.hasPrefix("active around ") {
             return 2
         }
         return 1
