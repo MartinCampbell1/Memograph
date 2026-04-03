@@ -14,10 +14,10 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
 
     private let silenceTimeout: TimeInterval = 1.5
     private let signalWarmupWindow: TimeInterval = 2.0
-    private let minimumStableObservationBeforeProbe: TimeInterval = 3.0
+    private let minimumStableObservationBeforeProbe: TimeInterval = 10.0
     private let retryCooldownAfterSilence: TimeInterval = 4.0
     private let retryCooldownAfterPermissionFailure: TimeInterval = 30.0
-    private let retryCooldownAfterSilentRenderer: TimeInterval = 20.0
+    private let retryCooldownAfterSilentRenderer: TimeInterval = 90.0
     private let audibleThreshold: Float = 0.003
     private var stream: SCStream?
     private var currentFile: AVAudioFile?
