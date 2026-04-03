@@ -421,7 +421,7 @@ final class KnowledgeCompiler {
             guard !filteredClaims.isEmpty else { return nil }
 
             let count = filteredClaims.count
-            let examples = predicateExamples(
+            let examples = predicateExampleObjects(
                 from: filteredClaims,
                 predicate: predicate,
                 visibleRelationObjects: visibleRelationObjects
@@ -434,45 +434,45 @@ final class KnowledgeCompiler {
 
             switch predicate {
             case "advanced_during_window":
-                return "\(entity.canonicalName) was explicitly advanced in \(count) summary window\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
+                return "Advanced in \(count) summary window\(count == 1 ? "" : "s"); last seen \(formatTimestamp(latest))."
             case "surfaced_in_window":
-                return "\(entity.canonicalName) surfaced as an issue in \(count) summary window\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
+                return "Surfaced as an issue in \(count) summary window\(count == 1 ? "" : "s"); last seen \(formatTimestamp(latest))."
             case "used_during_window":
-                return "\(entity.canonicalName) was used in \(count) captured work window\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
+                return "Seen in \(count) captured work window\(count == 1 ? "" : "s"); last seen \(formatTimestamp(latest))."
             case "topic_in_focus":
-                return "\(entity.canonicalName) appeared as a focus topic in \(count) summary window\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
+                return "Focus topic in \(count) summary window\(count == 1 ? "" : "s"); last seen \(formatTimestamp(latest))."
             case "related_topic":
-                return "\(entity.canonicalName) was strongly connected to \(count) related topic\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Related to \(summarizeExamples(examples, totalCount: count, fallbackNoun: "topic")); last seen \(formatTimestamp(latest))."
             case "uses_tool":
-                return "\(entity.canonicalName) was worked on with \(count) tool relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Worked with \(summarizeExamples(examples, totalCount: count, fallbackNoun: "tool")); last seen \(formatTimestamp(latest))."
             case "supports_project":
-                return "\(entity.canonicalName) supported \(count) project relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Supported \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
             case "works_on_topic":
-                return "\(entity.canonicalName) was used on \(count) topic relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Used on \(summarizeExamples(examples, totalCount: count, fallbackNoun: "topic")); last seen \(formatTimestamp(latest))."
             case "worked_with_tool":
-                return "\(entity.canonicalName) was worked with \(count) tool relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Worked with \(summarizeExamples(examples, totalCount: count, fallbackNoun: "tool")); last seen \(formatTimestamp(latest))."
             case "focuses_on_topic":
-                return "\(entity.canonicalName) focused on \(count) topic relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Focus topic: \(summarizeExamples(examples, totalCount: count, fallbackNoun: "topic")); last seen \(formatTimestamp(latest))."
             case "relevant_to_project":
-                return "\(entity.canonicalName) was relevant to \(count) project window\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Relevant to \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
             case "blocked_by_issue":
-                return "\(entity.canonicalName) hit \(count) blocking issue relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Blocked by \(summarizeExamples(examples, totalCount: count, fallbackNoun: "issue")); last seen \(formatTimestamp(latest))."
             case "affects_project":
-                return "\(entity.canonicalName) affected \(count) project window\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Affected \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
             case "uses_model":
-                return "\(entity.canonicalName) was paired with \(count) model relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Used with \(summarizeExamples(examples, totalCount: count, fallbackNoun: "model")); last seen \(formatTimestamp(latest))."
             case "used_in_project":
-                return "\(entity.canonicalName) appeared in \(count) project relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Used in \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
             case "generates_lesson":
-                return "\(entity.canonicalName) generated \(count) durable lesson relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Generated \(summarizeExamples(examples, totalCount: count, fallbackNoun: "lesson")); last seen \(formatTimestamp(latest))."
             case "derived_from_project":
-                return "\(entity.canonicalName) was derived from \(count) project relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Derived from \(summarizeExamples(examples, totalCount: count, fallbackNoun: "project")); last seen \(formatTimestamp(latest))."
             case "explains_topic":
-                return "\(entity.canonicalName) explained \(count) topic relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Explains \(summarizeExamples(examples, totalCount: count, fallbackNoun: "topic")); last seen \(formatTimestamp(latest))."
             case "documented_in_lesson":
-                return "\(entity.canonicalName) was documented in \(count) lesson relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+                return "Documented in \(summarizeExamples(examples, totalCount: count, fallbackNoun: "lesson")); last seen \(formatTimestamp(latest))."
             case "worth_capturing":
-                return "\(entity.canonicalName) was suggested as durable knowledge \(count) time\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
+                return "Promoted to a durable note candidate \(count == 1 ? "once" : "\(count) times"); last seen \(formatTimestamp(latest))."
             default:
                 return nil
             }
@@ -537,15 +537,44 @@ final class KnowledgeCompiler {
         predicate: String,
         visibleRelationObjects: Set<String>
     ) -> String {
-        let examples = Array(Set(claims.compactMap {
+        let examples = predicateExampleObjects(
+            from: claims,
+            predicate: predicate,
+            visibleRelationObjects: visibleRelationObjects
+        )
+        guard !examples.isEmpty else { return "" }
+        return " (\(examples.prefix(3).joined(separator: ", ")))"
+    }
+
+    private func predicateExampleObjects(
+        from claims: [KnowledgeClaimRecord],
+        predicate: String,
+        visibleRelationObjects: Set<String>
+    ) -> [String] {
+        Array(Set(claims.compactMap {
             filteredExampleObject(
                 from: $0,
                 predicate: predicate,
                 visibleRelationObjects: visibleRelationObjects
             )
         })).filter { !$0.isEmpty }.sorted()
-        guard !examples.isEmpty else { return "" }
-        return " (\(examples.prefix(3).joined(separator: ", ")))"
+    }
+
+    private func summarizeExamples(
+        _ examples: [String],
+        totalCount: Int,
+        fallbackNoun: String
+    ) -> String {
+        guard !examples.isEmpty else {
+            return "\(totalCount) \(fallbackNoun)\(totalCount == 1 ? "" : "s")"
+        }
+
+        let visibleExamples = Array(examples.prefix(2))
+        let remaining = max(totalCount - visibleExamples.count, 0)
+        if remaining > 0 {
+            return visibleExamples.joined(separator: ", ") + " and \(remaining) more"
+        }
+        return joinNaturalLanguage(visibleExamples)
     }
 
     private func filteredExampleObject(

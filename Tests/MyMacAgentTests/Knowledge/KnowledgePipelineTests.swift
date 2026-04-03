@@ -375,7 +375,7 @@ struct KnowledgePipelineTests {
         #expect(note?.bodyMarkdown.contains("## Aliases") == true)
         #expect(note?.bodyMarkdown.contains("Claude.app") == true)
         #expect(note?.bodyMarkdown.contains("## Key Signals") == true)
-        #expect(note?.bodyMarkdown.contains("was used in 1 captured work window") == true)
+        #expect(note?.bodyMarkdown.contains("Seen in 1 captured work window;") == true)
         #expect(note?.bodyMarkdown.contains("## Recent Windows") == true)
         #expect(note?.bodyMarkdown.contains("Active during 2026-04-03 10:00-11:00.") == true)
         #expect(note?.bodyMarkdown.contains("### Projects") == true)
