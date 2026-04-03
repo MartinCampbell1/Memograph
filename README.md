@@ -23,10 +23,10 @@
 <br/>
 
 <p align="center">
-  <img src="docs/screenshots/timeline-clean.png" alt="Memograph timeline" width="600" />
+  <img src="docs/screenshots/obsidian-clean.png" alt="Memograph daily log in Obsidian with knowledge graph" width="100%" />
 </p>
 
-<p align="center"><em>Timeline &mdash; see which apps you used and for how long.</em></p>
+<p align="center"><em>A real daily log with 150+ [[wiki-links]], rendered in Obsidian alongside the auto-generated knowledge graph.</em></p>
 
 ---
 
@@ -219,9 +219,9 @@ Screenshots never leave your Mac in any mode. Only processed text is sent to clo
 <br/>
 
 <p align="center">
-  <img src="docs/screenshots/obsidian-clean.png" alt="Obsidian knowledge graph" width="500" />
+  <img src="docs/screenshots/timeline-clean.png" alt="Memograph timeline" width="600" />
 </p>
-<p align="center"><em>Obsidian knowledge graph &mdash; auto-generated from daily [[wiki-links]].</em></p>
+<p align="center"><em>Timeline &mdash; see which apps you used and for how long.</em></p>
 
 ---
 
