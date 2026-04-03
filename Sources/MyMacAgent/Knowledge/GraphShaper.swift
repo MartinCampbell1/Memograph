@@ -111,6 +111,42 @@ final class GraphShaper {
         "ocr",
         "vram"
     ]
+    private let commodityWeakTopicNames: Set<String> = [
+        "a100",
+        "ai training",
+        "ddr5",
+        "gemma",
+        "gemma 3",
+        "gpu",
+        "gpu rental market",
+        "gpu rental markets",
+        "hardware crisis 2026",
+        "h100",
+        "llm",
+        "llm ui",
+        "mac",
+        "nvidia tesla",
+        "rtx",
+        "tesla",
+        "unified memory vs vram",
+        "user",
+        "vast.ai vs local gpu",
+        "vs code",
+        "ai consultant",
+        "ai engineering"
+    ]
+    private let hotspotDeprioritizedTopicFragments: [String] = [
+        "apple silicon",
+        "gemma ",
+        "gpu rental",
+        "inference",
+        "local hardware",
+        "macbook pro",
+        "nvidia ",
+        "rtx ",
+        "tesla",
+        "vast.ai"
+    ]
     private let genericLessonNames: Set<String> = [
         "report generation"
     ]
@@ -185,6 +221,66 @@ final class GraphShaper {
         }
         guard !isGenericTopic(name) else { return false }
         return isSpecificEnoughTopic(name)
+    }
+
+    func isCommodityWeakTopic(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        if commodityWeakTopicNames.contains(lowered) {
+            return true
+        }
+
+        if lowered.range(of: #"^[ah]\d{3}$"#, options: .regularExpression) != nil {
+            return true
+        }
+
+        return false
+    }
+
+    func shouldSuppressWeakTopicInMaintenance(_ name: String) -> Bool {
+        isCommodityWeakTopic(name) || isHotspotDeprioritizedTopic(name) || isGenericTopic(name) || isSuppressedTopic(name)
+    }
+
+    func shouldHideFromHotspots(_ metric: KnowledgeEntityMetrics) -> Bool {
+        guard metric.entity.entityType == .topic else { return false }
+        if isDurableTopic(metric.entity.canonicalName) {
+            return false
+        }
+        if metric.projectRelationCount > 1 {
+            return false
+        }
+        return isCommodityWeakTopic(metric.entity.canonicalName)
+            || isHotspotDeprioritizedTopic(metric.entity.canonicalName)
+            || isGenericTopic(metric.entity.canonicalName)
+            || isSuppressedTopic(metric.entity.canonicalName)
+    }
+
+    func hotspotScore(for metric: KnowledgeEntityMetrics) -> Int {
+        let typeWeight: Int = switch metric.entity.entityType {
+        case .project: 60
+        case .issue: 42
+        case .lesson: 32
+        case .tool: 22
+        case .model: 18
+        case .site, .person: 10
+        case .topic: isDurableTopic(metric.entity.canonicalName) ? 26 : 14
+        }
+
+        let claimScore = min(metric.claimCount, 12) * 2
+        let typedScore = min(metric.typedEdgeCount, 12) * 4
+        let projectScore = min(metric.projectRelationCount, 6) * 7
+        let coOccurrenceScore = min(metric.coOccurrenceEdgeCount, 4)
+
+        var score = typeWeight + claimScore + typedScore + projectScore + coOccurrenceScore
+        if metric.entity.entityType == .topic {
+            if isCommodityWeakTopic(metric.entity.canonicalName) {
+                score -= 30
+            } else if isHotspotDeprioritizedTopic(metric.entity.canonicalName),
+                      metric.projectRelationCount == 0 {
+                score -= 36
+            }
+        }
+
+        return score
     }
 
     private func shouldMaterialize(
@@ -359,6 +455,11 @@ final class GraphShaper {
             return true
         }
         return isSpecificEnough(name, minimumTokens: 2, minimumLength: 6)
+    }
+
+    private func isHotspotDeprioritizedTopic(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return hotspotDeprioritizedTopicFragments.contains(where: { lowered.contains($0) })
     }
 
     private func versionlessToolName(from name: String) -> String? {

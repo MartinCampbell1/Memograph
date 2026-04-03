@@ -11,6 +11,7 @@ private struct KnowledgeHotspot {
     let entity: KnowledgeEntityRecord
     let claimCount: Int
     let relationStats: KnowledgeRelationStats
+    let score: Int
 }
 
 final class KnowledgeMaintenance {
@@ -32,7 +33,11 @@ final class KnowledgeMaintenance {
             .filter { materializedEntityIds.contains($0.entity.id) }
             .map(\.entity)
         let edgeRows = try loadEdges(materializedEntityIds: materializedEntityIds)
-        let hotspots = buildHotspots(metrics: metrics, materializedEntityIds: materializedEntityIds)
+        let hotspots = buildHotspots(
+            metrics: metrics,
+            materializedEntityIds: materializedEntityIds,
+            graphShaper: graphShaper
+        )
 
         var markdown = "# Memograph Knowledge Maintenance\n\n"
         markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
@@ -81,8 +86,15 @@ final class KnowledgeMaintenance {
                 return lhs.entity.canonicalName.localizedCaseInsensitiveCompare(rhs.entity.canonicalName) == .orderedAscending
             }
 
+        let commodityWeakTopics = autoDemotedTopics.filter {
+            graphShaper.shouldSuppressWeakTopicInMaintenance($0.entity.canonicalName)
+        }
+        let actionableAutoDemotedTopics = autoDemotedTopics.filter {
+            !graphShaper.shouldSuppressWeakTopicInMaintenance($0.entity.canonicalName)
+        }
+
         markdown += "## Review Queue\n"
-        if autoDemotedLessons.isEmpty && weakTopics.isEmpty && autoDemotedTopics.isEmpty {
+        if autoDemotedLessons.isEmpty && weakTopics.isEmpty && actionableAutoDemotedTopics.isEmpty && commodityWeakTopics.isEmpty {
             markdown += "- No immediate KB maintenance flags.\n\n"
         } else {
             if !autoDemotedLessons.isEmpty {
@@ -95,9 +107,9 @@ final class KnowledgeMaintenance {
                 markdown += "\n"
             }
 
-            if !autoDemotedTopics.isEmpty {
+            if !actionableAutoDemotedTopics.isEmpty {
                 markdown += "### Auto-demoted Weak Topics\n"
-                for metric in autoDemotedTopics.prefix(8) {
+                for metric in actionableAutoDemotedTopics.prefix(8) {
                     markdown += "- `\(metric.entity.canonicalName)`"
                     markdown += " — \(metric.coOccurrenceEdgeCount) co-occurrence edges"
                     markdown += ", only \(metric.typedEdgeCount) typed relation"
@@ -105,6 +117,15 @@ final class KnowledgeMaintenance {
                     markdown += "\n"
                 }
                 markdown += "\n"
+            }
+
+            if !commodityWeakTopics.isEmpty {
+                let examples = commodityWeakTopics.prefix(4).map(\.entity.canonicalName).joined(separator: ", ")
+                markdown += "- Suppressed commodity weak topics: \(commodityWeakTopics.count)"
+                if !examples.isEmpty {
+                    markdown += " (\(examples))"
+                }
+                markdown += "\n\n"
             }
 
             if !weakTopics.isEmpty {
@@ -161,10 +182,12 @@ final class KnowledgeMaintenance {
 
     private func buildHotspots(
         metrics: [KnowledgeEntityMetrics],
-        materializedEntityIds: Set<String>
+        materializedEntityIds: Set<String>,
+        graphShaper: GraphShaper
     ) -> [KnowledgeHotspot] {
         metrics
             .filter { materializedEntityIds.contains($0.entity.id) }
+            .filter { !graphShaper.shouldHideFromHotspots($0) }
             .map { metric in
             KnowledgeHotspot(
                 entity: metric.entity,
@@ -174,16 +197,23 @@ final class KnowledgeMaintenance {
                     typedEdges: metric.typedEdgeCount,
                     coOccurrenceEdges: metric.coOccurrenceEdgeCount,
                     projectRelations: metric.projectRelationCount
-                )
+                ),
+                score: graphShaper.hotspotScore(for: metric)
             )
         }
     }
 
     private func compareHotspots(_ lhs: KnowledgeHotspot, _ rhs: KnowledgeHotspot) -> Bool {
-        let lhsScore = lhs.claimCount + lhs.relationStats.typedEdges + lhs.relationStats.coOccurrenceEdges
-        let rhsScore = rhs.claimCount + rhs.relationStats.typedEdges + rhs.relationStats.coOccurrenceEdges
+        let lhsScore = lhs.score
+        let rhsScore = rhs.score
         if lhsScore != rhsScore {
             return lhsScore > rhsScore
+        }
+        if lhs.relationStats.projectRelations != rhs.relationStats.projectRelations {
+            return lhs.relationStats.projectRelations > rhs.relationStats.projectRelations
+        }
+        if lhs.relationStats.typedEdges != rhs.relationStats.typedEdges {
+            return lhs.relationStats.typedEdges > rhs.relationStats.typedEdges
         }
         return lhs.entity.canonicalName < rhs.entity.canonicalName
     }

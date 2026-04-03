@@ -223,6 +223,102 @@ struct KnowledgePipelineTests {
         #expect(maintenance.contains("macOS System Audio Capture Guide"))
     }
 
+    @Test("Knowledge maintenance suppresses commodity weak topics and prioritizes project-connected hotspots")
+    func maintenanceSuppressesCommodityNoiseAndRanksHotspots() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let maintenance = KnowledgeMaintenance(db: db, timeZone: utc)
+        let shaper = GraphShaper()
+
+        let memograph = KnowledgeEntityRecord(
+            id: "project-1",
+            canonicalName: "Memograph",
+            slug: "memograph",
+            entityType: .project,
+            aliasesJson: nil,
+            firstSeenAt: nil,
+            lastSeenAt: nil
+        )
+        let gpu = KnowledgeEntityRecord(
+            id: "topic-1",
+            canonicalName: "GPU",
+            slug: "gpu",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: nil,
+            lastSeenAt: nil
+        )
+        let nvidiaTesla = KnowledgeEntityRecord(
+            id: "topic-2",
+            canonicalName: "NVIDIA Tesla",
+            slug: "nvidia-tesla",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: nil,
+            lastSeenAt: nil
+        )
+        let systemAudio = KnowledgeEntityRecord(
+            id: "topic-3",
+            canonicalName: "System Audio Capture",
+            slug: "system-audio-capture",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: nil,
+            lastSeenAt: nil
+        )
+
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: memograph,
+                claimCount: 20,
+                typedEdgeCount: 18,
+                coOccurrenceEdgeCount: 2,
+                projectRelationCount: 6
+            ),
+            KnowledgeEntityMetrics(
+                entity: gpu,
+                claimCount: 3,
+                typedEdgeCount: 0,
+                coOccurrenceEdgeCount: 44,
+                projectRelationCount: 0
+            ),
+            KnowledgeEntityMetrics(
+                entity: nvidiaTesla,
+                claimCount: 18,
+                typedEdgeCount: 17,
+                coOccurrenceEdgeCount: 44,
+                projectRelationCount: 0
+            ),
+            KnowledgeEntityMetrics(
+                entity: systemAudio,
+                claimCount: 9,
+                typedEdgeCount: 8,
+                coOccurrenceEdgeCount: 34,
+                projectRelationCount: 2
+            )
+        ]
+
+        let markdown = try maintenance.buildMarkdown(
+            metrics: metrics,
+            materializedEntityIds: Set(["project-1", "topic-2", "topic-3"]),
+            graphShaper: shaper
+        )
+
+        #expect(markdown.contains("Suppressed commodity weak topics: 1"))
+        #expect(markdown.contains("GPU"))
+        #expect(!markdown.contains("NVIDIA Tesla"))
+
+        let memographRange = markdown.range(of: "[[Knowledge/Projects/memograph|Memograph]]")
+        let nvidiaRange = markdown.range(of: "[[Knowledge/Topics/nvidia-tesla|NVIDIA Tesla]]")
+        let systemAudioRange = markdown.range(of: "[[Knowledge/Topics/system-audio-capture|System Audio Capture]]")
+
+        #expect(memographRange != nil)
+        #expect(systemAudioRange != nil)
+        #expect(nvidiaRange == nil)
+        #expect(systemAudioRange!.lowerBound > memographRange!.lowerBound)
+    }
+
     @Test("Knowledge compiler renders readable signals aliases and grouped related entities")
     func rendersReadableKnowledgeNote() throws {
         let (db, path) = try makeDB()

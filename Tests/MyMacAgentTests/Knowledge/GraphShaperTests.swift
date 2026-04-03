@@ -253,6 +253,25 @@ struct GraphShaperTests {
         #expect(ids.contains("lesson-2"))
     }
 
+    @Test("Flags commodity weak topics for maintenance handling")
+    func flagsCommodityWeakTopics() {
+        let shaper = GraphShaper()
+
+        #expect(shaper.isCommodityWeakTopic("GPU"))
+        #expect(shaper.isCommodityWeakTopic("A100"))
+        #expect(shaper.isCommodityWeakTopic("H100"))
+        #expect(shaper.isCommodityWeakTopic("AI Engineering"))
+        #expect(shaper.isCommodityWeakTopic("Gemma"))
+        #expect(shaper.isCommodityWeakTopic("Gemma 3"))
+        #expect(shaper.isCommodityWeakTopic("RTX"))
+        #expect(shaper.isCommodityWeakTopic("NVIDIA Tesla"))
+        #expect(shaper.isCommodityWeakTopic("Vast.ai vs Local GPU"))
+        #expect(shaper.isCommodityWeakTopic("VS Code"))
+        #expect(shaper.isCommodityWeakTopic("DDR5"))
+        #expect(!shaper.isCommodityWeakTopic("SQLite"))
+        #expect(!shaper.isCommodityWeakTopic("System Audio Capture"))
+    }
+
     @Test("Materializes durable one-off topics while suppressing topic artifacts")
     func materializesDurableTopicsAndSuppressesArtifacts() {
         let shaper = GraphShaper()
