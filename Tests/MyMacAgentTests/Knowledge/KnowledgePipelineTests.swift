@@ -377,7 +377,7 @@ struct KnowledgePipelineTests {
         #expect(note?.bodyMarkdown.contains("## Key Signals") == true)
         #expect(note?.bodyMarkdown.contains("was used in 1 captured work window") == true)
         #expect(note?.bodyMarkdown.contains("## Recent Windows") == true)
-        #expect(note?.bodyMarkdown.contains("Used during 2026-04-03 10:00-11:00.") == true)
+        #expect(note?.bodyMarkdown.contains("Active during 2026-04-03 10:00-11:00.") == true)
         #expect(note?.bodyMarkdown.contains("### Projects") == true)
         #expect(note?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]]") == true)
     }
@@ -529,12 +529,12 @@ struct KnowledgePipelineTests {
         let note = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
         let windowMarkerCount = note?.bodyMarkdown.components(separatedBy: "[2026-04-03 20:02]").count ?? 0
 
-        #expect(note?.bodyMarkdown.contains("Used during 2026-04-03 20:02-21:02.") == true)
-        #expect(note?.bodyMarkdown.contains("Advanced in summary window 2026-04-03.") == true)
-        #expect(note?.bodyMarkdown.contains("Worked on with ChatGPT.") == true)
-        #expect(note?.bodyMarkdown.contains("Worked on with Codex.") == true)
-        #expect(note?.bodyMarkdown.contains("Focused on System Audio Capture.") == true)
-        #expect(note?.bodyMarkdown.contains("Worked on with Telegram.") == false)
+        #expect(note?.bodyMarkdown.contains("Active during 2026-04-03 20:02-21:02") == true)
+        #expect(note?.bodyMarkdown.contains("advanced in the summary") == true)
+        #expect(note?.bodyMarkdown.contains("with ChatGPT") == true)
+        #expect(note?.bodyMarkdown.contains("with Codex") == true)
+        #expect(note?.bodyMarkdown.contains("focused on System Audio Capture") == true)
+        #expect(note?.bodyMarkdown.contains("with Telegram") == false)
         #expect(windowMarkerCount == 2)
     }
 
@@ -594,7 +594,7 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
 
-        #expect(note?.bodyMarkdown.contains("Used during 2026-04-03 20:02-21:02.") == true)
+        #expect(note?.bodyMarkdown.contains("Active during 2026-04-03 20:02-21:02") == true)
         #expect(note?.bodyMarkdown.contains("Context: Stabilize the background runtime. Notifications through UserNotificationCenter indicated active capture work.") == true)
     }
 
@@ -641,7 +641,7 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "topic-1", sourceDate: "2026-04-03")
 
-        #expect(note?.bodyMarkdown.contains("Appeared as a focus topic for 2026-04-03.") == true)
+        #expect(note?.bodyMarkdown.contains("In focus for the summary.") == true)
         #expect(note?.bodyMarkdown.contains("Context: Work on Memograph included planning System Audio Capture through ScreenCaptureKit to reduce background blinking.") == true)
     }
 
@@ -691,7 +691,7 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
 
-        #expect(note?.bodyMarkdown.contains("Suggested as durable knowledge for 2026-04-03.") == true)
+        #expect(note?.bodyMarkdown.contains("Captured as a durable note candidate.") == true)
         #expect(note?.bodyMarkdown.contains("Context: how to use ScreenCaptureKit without noisy false-positive probes.") == true)
     }
 
@@ -1307,8 +1307,8 @@ struct KnowledgePipelineTests {
         let projectNote = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
         let toolNote = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-03")
 
-        #expect(projectNote?.bodyMarkdown.contains("Worked on with Codex.") == true)
-        #expect(projectNote?.bodyMarkdown.contains("Focused on System Audio Capture.") == true)
+        #expect(projectNote?.bodyMarkdown.contains("With Codex") == true)
+        #expect(projectNote?.bodyMarkdown.contains("focused on System Audio Capture") == true)
         #expect(projectNote?.bodyMarkdown.contains("## Overview") == true)
         #expect(projectNote?.bodyMarkdown.contains("Project activity linked to 1 tool and 1 focus topic.") == true)
         #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — tool used in this project") == true)

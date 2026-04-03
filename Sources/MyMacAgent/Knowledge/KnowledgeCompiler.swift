@@ -252,7 +252,11 @@ final class KnowledgeCompiler {
         )
         if !recentClaims.isEmpty {
             markdown += "## Recent Windows\n"
-            for entry in renderRecentWindowEntries(from: recentClaims, windowContexts: windowContexts) {
+            for entry in renderRecentWindowEntries(
+                from: recentClaims,
+                entityType: entity.entityType,
+                windowContexts: windowContexts
+            ) {
                 markdown += "- [\(entry.when)] \(entry.description)\n"
             }
             markdown += "\n"
@@ -648,6 +652,7 @@ final class KnowledgeCompiler {
 
     private func renderRecentWindowEntries(
         from claims: [KnowledgeClaimRecord],
+        entityType: KnowledgeEntityType,
         windowContexts: [String: String]
     ) -> [(when: String, description: String)] {
         var orderedWindowKeys: [String] = []
@@ -670,20 +675,121 @@ final class KnowledgeCompiler {
                 ?? windowClaims.first?.sourceSummaryGeneratedAt.map { dateSupport.localDateTimeString(from: $0) }
                 ?? "unknown time"
 
-            var seenDescriptions = Set<String>()
-            let descriptions = windowClaims.compactMap { claim -> String? in
-                let description = describe(claim: claim)
-                guard seenDescriptions.insert(description).inserted else { return nil }
-                return description
+            var seenFragments = Set<String>()
+            let fragments = windowClaims.compactMap { claim -> String? in
+                let fragment = describeRecentWindowClaim(claim)
+                guard seenFragments.insert(fragment).inserted else { return nil }
+                return fragment
             }
 
-            guard !descriptions.isEmpty else { return nil }
-            var description = descriptions.joined(separator: " ")
+            guard !fragments.isEmpty else { return nil }
+            var description = buildRecentWindowNarrative(
+                fragments: fragments,
+                entityType: entityType
+            )
             if let context = windowContexts[windowKey], !context.isEmpty {
                 description += " Context: \(context)"
             }
             return (when: when, description: description)
         }
+    }
+
+    private func describeRecentWindowClaim(_ claim: KnowledgeClaimRecord) -> String {
+        let object = claim.objectText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch claim.predicate {
+        case "used_during_window":
+            return object.map { "active during \($0)" } ?? "active in a captured work window"
+        case "advanced_during_window":
+            return "advanced in the summary"
+        case "topic_in_focus":
+            return "in focus for the summary"
+        case "related_topic":
+            return object.map { "near \($0)" } ?? "near another topic"
+        case "uses_tool":
+            return object.map { "with \($0)" } ?? "with a tool"
+        case "supports_project":
+            return object.map { "supporting \($0)" } ?? "supporting a project"
+        case "works_on_topic":
+            return object.map { "used on \($0)" } ?? "used on a topic"
+        case "worked_with_tool":
+            return object.map { "with \($0)" } ?? "with a tool"
+        case "focuses_on_topic":
+            return object.map { "focused on \($0)" } ?? "focused on a topic"
+        case "relevant_to_project":
+            return object.map { "tied to \($0)" } ?? "tied to a project"
+        case "blocked_by_issue":
+            return object.map { "blocked by \($0)" } ?? "blocked by an issue"
+        case "affects_project":
+            return object.map { "affected \($0)" } ?? "affected a project"
+        case "uses_model":
+            return object.map { "using \($0)" } ?? "using a model"
+        case "used_in_project":
+            return object.map { "used in \($0)" } ?? "used in a project"
+        case "generates_lesson":
+            return object.map { "generated lesson \($0)" } ?? "generated a lesson"
+        case "derived_from_project":
+            return object.map { "derived from \($0)" } ?? "derived from a project"
+        case "explains_topic":
+            return object.map { "explains \($0)" } ?? "explains a topic"
+        case "documented_in_lesson":
+            return object.map { "documented in \($0)" } ?? "documented in a lesson"
+        case "worth_capturing":
+            return "captured as a durable note candidate"
+        case "surfaced_in_window":
+            return object.map { "surfaced as an issue for \($0)" } ?? "surfaced as an issue"
+        default:
+            return describe(claim: claim).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        }
+    }
+
+    private func buildRecentWindowNarrative(
+        fragments: [String],
+        entityType: KnowledgeEntityType
+    ) -> String {
+        let uniqueFragments = Array(NSOrderedSet(array: fragments)) as? [String] ?? fragments
+        let ordered = uniqueFragments.enumerated().sorted { lhs, rhs in
+            let lhsPriority = recentWindowFragmentPriority(lhs.element, entityType: entityType)
+            let rhsPriority = recentWindowFragmentPriority(rhs.element, entityType: entityType)
+            if lhsPriority != rhsPriority {
+                return lhsPriority > rhsPriority
+            }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+
+        guard let first = ordered.first else { return "" }
+        let tail = Array(ordered.dropFirst())
+        let sentenceBody: String
+        if tail.isEmpty {
+            sentenceBody = first
+        } else {
+            sentenceBody = ([first] + tail).joined(separator: ", ")
+        }
+        return uppercaseFirst(sentenceBody) + "."
+    }
+
+    private func recentWindowFragmentPriority(_ fragment: String, entityType: KnowledgeEntityType) -> Int {
+        let normalized = fragment.lowercased()
+        if normalized.hasPrefix("active during") || normalized.hasPrefix("surfaced as an issue") {
+            return 6
+        }
+        if normalized.hasPrefix("advanced in the summary") || normalized.hasPrefix("in focus for the summary") {
+            return 5
+        }
+        if normalized.hasPrefix("with ") || normalized.hasPrefix("focused on ") || normalized.hasPrefix("using ") {
+            return entityType == .project ? 4 : 3
+        }
+        if normalized.hasPrefix("derived from ") || normalized.hasPrefix("explains ") {
+            return entityType == .lesson ? 4 : 3
+        }
+        if normalized.hasPrefix("near ") || normalized.hasPrefix("tied to ") {
+            return 2
+        }
+        return 1
+    }
+
+    private func uppercaseFirst(_ value: String) -> String {
+        guard let first = value.first else { return value }
+        return first.uppercased() + value.dropFirst()
     }
 
     private func buildWindowContextSnippets(
