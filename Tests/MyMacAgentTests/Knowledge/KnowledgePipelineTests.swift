@@ -329,6 +329,75 @@ struct KnowledgePipelineTests {
         #expect(edgeTypes.contains("generates_lesson"))
     }
 
+    @Test("Lesson topic relations require semantic name overlap")
+    func filtersNoisyLessonTopicRelations() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Investigated [[System Audio Capture]] and saved notes for later.
+            """,
+            topAppsJson: """
+            [{"name":"Codex","duration_min":20}]
+            """,
+            topTopicsJson: """
+            ["System Audio Capture"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T10:00:00Z","window_end":"2026-04-03T11:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: """
+            ["macOS System Audio Capture Guide","Gemini 3 Flash Preview Benchmarks"]
+            """,
+            generatedAt: "2026-04-03T11:01:55Z",
+            modelName: "google/gemini-3-flash-preview",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Codex",
+                bundleId: "com.openai.codex",
+                windowTitles: ["System audio notes"],
+                startedAt: "2026-04-03T10:00:00Z",
+                endedAt: "2026-04-03T10:30:00Z",
+                durationMs: 1_800_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Investigated system audio capture"]
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let rows = try db.query("""
+            SELECT e_from.canonical_name AS from_name, e_to.canonical_name AS to_name
+            FROM knowledge_edges edge
+            JOIN knowledge_entities e_from ON e_from.id = edge.from_entity_id
+            JOIN knowledge_entities e_to ON e_to.id = edge.to_entity_id
+            WHERE edge.edge_type = 'explains_topic'
+            ORDER BY from_name, to_name
+        """)
+
+        #expect(rows.count == 1)
+        #expect(rows.first?["from_name"]?.textValue == "macOS System Audio Capture Guide")
+        #expect(rows.first?["to_name"]?.textValue == "System Audio Capture")
+    }
+
     @Test("Knowledge entities track window boundaries instead of only summary midnight")
     func knowledgeEntitiesTrackWindowBoundaries() throws {
         let (db, path) = try makeDB()
@@ -441,5 +510,87 @@ struct KnowledgePipelineTests {
         #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — tool used in this project") == true)
         #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — focus topic for this project") == true)
         #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — project this tool was used in") == true)
+    }
+
+    @Test("Versioned tool aliases collapse into one canonical tool entity")
+    func versionedToolAliasesCollapseIntoCanonicalTool() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Worked on [[Memograph]] in [[Claude Code v2.1.89]] and later in [[Claude Code v2.1.90]].
+            """,
+            topAppsJson: """
+            [{"name":"Claude Code v2.1.89","duration_min":15},{"name":"Claude Code v2.1.90","duration_min":15}]
+            """,
+            topTopicsJson: """
+            ["Memograph"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T10:00:00Z","window_end":"2026-04-03T11:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-03T11:01:55Z",
+            modelName: "test",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Claude Code v2.1.89",
+                bundleId: "com.anthropic.claudecode",
+                windowTitles: ["Memograph work"],
+                startedAt: "2026-04-03T10:00:00Z",
+                endedAt: "2026-04-03T10:30:00Z",
+                durationMs: 1_800_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Worked on Memograph"]
+            ),
+            SessionData(
+                sessionId: "s2",
+                appName: "Claude Code v2.1.90",
+                bundleId: "com.anthropic.claudecode",
+                windowTitles: ["Memograph work"],
+                startedAt: "2026-04-03T10:30:00Z",
+                endedAt: "2026-04-03T11:00:00Z",
+                durationMs: 1_800_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Worked on Memograph"]
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let entityRows = try db.query("""
+            SELECT canonical_name, aliases_json
+            FROM knowledge_entities
+            WHERE entity_type = 'tool'
+            ORDER BY canonical_name
+        """)
+
+        #expect(entityRows.contains { row in
+            row["canonical_name"]?.textValue == "Claude Code" &&
+            (row["aliases_json"]?.textValue?.contains("Claude Code v2.1.89") ?? false) &&
+            (row["aliases_json"]?.textValue?.contains("Claude Code v2.1.90") ?? false)
+        })
+        #expect(!entityRows.contains { row in
+            row["canonical_name"]?.textValue == "Claude Code v2.1.89" ||
+            row["canonical_name"]?.textValue == "Claude Code v2.1.90"
+        })
     }
 }

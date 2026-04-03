@@ -222,6 +222,10 @@ final class EntityNormalizer {
             }
         }
 
+        if type == .tool, let base = versionlessToolName(from: normalizedWhitespace) {
+            return base
+        }
+
         if normalizedWhitespace == normalizedWhitespace.uppercased(),
            normalizedWhitespace.count <= 6 {
             return normalizedWhitespace
@@ -235,6 +239,21 @@ final class EntityNormalizer {
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+    }
+
+    private func versionlessToolName(from name: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"^(.*?)(?:\s+v\d+(?:\.\d+)+)$"#, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(name.startIndex..<name.endIndex, in: name)
+        guard let match = regex.firstMatch(in: name, range: range),
+              match.numberOfRanges > 1,
+              let baseRange = Range(match.range(at: 1), in: name) else {
+            return nil
+        }
+
+        let base = String(name[baseRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return base.isEmpty ? nil : base
     }
 
     private func stripExplanatorySuffixIfNeeded(from text: String, type: KnowledgeEntityType) -> String {

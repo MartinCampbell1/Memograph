@@ -421,7 +421,17 @@ final class KnowledgeCompiler {
         let grouped = Dictionary(grouping: references, by: { $0.entity.entityType })
         return KnowledgeEntityType.allCases.compactMap { type in
             guard let group = grouped[type], !group.isEmpty else { return nil }
-            return (type, group.sorted { $0.entity.canonicalName < $1.entity.canonicalName })
+            return (type, group.sorted { lhs, rhs in
+                let lhsPriority = relationPriority(lhs.edgeType)
+                let rhsPriority = relationPriority(rhs.edgeType)
+                if lhsPriority != rhsPriority {
+                    return lhsPriority > rhsPriority
+                }
+                if lhs.weight != rhs.weight {
+                    return lhs.weight > rhs.weight
+                }
+                return lhs.entity.canonicalName < rhs.entity.canonicalName
+            })
         }
     }
 

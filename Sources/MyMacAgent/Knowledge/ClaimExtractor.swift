@@ -34,6 +34,11 @@ private struct RelationSpec {
 final class ClaimExtractor {
     private let normalizer: EntityNormalizer
     private let dateSupport: LocalDateSupport
+    private let relationStopTokens: Set<String> = [
+        "the", "and", "for", "with", "from", "into", "onto", "guide",
+        "roadmap", "benchmarks", "benchmark", "analysis", "report", "plan",
+        "playbook", "architecture", "strategy", "notes", "knowledge", "base"
+    ]
 
     init(
         normalizer: EntityNormalizer = EntityNormalizer(),
@@ -256,6 +261,7 @@ final class ClaimExtractor {
 
             for from in fromEntities {
                 for to in toEntities where from.stableKey != to.stableKey {
+                    guard shouldLink(from: from, to: to, relation: spec) else { continue }
                     claims.append(KnowledgeClaimCandidate(
                         subjectKey: from.stableKey,
                         predicate: spec.forwardPredicate,
@@ -283,6 +289,49 @@ final class ClaimExtractor {
         }
 
         return (claims, edges)
+    }
+
+    private func shouldLink(
+        from: KnowledgeEntityCandidate,
+        to: KnowledgeEntityCandidate,
+        relation: RelationSpec
+    ) -> Bool {
+        switch relation.edgeType {
+        case "explains_topic":
+            return hasSemanticNameOverlap(lhs: from.canonicalName, rhs: to.canonicalName)
+        default:
+            return true
+        }
+    }
+
+    private func hasSemanticNameOverlap(lhs: String, rhs: String) -> Bool {
+        let lhsKey = normalizedKey(lhs)
+        let rhsKey = normalizedKey(rhs)
+        if lhsKey == rhsKey {
+            return true
+        }
+        if lhsKey.contains(rhsKey) || rhsKey.contains(lhsKey) {
+            return true
+        }
+
+        let lhsTokens = tokenSet(for: lhs)
+        let rhsTokens = tokenSet(for: rhs)
+        let overlap = lhsTokens.intersection(rhsTokens)
+        if overlap.count >= 2 {
+            return true
+        }
+
+        if rhsTokens.count <= 2,
+           overlap.contains(where: { $0.count >= 5 }) {
+            return true
+        }
+
+        if lhsTokens.count <= 2,
+           overlap.contains(where: { $0.count >= 5 }) {
+            return true
+        }
+
+        return false
     }
 
     private func buildFallbackCoOccurrenceEdges(from entities: [KnowledgeEntityCandidate]) -> [KnowledgeEdgeCandidate] {
@@ -331,5 +380,24 @@ final class ClaimExtractor {
 
     private func timeLabel(window: SummaryWindowDescriptor) -> String {
         "\(dateSupport.localTimeString(from: window.start))-\(dateSupport.localTimeString(from: window.end))"
+    }
+
+    private func normalizedKey(_ text: String) -> String {
+        text.precomposedStringWithCanonicalMapping
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private func tokenSet(for text: String) -> Set<String> {
+        Set(
+            normalizedKey(text)
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { token in
+                    !token.isEmpty &&
+                    token.count >= 2 &&
+                    !relationStopTokens.contains(token)
+                }
+        )
     }
 }

@@ -137,4 +137,14 @@ struct EntityNormalizerTests {
         #expect(privacy?.canonicalName == "Privacy & Security")
         #expect(privacy?.entityType == .topic)
     }
+
+    @Test("Collapses versioned tool variants into a stable canonical tool name")
+    func canonicalizesVersionedToolVariants() {
+        let normalizer = EntityNormalizer()
+        let entity = normalizer.normalize(rawName: "Claude Code v2.1.89", typeHint: .tool)
+
+        #expect(entity?.canonicalName == "Claude Code")
+        #expect(entity?.entityType == .tool)
+        #expect(entity?.aliases.contains("Claude Code v2.1.89") == true)
+    }
 }
