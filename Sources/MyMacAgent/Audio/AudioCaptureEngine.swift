@@ -112,7 +112,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
     }
 
     private func isExternalProcessUsingMic() -> Bool {
-        let processes = fetchAudioProcesses()
+        let processes = AudioProcessInspector.fetchProcesses()
         if !processes.isEmpty {
             return MicrophoneUsageEvaluator.hasExternalProcessUsingInputDevice(
                 processes,
@@ -136,82 +136,6 @@ final class AudioCaptureEngine: @unchecked Sendable {
         let status = AudioObjectGetPropertyData(inputDeviceID, &address, 0, nil, &size, &isRunning)
         return status == noErr && isRunning != 0
     }
-
-    private func fetchAudioProcesses() -> [AudioProcessInfo] {
-        let processObjectIDs = readObjectIDArray(
-            objectID: AudioObjectID(kAudioObjectSystemObject),
-            selector: kAudioHardwarePropertyProcessObjectList,
-            scope: kAudioObjectPropertyScopeGlobal
-        )
-
-        return processObjectIDs.compactMap { processObjectID in
-            guard let pid = readUInt32(
-                objectID: processObjectID,
-                selector: kAudioProcessPropertyPID
-            ) else {
-                return nil
-            }
-
-            let inputDevices = readObjectIDArray(
-                objectID: processObjectID,
-                selector: kAudioProcessPropertyDevices,
-                scope: kAudioObjectPropertyScopeInput
-            )
-            let isRunningInput = readUInt32(
-                objectID: processObjectID,
-                selector: kAudioProcessPropertyIsRunningInput
-            ) ?? 0
-
-            return AudioProcessInfo(
-                pid: pid_t(pid),
-                inputDeviceIDs: inputDevices,
-                isRunningInput: isRunningInput != 0
-            )
-        }
-    }
-
-    private func readUInt32(
-        objectID: AudioObjectID,
-        selector: AudioObjectPropertySelector,
-        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
-    ) -> UInt32? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var value: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &value)
-        return status == noErr ? value : nil
-    }
-
-    private func readObjectIDArray(
-        objectID: AudioObjectID,
-        selector: AudioObjectPropertySelector,
-        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
-    ) -> [AudioObjectID] {
-        var address = AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var propertySize: UInt32 = 0
-        let sizeStatus = AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &propertySize)
-        guard sizeStatus == noErr, propertySize > 0 else {
-            return []
-        }
-
-        let count = Int(propertySize) / MemoryLayout<AudioObjectID>.size
-        var values = Array(repeating: AudioObjectID(0), count: count)
-        let readStatus = AudioObjectGetPropertyData(objectID, &address, 0, nil, &propertySize, &values)
-        guard readStatus == noErr else {
-            return []
-        }
-        return values
-    }
-
     // MARK: - Capture control
 
     private func startCapture() {

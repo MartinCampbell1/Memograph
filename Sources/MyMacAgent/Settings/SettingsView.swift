@@ -429,31 +429,7 @@ struct SettingsView: View {
         settingsScroll {
             settingsCard("Experimental Capture", subtitle: "Audio stays off by default. Turn it on only if you explicitly want transcripts.") {
                 toggleRow("Microphone transcription", help: "Starts recording only when another app is actively using the microphone.", isOn: $microphoneCaptureEnabled)
-
-                Divider()
-                    .padding(.vertical, 4)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("System audio transcription")
-                            .fontWeight(.medium)
-                        Spacer()
-                        Text("Temporarily unavailable")
-                            .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .fill(Color.orange.opacity(0.16))
-                            )
-                            .foregroundStyle(.orange)
-                    }
-
-                    Text("Disabled in the public build because macOS keeps a persistent screen-sharing indicator on while ScreenCaptureKit system audio is running.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                toggleRow("System audio transcription", help: "Starts only while another app is actively sending audio to the default output device.", isOn: $systemAudioCaptureEnabled)
             }
 
             settingsCard("Runtime") {
@@ -475,7 +451,7 @@ struct SettingsView: View {
             }
 
             settingsCard("How It Works") {
-                Text("Audio support is still experimental. It depends on an external Python runtime plus Whisper dependencies, and it is intentionally opt-in.")
+                Text("Audio support is still experimental. Microphone capture wakes up only while another app is using the mic. System audio wakes up only while another app is actively playing through your default output device, and macOS may briefly show its screen-sharing indicator during that window.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

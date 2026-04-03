@@ -128,6 +128,110 @@ struct AudioProcessInfo {
     let pid: pid_t
     let inputDeviceIDs: [AudioDeviceID]
     let isRunningInput: Bool
+    let outputDeviceIDs: [AudioDeviceID]
+    let isRunningOutput: Bool
+
+    init(
+        pid: pid_t,
+        inputDeviceIDs: [AudioDeviceID] = [],
+        isRunningInput: Bool = false,
+        outputDeviceIDs: [AudioDeviceID] = [],
+        isRunningOutput: Bool = false
+    ) {
+        self.pid = pid
+        self.inputDeviceIDs = inputDeviceIDs
+        self.isRunningInput = isRunningInput
+        self.outputDeviceIDs = outputDeviceIDs
+        self.isRunningOutput = isRunningOutput
+    }
+}
+
+enum AudioProcessInspector {
+    static func fetchProcesses() -> [AudioProcessInfo] {
+        let processObjectIDs = readObjectIDArray(
+            objectID: AudioObjectID(kAudioObjectSystemObject),
+            selector: kAudioHardwarePropertyProcessObjectList,
+            scope: kAudioObjectPropertyScopeGlobal
+        )
+
+        return processObjectIDs.compactMap { processObjectID in
+            guard let pid = readUInt32(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyPID
+            ) else {
+                return nil
+            }
+
+            let inputDevices = readObjectIDArray(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyDevices,
+                scope: kAudioObjectPropertyScopeInput
+            )
+            let outputDevices = readObjectIDArray(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyDevices,
+                scope: kAudioObjectPropertyScopeOutput
+            )
+            let isRunningInput = readUInt32(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyIsRunningInput
+            ) ?? 0
+            let isRunningOutput = readUInt32(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyIsRunningOutput
+            ) ?? 0
+
+            return AudioProcessInfo(
+                pid: pid_t(pid),
+                inputDeviceIDs: inputDevices,
+                isRunningInput: isRunningInput != 0,
+                outputDeviceIDs: outputDevices,
+                isRunningOutput: isRunningOutput != 0
+            )
+        }
+    }
+
+    private static func readUInt32(
+        objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &value)
+        return status == noErr ? value : nil
+    }
+
+    private static func readObjectIDArray(
+        objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var propertySize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &propertySize)
+        guard sizeStatus == noErr, propertySize > 0 else {
+            return []
+        }
+
+        let count = Int(propertySize) / MemoryLayout<AudioObjectID>.size
+        var values = Array(repeating: AudioObjectID(0), count: count)
+        let readStatus = AudioObjectGetPropertyData(objectID, &address, 0, nil, &propertySize, &values)
+        guard readStatus == noErr else {
+            return []
+        }
+        return values
+    }
 }
 
 enum MicrophoneUsageEvaluator {
@@ -140,6 +244,20 @@ enum MicrophoneUsageEvaluator {
             process.pid != currentPID &&
             process.isRunningInput &&
             process.inputDeviceIDs.contains(inputDeviceID)
+        }
+    }
+}
+
+enum SystemAudioUsageEvaluator {
+    static func hasExternalProcessUsingOutputDevice(
+        _ processes: [AudioProcessInfo],
+        outputDeviceID: AudioDeviceID,
+        currentPID: pid_t = getpid()
+    ) -> Bool {
+        processes.contains { process in
+            process.pid != currentPID &&
+            process.isRunningOutput &&
+            process.outputDeviceIDs.contains(outputDeviceID)
         }
     }
 }
