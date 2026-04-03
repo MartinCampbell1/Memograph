@@ -165,7 +165,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let db = try DatabaseManager(path: dbPath)
             let runner = MigrationRunner(db: db, migrations: [
                 V001_InitialSchema.migration,
-                V002_AudioTranscripts.migration
+                V002_AudioTranscripts.migration,
+                V003_PerformanceIndexes.migration
             ])
             try runner.runPending()
             databaseManager = db
@@ -325,24 +326,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 // 2. Compute hash and diff
                 let hash = imageProcessor.visualHash(image: captureResult.image)
+                let visualDiff: Double = hash.map {
+                    hashTracker.computeDiff(currentHash: $0, sessionId: sessionId)
+                } ?? 1.0
 
                 // 3. Save to disk
                 let captureDir = AppPaths.capturesDirectoryURL()
                 try FileManager.default.createDirectory(at: captureDir, withIntermediateDirectories: true)
                 let imagePath = try captureEngine.saveToDisk(result: captureResult, directory: captureDir.path)
+                let fileSizeBytes = captureFileSize(atPath: imagePath)
 
                 // 4. Persist capture record
                 let captureId = UUID().uuidString
                 let now = ISO8601DateFormatter().string(from: Date())
                 try db.execute("""
                     INSERT INTO captures (id, session_id, timestamp, capture_type, image_path,
-                        width, height, visual_hash, sampling_mode)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        width, height, file_size_bytes, visual_hash, diff_score, sampling_mode)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, params: [
                     .text(captureId), .text(sessionId), .text(now),
                     .text("window"), .text(imagePath),
                     .integer(Int64(captureResult.width)), .integer(Int64(captureResult.height)),
-                    hash.map { .text($0) } ?? .null, .text(mode.rawValue)
+                    .integer(fileSizeBytes),
+                    hash.map { .text($0) } ?? .null,
+                    .real(visualDiff),
+                    .text(mode.rawValue)
                 ])
 
                 try sessionManager.recordEvent(sessionId: sessionId, type: .captureTaken, payload: nil)
@@ -363,7 +371,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var ocrConfidence = 0.0
                 var ocrTextLen = 0
                 var ocrSnapshot: OCRSnapshotRecord?
-                let visualDiff: Double = hash.map { hashTracker.computeDiff(currentHash: $0, sessionId: sessionId) } ?? 1.0
 
                 if let policy, policy.shouldRunOCR(visualDiffScore: visualDiff, mode: mode),
                    privGuard.shouldOCR(bundleId: appInfo.bundleId) {
@@ -652,6 +659,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dateSupport.isoString(from: window.start),
             dateSupport.isoString(from: window.end)
         ].joined(separator: "|")
+    }
+
+    private func captureFileSize(atPath path: String) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
     private func drainPendingSummaryExports(reason: String) {

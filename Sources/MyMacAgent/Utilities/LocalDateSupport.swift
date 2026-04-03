@@ -117,6 +117,32 @@ struct LocalDateSupport {
         return Int64(overlapEnd.timeIntervalSince(overlapStart) * 1000)
     }
 
+    func localDateStringsSpannedBy(
+        startedAt: String,
+        endedAt: String?,
+        now: Date = Date()
+    ) -> [String] {
+        guard let startDate = parseDateTime(startedAt) else {
+            return []
+        }
+
+        let resolvedEndDate = endedAt.flatMap(parseDateTime) ?? now
+        let intervalEnd = max(startDate, resolvedEndDate)
+        let startDay = calendar.startOfDay(for: startDate)
+        let endDay = calendar.startOfDay(for: intervalEnd)
+
+        var dates: [String] = []
+        var cursor = startDay
+        while cursor <= endDay {
+            dates.append(localDayFormatter.string(from: cursor))
+            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else {
+                break
+            }
+            cursor = next
+        }
+        return dates
+    }
+
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone

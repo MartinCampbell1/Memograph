@@ -51,7 +51,8 @@ enum MarketingAssetRenderer {
         let db = try DatabaseManager(path: url.path)
         let runner = MigrationRunner(db: db, migrations: [
             V001_InitialSchema.migration,
-            V002_AudioTranscripts.migration
+            V002_AudioTranscripts.migration,
+            V003_PerformanceIndexes.migration
         ])
         try runner.runPending()
         try seedDemoData(db: db)

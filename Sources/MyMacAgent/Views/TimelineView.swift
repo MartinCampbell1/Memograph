@@ -24,7 +24,7 @@ struct TimelineView: View {
                     .font(.title2).fontWeight(.semibold)
 
                 // Search bar
-                TextField("Search context...", text: $searchText)
+                TextField("Search context for this day...", text: $searchText)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { performSearch() }
 
@@ -114,8 +114,8 @@ struct TimelineView: View {
 
     private func performSearch() {
         guard !searchText.isEmpty else { searchResults = []; return }
-        let engine = SearchEngine(db: db)
-        searchResults = (try? engine.search(query: searchText)) ?? []
+        let engine = SearchEngine(db: db, timeZone: dateSupport.timeZone)
+        searchResults = (try? engine.searchByDate(query: searchText, date: selectedDate)) ?? []
     }
 }
 

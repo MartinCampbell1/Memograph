@@ -6,7 +6,11 @@ struct RetentionWorkerTests {
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
-        let runner = MigrationRunner(db: db, migrations: [V001_InitialSchema.migration])
+        let runner = MigrationRunner(db: db, migrations: [
+            V001_InitialSchema.migration,
+            V002_AudioTranscripts.migration,
+            V003_PerformanceIndexes.migration
+        ])
         try runner.runPending()
         try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
             params: [.text("com.test"), .text("Test")])
@@ -91,14 +95,20 @@ struct RetentionWorkerTests {
         try db.execute("INSERT INTO sessions (id, app_id, started_at, uncertainty_mode) VALUES (?, ?, ?, ?)",
             params: [.text("s1"), .integer(1), .text("2026-01-01T10:00:00Z"), .text("high_uncertainty")])
 
+        let tmpDir = NSTemporaryDirectory() + "retention_thin_\(UUID().uuidString)/"
+        try FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
         // Insert 10 captures for high-uncertainty session (clearly older than 1 day)
         for i in 0..<10 {
+            let imagePath = (tmpDir as NSString).appendingPathComponent("cap-\(i).jpg")
+            try Data("frame-\(i)".utf8).write(to: URL(fileURLWithPath: imagePath))
             try db.execute("""
-                INSERT INTO captures (id, session_id, timestamp, capture_type, sampling_mode, retained)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO captures (id, session_id, timestamp, capture_type, image_path, file_size_bytes, sampling_mode, retained)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, params: [.text("cap-\(i)"), .text("s1"),
                           .text("2026-01-01T10:00:\(String(format: "%02d", i * 3))Z"),
-                          .text("window"), .text("high_uncertainty"), .integer(1)])
+                          .text("window"), .text(imagePath), .integer(7), .text("high_uncertainty"), .integer(1)])
         }
 
         let worker = RetentionWorker(db: db, retentionDays: 30)
@@ -109,6 +119,41 @@ struct RetentionWorkerTests {
         let retained = try db.query("SELECT COUNT(*) as c FROM captures WHERE retained = 1")
         let retainedCount = retained[0]["c"]?.intValue ?? 0
         #expect(retainedCount < 10) // Some should be thinned
+
+        let thinnedRow = try db.query("SELECT image_path, file_size_bytes FROM captures WHERE id = ?", params: [.text("cap-1")])
+        #expect(thinnedRow.first?["image_path"]?.textValue == nil)
+        #expect(thinnedRow.first?["file_size_bytes"]?.intValue == 0)
+        #expect(!FileManager.default.fileExists(atPath: (tmpDir as NSString).appendingPathComponent("cap-1.jpg")))
+    }
+
+    @Test("runAll clears old context snapshots, session events and audio transcripts")
+    func cleansExtendedRawTables() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let oldDate = "2026-02-01T10:00:00Z"
+        try db.execute("INSERT INTO sessions (id, app_id, started_at, ended_at) VALUES (?, ?, ?, ?)",
+            params: [.text("old-s"), .integer(1), .text(oldDate), .text("2026-02-01T11:00:00Z")])
+        try db.execute("""
+            INSERT INTO session_events (session_id, event_type, timestamp, payload_json)
+            VALUES (?, ?, ?, ?)
+        """, params: [.text("old-s"), .text("windowChanged"), .text(oldDate), .text("{}")])
+        try db.execute("""
+            INSERT INTO context_snapshots (id, session_id, timestamp, app_name, merged_text, readable_score, uncertainty_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, params: [.text("ctx-old"), .text("old-s"), .text(oldDate), .text("Test"), .text("old text"), .real(0.8), .real(0.2)])
+        try db.execute("""
+            INSERT INTO audio_transcripts (id, session_id, timestamp, duration_seconds, transcript, source)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [.text("audio-old"), .text("old-s"), .text(oldDate), .real(12), .text("old transcript"), .text("system")])
+
+        let worker = RetentionWorker(db: db, retentionDays: 30)
+        try worker.runAll()
+
+        #expect(try db.query("SELECT * FROM session_events WHERE session_id = ?", params: [.text("old-s")]).isEmpty)
+        #expect(try db.query("SELECT * FROM context_snapshots WHERE session_id = ?", params: [.text("old-s")]).isEmpty)
+        #expect(try db.query("SELECT * FROM audio_transcripts WHERE session_id = ?", params: [.text("old-s")]).isEmpty)
+        #expect(try db.query("SELECT * FROM sessions WHERE id = ?", params: [.text("old-s")]).isEmpty)
     }
 
     @Test("Stats returns cleanup statistics")
@@ -120,5 +165,7 @@ struct RetentionWorkerTests {
         let stats = try worker.stats()
         #expect(stats.totalCaptures >= 0)
         #expect(stats.totalOCRSnapshots >= 0)
+        #expect(stats.totalSessionEvents >= 0)
+        #expect(stats.totalAudioTranscripts >= 0)
     }
 }

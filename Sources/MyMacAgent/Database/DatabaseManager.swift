@@ -103,6 +103,14 @@ final class DatabaseManager: @unchecked Sendable {
         try execute("PRAGMA user_version = \(version)")
     }
 
+    func tableExists(_ tableName: String) throws -> Bool {
+        let rows = try query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            params: [.text(tableName)]
+        )
+        return !rows.isEmpty
+    }
+
     // MARK: - Private helpers
 
     private var errorMessage: String {

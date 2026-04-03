@@ -35,15 +35,23 @@ final class TimelineDataProvider {
     }
 
     func sessionsForDate(_ date: String) throws -> [TimelineSession] {
-        try sessionRows(for: date).compactMap { row -> TimelineSession? in
+        guard let range = dateSupport.utcRange(forLocalDate: date),
+              let rangeStart = dateSupport.parseDateTime(range.start),
+              let rangeEnd = dateSupport.parseDateTime(range.end) else {
+            logger.error("Invalid local date requested for timeline sessions: \(date)")
+            return []
+        }
+
+        return try sessionRows(for: date).compactMap { row -> TimelineSession? in
             guard let id = row["id"]?.textValue,
                   let appName = row["app_name"]?.textValue,
                   let bundleId = row["bundle_id"]?.textValue,
                   let startedAt = row["started_at"]?.textValue else { return nil }
-            let durationMs = dateSupport.effectiveDurationMs(
+            let durationMs = dateSupport.overlapDurationMs(
                 startedAt: startedAt,
                 endedAt: row["ended_at"]?.textValue,
-                storedActiveDurationMs: row["active_duration_ms"]?.intValue ?? 0,
+                rangeStart: rangeStart,
+                rangeEnd: rangeEnd,
                 now: now()
             )
             return TimelineSession(
@@ -56,16 +64,24 @@ final class TimelineDataProvider {
     }
 
     func appSummaryForDate(_ date: String) throws -> [AppUsageSummary] {
+        guard let range = dateSupport.utcRange(forLocalDate: date),
+              let rangeStart = dateSupport.parseDateTime(range.start),
+              let rangeEnd = dateSupport.parseDateTime(range.end) else {
+            logger.error("Invalid local date requested for app summary: \(date)")
+            return []
+        }
+
         let rows = try sessionRows(for: date)
         let grouped = rows.reduce(into: [String: (appName: String, bundleId: String, totalMs: Int64, sessionCount: Int)]()) {
             partialResult, row in
             guard let appName = row["app_name"]?.textValue,
                   let bundleId = row["bundle_id"]?.textValue,
                   let startedAt = row["started_at"]?.textValue else { return }
-            let effectiveDurationMs = dateSupport.effectiveDurationMs(
+            let effectiveDurationMs = dateSupport.overlapDurationMs(
                 startedAt: startedAt,
                 endedAt: row["ended_at"]?.textValue,
-                storedActiveDurationMs: row["active_duration_ms"]?.intValue ?? 0,
+                rangeStart: rangeStart,
+                rangeEnd: rangeEnd,
                 now: now()
             )
             let existing = partialResult[bundleId] ?? (appName, bundleId, 0, 0)
@@ -96,21 +112,28 @@ final class TimelineDataProvider {
 
     func availableDates() throws -> [String] {
         let rows = try db.query("""
-            SELECT started_at
+            SELECT started_at, ended_at
             FROM sessions
-            ORDER BY started_at DESC
+            ORDER BY COALESCE(ended_at, started_at) DESC, started_at DESC
             LIMIT 50000
         """)
 
         var seen = Set<String>()
         var dates: [String] = []
         for row in rows {
-            guard let startedAt = row["started_at"]?.textValue,
-                  let localDate = dateSupport.localDateString(from: startedAt) else { continue }
-            if seen.insert(localDate).inserted {
-                dates.append(localDate)
-                if dates.count == 90 {
-                    break
+            guard let startedAt = row["started_at"]?.textValue else { continue }
+            let coveredDates = dateSupport.localDateStringsSpannedBy(
+                startedAt: startedAt,
+                endedAt: row["ended_at"]?.textValue,
+                now: now()
+            )
+
+            for localDate in coveredDates.reversed() {
+                if seen.insert(localDate).inserted {
+                    dates.append(localDate)
+                    if dates.count == 90 {
+                        return dates
+                    }
                 }
             }
         }
@@ -145,8 +168,9 @@ final class TimelineDataProvider {
                    s.active_duration_ms, s.uncertainty_mode
             FROM sessions s
             JOIN apps a ON s.app_id = a.id
-            WHERE s.started_at >= ? AND s.started_at < ?
+            WHERE s.started_at < ?
+              AND COALESCE(s.ended_at, ?) > ?
             ORDER BY s.started_at
-        """, params: [.text(range.start), .text(range.end)])
+        """, params: [.text(range.end), .text(range.end), .text(range.start)])
     }
 }

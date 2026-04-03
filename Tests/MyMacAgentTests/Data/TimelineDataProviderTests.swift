@@ -9,7 +9,10 @@ struct TimelineDataProviderTests {
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
-        let runner = MigrationRunner(db: db, migrations: [V001_InitialSchema.migration])
+        let runner = MigrationRunner(db: db, migrations: [
+            V001_InitialSchema.migration,
+            V003_PerformanceIndexes.migration
+        ])
         try runner.runPending()
         return (db, path)
     }
@@ -120,5 +123,33 @@ struct TimelineDataProviderTests {
         #expect(sessions[0].appName == "Cursor")
         #expect(sessions[0].durationMinutes == 90)
         #expect(dates.first == "2026-04-03")
+    }
+
+    @Test("sessionsForDate includes overlap from sessions started before the local day")
+    func sessionsForDateIncludesSpanningSession() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.cursor"), .text("Cursor")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms, uncertainty_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("s-span"),
+            .integer(1),
+            .text("2026-04-02T15:30:00Z"),
+            .text("2026-04-02T16:45:00Z"),
+            .integer(4500000),
+            .text("normal")
+        ])
+
+        let provider = TimelineDataProvider(db: db, timeZone: makassar)
+        let sessions = try provider.sessionsForDate("2026-04-03")
+        let apps = try provider.appSummaryForDate("2026-04-03")
+
+        #expect(sessions.count == 1)
+        #expect(sessions[0].durationMinutes == 45)
+        #expect(apps.first?.totalMinutes == 45)
     }
 }

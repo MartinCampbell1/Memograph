@@ -3,10 +3,15 @@ import Foundation
 @testable import MyMacAgent
 
 struct SearchEngineTests {
+    private let makassar = TimeZone(secondsFromGMT: 8 * 3600)!
+
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
-        let runner = MigrationRunner(db: db, migrations: [V001_InitialSchema.migration])
+        let runner = MigrationRunner(db: db, migrations: [
+            V001_InitialSchema.migration,
+            V003_PerformanceIndexes.migration
+        ])
         try runner.runPending()
         try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
             params: [.text("com.test"), .text("TestApp")])
@@ -84,5 +89,31 @@ struct SearchEngineTests {
         let results = try engine.search(query: "matching", limit: 5)
 
         #expect(results.count == 5)
+    }
+
+    @Test("searchByDate respects local day boundaries instead of UTC prefix matching")
+    func searchByDateUsesLocalRange() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO context_snapshots (id, session_id, timestamp, app_name,
+                merged_text, readable_score, uncertainty_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("ctx-local"),
+            .text("s1"),
+            .text("2026-04-02T16:15:00Z"),
+            .text("TestApp"),
+            .text("late night research"),
+            .real(0.9),
+            .real(0.1)
+        ])
+
+        let engine = SearchEngine(db: db, timeZone: makassar)
+        let results = try engine.searchByDate(query: "research", date: "2026-04-03")
+
+        #expect(results.count == 1)
+        #expect(results[0].id == "ctx-local")
     }
 }

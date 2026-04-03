@@ -8,7 +8,11 @@ struct Phase4IntegrationTests {
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
-        let runner = MigrationRunner(db: db, migrations: [V001_InitialSchema.migration])
+        let runner = MigrationRunner(db: db, migrations: [
+            V001_InitialSchema.migration,
+            V002_AudioTranscripts.migration,
+            V003_PerformanceIndexes.migration
+        ])
         try runner.runPending()
         return (db, path)
     }
