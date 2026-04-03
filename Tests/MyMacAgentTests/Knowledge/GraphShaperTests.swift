@@ -211,6 +211,48 @@ struct GraphShaperTests {
         #expect(ids.contains("lesson-2"))
     }
 
+    @Test("Auto-demotes broad generic lessons connected to too many projects")
+    func autoDemotesBroadGenericLessons() {
+        let shaper = GraphShaper()
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "lesson-1",
+                    canonicalName: "LM Studio Local Inference Setup",
+                    slug: "lm-studio-local-inference-setup",
+                    entityType: .lesson,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 1,
+                typedEdgeCount: 3,
+                coOccurrenceEdgeCount: 4,
+                projectRelationCount: 3
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "lesson-2",
+                    canonicalName: "macOS System Audio Capture Guide",
+                    slug: "macos-system-audio-capture-guide",
+                    entityType: .lesson,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 3,
+                typedEdgeCount: 3,
+                coOccurrenceEdgeCount: 2,
+                projectRelationCount: 2
+            )
+        ]
+
+        let ids = shaper.materializedEntityIds(from: metrics)
+
+        #expect(!ids.contains("lesson-1"))
+        #expect(ids.contains("lesson-2"))
+    }
+
     @Test("Materializes durable one-off topics while suppressing topic artifacts")
     func materializesDurableTopicsAndSuppressesArtifacts() {
         let shaper = GraphShaper()

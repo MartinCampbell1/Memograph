@@ -22,11 +22,17 @@ final class KnowledgeMaintenance {
         self.dateSupport = LocalDateSupport(timeZone: timeZone)
     }
 
-    func buildMarkdown(materializedEntityIds: Set<String>) throws -> String {
-        let entities = try loadEntities(materializedEntityIds: materializedEntityIds)
+    func buildMarkdown(
+        metrics: [KnowledgeEntityMetrics],
+        materializedEntityIds: Set<String>,
+        graphShaper: GraphShaper
+    ) throws -> String {
+        let metricIndex = Dictionary(uniqueKeysWithValues: metrics.map { ($0.entity.id, $0) })
+        let entities = metrics
+            .filter { materializedEntityIds.contains($0.entity.id) }
+            .map(\.entity)
         let edgeRows = try loadEdges(materializedEntityIds: materializedEntityIds)
-        let claimCounts = try loadClaimCounts(materializedEntityIds: materializedEntityIds)
-        let hotspots = buildHotspots(entities: entities, edgeRows: edgeRows, claimCounts: claimCounts)
+        let hotspots = buildHotspots(metrics: metrics, materializedEntityIds: materializedEntityIds)
 
         var markdown = "# Memograph Knowledge Maintenance\n\n"
         markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
@@ -46,13 +52,14 @@ final class KnowledgeMaintenance {
         }
         markdown += "\n"
 
-        let broadLessons = hotspots
-            .filter { $0.entity.entityType == .lesson && $0.relationStats.projectRelations >= 3 }
+        let autoDemotedLessons = metrics
+            .filter { !materializedEntityIds.contains($0.entity.id) }
+            .filter { graphShaper.maintenanceFlags(for: $0, in: metricIndex).contains(.autoDemoteBroadLesson) }
             .sorted { lhs, rhs in
-                if lhs.relationStats.projectRelations != rhs.relationStats.projectRelations {
-                    return lhs.relationStats.projectRelations > rhs.relationStats.projectRelations
+                if lhs.projectRelationCount != rhs.projectRelationCount {
+                    return lhs.projectRelationCount > rhs.projectRelationCount
                 }
-                return lhs.entity.canonicalName < rhs.entity.canonicalName
+                return lhs.entity.canonicalName.localizedCaseInsensitiveCompare(rhs.entity.canonicalName) == .orderedAscending
             }
 
         let weakTopics = hotspots
@@ -64,22 +71,44 @@ final class KnowledgeMaintenance {
                 return lhs.entity.canonicalName < rhs.entity.canonicalName
             }
 
+        let autoDemotedTopics = metrics
+            .filter { !materializedEntityIds.contains($0.entity.id) }
+            .filter { graphShaper.maintenanceFlags(for: $0, in: metricIndex).contains(.autoDemoteWeakTopic) }
+            .sorted { lhs, rhs in
+                if lhs.coOccurrenceEdgeCount != rhs.coOccurrenceEdgeCount {
+                    return lhs.coOccurrenceEdgeCount > rhs.coOccurrenceEdgeCount
+                }
+                return lhs.entity.canonicalName.localizedCaseInsensitiveCompare(rhs.entity.canonicalName) == .orderedAscending
+            }
+
         markdown += "## Review Queue\n"
-        if broadLessons.isEmpty && weakTopics.isEmpty {
+        if autoDemotedLessons.isEmpty && weakTopics.isEmpty && autoDemotedTopics.isEmpty {
             markdown += "- No immediate KB maintenance flags.\n\n"
         } else {
-            if !broadLessons.isEmpty {
-                markdown += "### Broad Lessons\n"
-                for hotspot in broadLessons.prefix(8) {
-                    markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
-                    markdown += " — linked to \(hotspot.relationStats.projectRelations) projects"
-                    markdown += ", \(hotspot.claimCount) claims\n"
+            if !autoDemotedLessons.isEmpty {
+                markdown += "### Auto-demoted Broad Lessons\n"
+                for metric in autoDemotedLessons.prefix(8) {
+                    markdown += "- `\(metric.entity.canonicalName)`"
+                    markdown += " — linked to \(metric.projectRelationCount) projects"
+                    markdown += ", \(metric.claimCount) claims\n"
+                }
+                markdown += "\n"
+            }
+
+            if !autoDemotedTopics.isEmpty {
+                markdown += "### Auto-demoted Weak Topics\n"
+                for metric in autoDemotedTopics.prefix(8) {
+                    markdown += "- `\(metric.entity.canonicalName)`"
+                    markdown += " — \(metric.coOccurrenceEdgeCount) co-occurrence edges"
+                    markdown += ", only \(metric.typedEdgeCount) typed relation"
+                    if metric.typedEdgeCount == 1 { markdown += "" } else { markdown += "s" }
+                    markdown += "\n"
                 }
                 markdown += "\n"
             }
 
             if !weakTopics.isEmpty {
-                markdown += "### Weak Topics\n"
+                markdown += "### Weak Durable Topics\n"
                 for hotspot in weakTopics.prefix(8) {
                     markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
                     markdown += " — \(hotspot.relationStats.coOccurrenceEdges) co-occurrence edges"
@@ -99,8 +128,9 @@ final class KnowledgeMaintenance {
         markdown += "\n"
 
         markdown += "## Maintenance Rules\n"
-        markdown += "- Broad lessons: lessons connected to 3+ projects should be reviewed for over-generalization.\n"
-        markdown += "- Weak topics: topics with many co-occurrence edges but almost no typed relations are candidates for pruning or reclassification.\n"
+        markdown += "- Auto-demoted broad lessons: generic lessons linked to 3+ projects with weak direct evidence are removed from the materialized graph.\n"
+        markdown += "- Auto-demoted weak topics: non-durable topics with heavy co-occurrence and weak typed relations are removed from the materialized graph.\n"
+        markdown += "- Weak durable topics: durable topics stay visible, but low typed-relation coverage means relation extraction still needs improvement.\n"
         markdown += "- Hotspots: entities with the highest combined claim and relation pressure.\n"
 
         return markdown
@@ -129,68 +159,24 @@ final class KnowledgeMaintenance {
         return rows.compactMap(KnowledgeEdgeRecord.init(row:))
     }
 
-    private func loadClaimCounts(materializedEntityIds: Set<String>) throws -> [String: Int] {
-        guard !materializedEntityIds.isEmpty else { return [:] }
-        let placeholders = Array(repeating: "?", count: materializedEntityIds.count).joined(separator: ",")
-        let rows = try db.query("""
-            SELECT subject_entity_id, COUNT(*) AS claim_count
-            FROM knowledge_claims
-            WHERE subject_entity_id IN (\(placeholders))
-            GROUP BY subject_entity_id
-        """, params: materializedEntityIds.sorted().map(SQLiteValue.text))
-
-        var counts: [String: Int] = [:]
-        for row in rows {
-            if let id = row["subject_entity_id"]?.textValue {
-                counts[id] = Int(row["claim_count"]?.intValue ?? 0)
-            }
-        }
-        return counts
-    }
-
     private func buildHotspots(
-        entities: [KnowledgeEntityRecord],
-        edgeRows: [KnowledgeEdgeRecord],
-        claimCounts: [String: Int]
+        metrics: [KnowledgeEntityMetrics],
+        materializedEntityIds: Set<String>
     ) -> [KnowledgeHotspot] {
-        let entityMap = Dictionary(uniqueKeysWithValues: entities.map { ($0.id, $0) })
-        var statsByEntityId: [String: KnowledgeRelationStats] = [:]
-
-        for edge in edgeRows {
-            guard let fromEntity = entityMap[edge.fromEntityId],
-                  let toEntity = entityMap[edge.toEntityId] else {
-                continue
-            }
-            accumulate(edge: edge, on: fromEntity, related: toEntity, into: &statsByEntityId)
-            accumulate(edge: edge, on: toEntity, related: fromEntity, into: &statsByEntityId)
-        }
-
-        return entities.map { entity in
+        metrics
+            .filter { materializedEntityIds.contains($0.entity.id) }
+            .map { metric in
             KnowledgeHotspot(
-                entity: entity,
-                claimCount: claimCounts[entity.id] ?? 0,
-                relationStats: statsByEntityId[entity.id] ?? KnowledgeRelationStats()
+                entity: metric.entity,
+                claimCount: metric.claimCount,
+                relationStats: KnowledgeRelationStats(
+                    totalEdges: metric.typedEdgeCount + metric.coOccurrenceEdgeCount,
+                    typedEdges: metric.typedEdgeCount,
+                    coOccurrenceEdges: metric.coOccurrenceEdgeCount,
+                    projectRelations: metric.projectRelationCount
+                )
             )
         }
-    }
-
-    private func accumulate(
-        edge: KnowledgeEdgeRecord,
-        on entity: KnowledgeEntityRecord,
-        related: KnowledgeEntityRecord,
-        into statsByEntityId: inout [String: KnowledgeRelationStats]
-    ) {
-        var stats = statsByEntityId[entity.id] ?? KnowledgeRelationStats()
-        stats.totalEdges += 1
-        if edge.edgeType == "co_occurs_with" {
-            stats.coOccurrenceEdges += 1
-        } else {
-            stats.typedEdges += 1
-        }
-        if related.entityType == .project {
-            stats.projectRelations += 1
-        }
-        statsByEntityId[entity.id] = stats
     }
 
     private func compareHotspots(_ lhs: KnowledgeHotspot, _ rhs: KnowledgeHotspot) -> Bool {

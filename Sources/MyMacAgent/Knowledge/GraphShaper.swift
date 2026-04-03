@@ -22,6 +22,11 @@ struct KnowledgeEntityMetrics {
     }
 }
 
+enum KnowledgeMaintenanceFlag: Hashable {
+    case autoDemoteWeakTopic
+    case autoDemoteBroadLesson
+}
+
 final class GraphShaper {
     private let genericTopicNames: Set<String> = [
         "ai",
@@ -109,6 +114,16 @@ final class GraphShaper {
     private let genericLessonNames: Set<String> = [
         "report generation"
     ]
+    private let broadLessonSignals: [String] = [
+        "guide",
+        "setup",
+        "workflow",
+        "review",
+        "report",
+        "notes",
+        "tutorial",
+        "playbook"
+    ]
     private let suppressedToolNames: Set<String> = [
         "coreautha",
         "loginwindow",
@@ -149,6 +164,20 @@ final class GraphShaper {
         })
     }
 
+    func maintenanceFlags(
+        for metric: KnowledgeEntityMetrics,
+        in index: [String: KnowledgeEntityMetrics]
+    ) -> Set<KnowledgeMaintenanceFlag> {
+        var flags = Set<KnowledgeMaintenanceFlag>()
+        if isWeakTopic(metric) {
+            flags.insert(.autoDemoteWeakTopic)
+        }
+        if isBroadGenericLesson(metric, in: index) {
+            flags.insert(.autoDemoteBroadLesson)
+        }
+        return flags
+    }
+
     func isMeaningfulProjectRelationTopic(_ name: String) -> Bool {
         guard !isSuppressedTopic(name) else { return false }
         guard !isGenericTopic(name) else { return false }
@@ -182,6 +211,7 @@ final class GraphShaper {
         case .lesson:
             guard metric.claimCount >= 1 else { return false }
             guard !isGenericLesson(metric.entity.canonicalName) else { return false }
+            guard !maintenanceFlags(for: metric, in: index).contains(.autoDemoteBroadLesson) else { return false }
             guard !hasMoreSpecificSibling(for: metric, in: index) else { return false }
             return isSpecificEnough(metric.entity.canonicalName, minimumTokens: 2, minimumLength: 14)
         case .site, .person:
@@ -263,6 +293,19 @@ final class GraphShaper {
         guard !isDurableTopic(metric.entity.canonicalName) else { return false }
         guard metric.typedEdgeCount <= 1 else { return false }
         return metric.coOccurrenceEdgeCount >= 10
+    }
+
+    private func isBroadGenericLesson(
+        _ metric: KnowledgeEntityMetrics,
+        in index: [String: KnowledgeEntityMetrics]
+    ) -> Bool {
+        guard metric.entity.entityType == .lesson else { return false }
+        guard metric.projectRelationCount >= 3 else { return false }
+        guard metric.claimCount <= 2 else { return false }
+        guard !hasMoreSpecificSibling(for: metric, in: index) else { return false }
+
+        let lowered = metric.entity.canonicalName.lowercased()
+        return broadLessonSignals.contains(where: { lowered.contains($0) })
     }
 
     private func isVersionedToolVariant(

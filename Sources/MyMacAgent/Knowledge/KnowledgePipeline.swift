@@ -135,7 +135,11 @@ final class KnowledgePipeline {
             let indexMarkdown = try compiler.buildIndexMarkdown()
             _ = try? exporter.exportKnowledgeIndex(indexMarkdown)
 
-            let maintenanceMarkdown = try maintenance.buildMarkdown(materializedEntityIds: materializedIds)
+            let maintenanceMarkdown = try maintenance.buildMarkdown(
+                metrics: metrics,
+                materializedEntityIds: materializedIds,
+                graphShaper: graphShaper
+            )
             _ = try? exporter.exportKnowledgeMaintenance(maintenanceMarkdown)
         }
 

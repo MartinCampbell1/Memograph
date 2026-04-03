@@ -219,7 +219,7 @@ struct KnowledgePipelineTests {
         #expect(maintenance.contains("## Snapshot"))
         #expect(maintenance.contains("## Review Queue"))
         #expect(maintenance.contains("## Hotspots"))
-        #expect(maintenance.contains("Broad Lessons"))
+        #expect(maintenance.contains("Auto-demoted Broad Lessons"))
         #expect(maintenance.contains("macOS System Audio Capture Guide"))
     }
 
