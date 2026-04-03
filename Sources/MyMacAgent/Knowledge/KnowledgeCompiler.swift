@@ -271,7 +271,7 @@ final class KnowledgeCompiler {
 
         if !displayedRelatedReferences.isEmpty {
             markdown += "## Relationships\n"
-            for group in groupedRelatedEntities(displayedRelatedReferences) {
+            for group in groupedRelatedEntities(displayedRelatedReferences, for: entity) {
                 markdown += "### \(group.type.folderName)\n"
                 for related in group.references {
                     let relationship = describe(relationship: related, for: entity)
@@ -1467,13 +1467,34 @@ final class KnowledgeCompiler {
         }
     }
 
-    private func groupedRelatedEntities(_ references: [RelatedKnowledgeReference]) -> [(type: KnowledgeEntityType, references: [RelatedKnowledgeReference])] {
+    private func groupedRelatedEntities(
+        _ references: [RelatedKnowledgeReference],
+        for entity: KnowledgeEntityRecord
+    ) -> [(type: KnowledgeEntityType, references: [RelatedKnowledgeReference])] {
         let grouped = Dictionary(grouping: references, by: { $0.entity.entityType })
-        return KnowledgeEntityType.allCases.compactMap { type in
+
+        let orderedTypes = KnowledgeEntityType.allCases.sorted { lhs, rhs in
+            let lhsPriority = relationshipSectionPriority(relatedType: lhs, for: entity.entityType)
+            let rhsPriority = relationshipSectionPriority(relatedType: rhs, for: entity.entityType)
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+            return lhs.folderName < rhs.folderName
+        }
+
+        return orderedTypes.compactMap { type in
             guard let group = grouped[type], !group.isEmpty else { return nil }
-            return (type, group.sorted { lhs, rhs in
-                let lhsPriority = relationPriority(lhs.edgeType)
-                let rhsPriority = relationPriority(rhs.edgeType)
+            let orderedReferences = group.sorted { lhs, rhs in
+                let lhsPriority = relationPriority(
+                    lhs.edgeType,
+                    for: entity.entityType,
+                    relatedType: lhs.entity.entityType
+                )
+                let rhsPriority = relationPriority(
+                    rhs.edgeType,
+                    for: entity.entityType,
+                    relatedType: rhs.entity.entityType
+                )
                 if lhsPriority != rhsPriority {
                     return lhsPriority > rhsPriority
                 }
@@ -1481,7 +1502,165 @@ final class KnowledgeCompiler {
                     return lhs.weight > rhs.weight
                 }
                 return lhs.entity.canonicalName < rhs.entity.canonicalName
-            })
+            }
+
+            let limit = maxRelationshipsPerSection(for: entity.entityType, relatedType: type)
+            return (type, Array(orderedReferences.prefix(limit)))
+        }
+    }
+
+    private func relationshipSectionPriority(
+        relatedType: KnowledgeEntityType,
+        for entityType: KnowledgeEntityType
+    ) -> Int {
+        let order: [KnowledgeEntityType]
+        switch entityType {
+        case .project:
+            order = [.tool, .topic, .issue, .lesson, .model, .project, .site, .person]
+        case .tool:
+            order = [.project, .topic, .model, .tool, .issue, .lesson, .site, .person]
+        case .topic:
+            order = [.project, .lesson, .tool, .topic, .issue, .model, .site, .person]
+        case .lesson:
+            order = [.project, .topic, .tool, .lesson, .issue, .model, .site, .person]
+        case .issue:
+            order = [.project, .tool, .topic, .lesson, .model, .issue, .site, .person]
+        case .model:
+            order = [.project, .tool, .topic, .lesson, .model, .issue, .site, .person]
+        case .site, .person:
+            order = [.project, .tool, .topic, .lesson, .model, .issue, .site, .person]
+        }
+
+        return order.firstIndex(of: relatedType) ?? order.count
+    }
+
+    private func relationPriority(
+        _ edgeType: String,
+        for entityType: KnowledgeEntityType,
+        relatedType: KnowledgeEntityType
+    ) -> Int {
+        switch entityType {
+        case .project:
+            switch edgeType {
+            case "uses_tool", "worked_with_tool", "focuses_on_topic", "blocked_by_issue":
+                return 6
+            case "generates_lesson", "uses_model":
+                return 5
+            case "co_occurs_with":
+                return relatedType == .project ? 1 : 2
+            default:
+                return relationPriority(edgeType)
+            }
+        case .tool:
+            switch edgeType {
+            case "uses_tool", "supports_project", "used_in_project":
+                return 6
+            case "works_on_topic":
+                return 5
+            case "co_occurs_with":
+                return relatedType == .tool ? 1 : 2
+            default:
+                return relationPriority(edgeType)
+            }
+        case .topic:
+            switch edgeType {
+            case "focuses_on_topic", "relevant_to_project":
+                return 6
+            case "explains_topic", "documented_in_lesson":
+                return 5
+            case "worked_with_tool", "related_topic":
+                return 4
+            case "co_occurs_with":
+                return relatedType == .topic ? 1 : 2
+            default:
+                return relationPriority(edgeType)
+            }
+        case .lesson:
+            switch edgeType {
+            case "generates_lesson", "derived_from_project":
+                return 6
+            case "explains_topic", "documented_in_lesson":
+                return 5
+            case "co_occurs_with":
+                return relatedType == .lesson ? 1 : 2
+            default:
+                return relationPriority(edgeType)
+            }
+        case .issue:
+            switch edgeType {
+            case "blocked_by_issue", "affects_project":
+                return 6
+            case "co_occurs_with":
+                return 1
+            default:
+                return relationPriority(edgeType)
+            }
+        case .model:
+            switch edgeType {
+            case "uses_model", "used_in_project":
+                return 6
+            case "co_occurs_with":
+                return relatedType == .model ? 1 : 2
+            default:
+                return relationPriority(edgeType)
+            }
+        case .site, .person:
+            switch edgeType {
+            case "co_occurs_with":
+                return 1
+            default:
+                return relationPriority(edgeType)
+            }
+        }
+    }
+
+    private func maxRelationshipsPerSection(
+        for entityType: KnowledgeEntityType,
+        relatedType: KnowledgeEntityType
+    ) -> Int {
+        switch entityType {
+        case .project:
+            switch relatedType {
+            case .tool: return 5
+            case .topic: return 6
+            case .project: return 2
+            default: return 3
+            }
+        case .tool:
+            switch relatedType {
+            case .project: return 4
+            case .topic: return 3
+            case .tool: return 5
+            default: return 2
+            }
+        case .topic:
+            switch relatedType {
+            case .project, .lesson: return 3
+            case .topic: return 5
+            case .tool: return 3
+            default: return 2
+            }
+        case .lesson:
+            switch relatedType {
+            case .project, .topic: return 3
+            case .tool: return 2
+            default: return 2
+            }
+        case .issue:
+            switch relatedType {
+            case .project: return 4
+            case .tool, .topic: return 3
+            default: return 2
+            }
+        case .model:
+            switch relatedType {
+            case .project: return 4
+            case .tool: return 3
+            case .topic: return 2
+            default: return 2
+            }
+        case .site, .person:
+            return 3
         }
     }
 

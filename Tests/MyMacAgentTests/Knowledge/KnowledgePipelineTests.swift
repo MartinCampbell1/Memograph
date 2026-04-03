@@ -1382,6 +1382,102 @@ struct KnowledgePipelineTests {
         #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — project where this tool showed up") == true)
     }
 
+    @Test("Tool relationship sections prioritize projects and cap noisy tool neighbors")
+    func toolRelationshipSectionsPrioritizeProjectsAndCapNeighbors() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        var entityParams: [SQLiteValue] = [
+            .text("tool-main"), .text("Codex"), .text("codex"), .text("tool"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("topic-1"), .text("OCR"), .text("ocr"), .text("topic"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z")
+        ]
+
+        for index in 1...7 {
+            entityParams.append(contentsOf: [
+                .text("tool-neighbor-\(index)"),
+                .text("Neighbor Tool \(index)"),
+                .text("neighbor-tool-\(index)"),
+                .text("tool"),
+                .text("2026-04-04T04:00:00Z"),
+                .text("2026-04-04T05:00:00Z")
+            ])
+        }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: entityParams)
+
+        var edgeParams: [SQLiteValue] = [
+            .text("edge-project"), .text("project-1"), .text("tool-main"), .text("uses_tool"), .real(5),
+            .text("2026-04-04T05:01:00Z"),
+            .text("edge-topic"), .text("tool-main"), .text("topic-1"), .text("works_on_topic"), .real(4),
+            .text("2026-04-04T05:01:00Z")
+        ]
+        for index in 1...7 {
+            edgeParams.append(contentsOf: [
+                .text("edge-neighbor-\(index)"),
+                .text("tool-main"),
+                .text("tool-neighbor-\(index)"),
+                .text("co_occurs_with"),
+                .real(Double(8 - index)),
+                .text("2026-04-04T05:01:00Z")
+            ])
+        }
+
+        try db.execute("""
+            INSERT INTO knowledge_edges
+                (id, from_entity_id, to_entity_id, edge_type, weight, updated_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: edgeParams)
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "tool-main", sourceDate: "2026-04-04")
+        let body = note?.bodyMarkdown ?? ""
+
+        let projectsRange = body.range(of: "### Projects")
+        let topicsRange = body.range(of: "### Topics")
+        let toolsRange = body.range(of: "### Tools")
+        #expect(projectsRange != nil)
+        #expect(topicsRange != nil)
+        #expect(toolsRange != nil)
+        if let projectsRange, let topicsRange, let toolsRange {
+            #expect(projectsRange.lowerBound < topicsRange.lowerBound)
+            #expect(topicsRange.lowerBound < toolsRange.lowerBound)
+        }
+
+        #expect(body.contains("[[Knowledge/Projects/memograph|Memograph]] — project where this tool showed up"))
+        #expect(body.contains("[[Knowledge/Topics/ocr|OCR]] — topic explored with this tool"))
+        #expect(body.contains("Neighbor Tool 1"))
+        #expect(body.contains("Neighbor Tool 5"))
+        #expect(body.contains("Neighbor Tool 6") == false)
+        #expect(body.contains("Neighbor Tool 7") == false)
+    }
+
     @Test("Lesson notes hide noisy same-window lesson co-occurrence references")
     func lessonNotesHideSameTypeCoOccurrenceNoise() throws {
         let (db, path) = try makeDB()
