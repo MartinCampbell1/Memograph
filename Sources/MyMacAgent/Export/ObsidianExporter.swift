@@ -85,7 +85,15 @@ final class ObsidianExporter {
 
         // Timeline
         md += "## Timeline\n"
-        let timeline = try buildTimeline(for: summary.date)
+        let timeline: String
+        if let metadata, metadata.isHourly,
+           let windowStart = metadata.windowStart,
+           let windowEnd = metadata.windowEnd {
+            let window = SummaryWindowDescriptor(date: summary.date, start: windowStart, end: windowEnd)
+            timeline = try buildTimeline(for: window)
+        } else {
+            timeline = try buildTimeline(for: summary.date)
+        }
         md += timeline.isEmpty ? "- No sessions recorded\n" : timeline
         md += "\n"
 
@@ -112,24 +120,37 @@ final class ObsidianExporter {
     }
 
     func buildTimeline(for date: String) throws -> String {
-        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+        guard let start = dateSupport.startOfLocalDay(for: date),
+              let end = dateSupport.endOfLocalDay(for: date) else {
             return ""
         }
+        return try buildTimeline(for: SummaryWindowDescriptor(date: date, start: start, end: end))
+    }
+
+    func buildTimeline(for window: SummaryWindowDescriptor) throws -> String {
+        let rangeStart = dateSupport.isoString(from: window.start)
+        let rangeEnd = dateSupport.isoString(from: window.end)
         let sessions = try db.query("""
             SELECT s.started_at, s.ended_at, a.app_name
             FROM sessions s
             JOIN apps a ON s.app_id = a.id
-            WHERE s.started_at >= ? AND s.started_at < ?
+            WHERE s.started_at < ? AND COALESCE(s.ended_at, ?) >= ?
             ORDER BY s.started_at
-        """, params: [.text(range.start), .text(range.end)])
+        """, params: [.text(rangeEnd), .text(rangeEnd), .text(rangeStart)])
 
         var timeline = ""
         for row in sessions {
             guard let startedAt = row["started_at"]?.textValue,
                   let appName = row["app_name"]?.textValue else { continue }
+            guard let sessionStart = dateSupport.parseDateTime(startedAt) else { continue }
 
-            let startTime = formatTime(startedAt)
-            let endTime = row["ended_at"]?.textValue.map { formatTime($0) } ?? "ongoing"
+            let sessionEnd = row["ended_at"]?.textValue.flatMap(dateSupport.parseDateTime) ?? window.end
+            let clippedStart = max(sessionStart, window.start)
+            let clippedEnd = min(sessionEnd, window.end)
+            guard clippedEnd > clippedStart else { continue }
+
+            let startTime = formatTime(dateSupport.isoString(from: clippedStart))
+            let endTime = formatTime(dateSupport.isoString(from: clippedEnd))
             timeline += "- \(startTime)–\(endTime) — \(appName)\n"
         }
         return timeline
@@ -256,6 +277,53 @@ final class ObsidianExporter {
         }
 
         return exportedCount
+    }
+
+    @discardableResult
+    func cleanupSyncQueueHistory(
+        doneOlderThanDays: Int = 7,
+        failedOlderThanDays: Int = 30
+    ) throws -> Int {
+        let formatter = ISO8601DateFormatter()
+        let now = Date()
+        let doneCutoff = formatter.string(
+            from: Calendar.current.date(byAdding: .day, value: -doneOlderThanDays, to: now) ?? now
+        )
+        let failedCutoff = formatter.string(
+            from: Calendar.current.date(byAdding: .day, value: -failedOlderThanDays, to: now) ?? now
+        )
+
+        let doneRows = try db.query("""
+            SELECT COUNT(*) as c
+            FROM sync_queue
+            WHERE status = 'done'
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        """, params: [.text(doneCutoff)])
+        let failedRows = try db.query("""
+            SELECT COUNT(*) as c
+            FROM sync_queue
+            WHERE status = 'failed'
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        """, params: [.text(failedCutoff)])
+        let deletedCount = Int(doneRows.first?["c"]?.intValue ?? 0)
+            + Int(failedRows.first?["c"]?.intValue ?? 0)
+
+        try db.execute("""
+            DELETE FROM sync_queue
+            WHERE status = 'done'
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        """, params: [.text(doneCutoff)])
+        try db.execute("""
+            DELETE FROM sync_queue
+            WHERE status = 'failed'
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        """, params: [.text(failedCutoff)])
+
+        return deletedCount
     }
 
     static func formatDuration(minutes: Int) -> String {

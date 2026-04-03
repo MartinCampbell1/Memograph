@@ -9,7 +9,11 @@ struct AudioTranscriberTests {
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
-        let runner = MigrationRunner(db: db, migrations: [V001_InitialSchema.migration])
+        let runner = MigrationRunner(db: db, migrations: [
+            V001_InitialSchema.migration,
+            V002_AudioTranscripts.migration,
+            V004_AudioTranscriptDurability.migration
+        ])
         try runner.runPending()
         return (db, path)
     }
@@ -25,20 +29,6 @@ struct AudioTranscriberTests {
         let (db, path) = try makeDB()
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        // Create audio_transcripts table (V002 migration)
-        try db.execute("""
-            CREATE TABLE IF NOT EXISTS audio_transcripts (
-                id TEXT PRIMARY KEY,
-                session_id TEXT,
-                timestamp TEXT NOT NULL,
-                duration_seconds REAL DEFAULT 0,
-                transcript TEXT,
-                language TEXT,
-                source TEXT DEFAULT 'system',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
         try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
             params: [.text("com.test"), .text("Test")])
         try db.execute("INSERT INTO sessions (id, app_id, started_at) VALUES (?, ?, ?)",
@@ -49,13 +39,17 @@ struct AudioTranscriberTests {
             sessionId: "s1",
             text: "Обсуждали архитектуру нового сервиса",
             language: "ru",
-            durationSeconds: 300
+            durationSeconds: 300,
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z"),
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:05:00Z")
         )
 
         let rows = try db.query("SELECT * FROM audio_transcripts")
         #expect(rows.count == 1)
         #expect(rows[0]["transcript"]?.textValue?.contains("архитектуру") == true)
         #expect(rows[0]["language"]?.textValue == "ru")
+        #expect(rows[0]["segment_started_at"]?.textValue == "2026-04-02T10:00:00Z")
+        #expect(rows[0]["segment_ended_at"]?.textValue == "2026-04-02T10:05:00Z")
     }
 
     @Test("getTranscriptsForDate returns ordered transcripts")
@@ -64,26 +58,31 @@ struct AudioTranscriberTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         try db.execute("""
-            CREATE TABLE IF NOT EXISTS audio_transcripts (
-                id TEXT PRIMARY KEY,
-                session_id TEXT,
-                timestamp TEXT NOT NULL,
-                duration_seconds REAL DEFAULT 0,
-                transcript TEXT,
-                language TEXT,
-                source TEXT DEFAULT 'system',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
+            INSERT INTO audio_transcripts
+                (id, timestamp, segment_started_at, segment_ended_at, persisted_at, transcript, duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("t1"),
+            .text("2026-04-02T10:00:00Z"),
+            .text("2026-04-02T10:00:00Z"),
+            .text("2026-04-02T10:05:00Z"),
+            .text("2026-04-02T10:05:05Z"),
+            .text("First chunk"),
+            .real(300)
+        ])
         try db.execute("""
-            INSERT INTO audio_transcripts (id, timestamp, transcript, duration_seconds)
-            VALUES (?, ?, ?, ?)
-        """, params: [.text("t1"), .text("2026-04-02T10:00:00Z"), .text("First chunk"), .real(300)])
-        try db.execute("""
-            INSERT INTO audio_transcripts (id, timestamp, transcript, duration_seconds)
-            VALUES (?, ?, ?, ?)
-        """, params: [.text("t2"), .text("2026-04-02T10:05:00Z"), .text("Second chunk"), .real(300)])
+            INSERT INTO audio_transcripts
+                (id, timestamp, segment_started_at, segment_ended_at, persisted_at, transcript, duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("t2"),
+            .text("2026-04-02T10:05:00Z"),
+            .text("2026-04-02T10:05:00Z"),
+            .text("2026-04-02T10:10:00Z"),
+            .text("2026-04-02T10:10:03Z"),
+            .text("Second chunk"),
+            .real(300)
+        ])
 
         let transcriber = AudioTranscriber(db: db, timeZone: utc)
         let transcripts = try transcriber.getTranscriptsForDate("2026-04-02")
@@ -98,27 +97,62 @@ struct AudioTranscriberTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         try db.execute("""
-            CREATE TABLE IF NOT EXISTS audio_transcripts (
-                id TEXT PRIMARY KEY,
-                session_id TEXT,
-                timestamp TEXT NOT NULL,
-                duration_seconds REAL DEFAULT 0,
-                transcript TEXT,
-                language TEXT,
-                source TEXT DEFAULT 'system',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        try db.execute("""
-            INSERT INTO audio_transcripts (id, timestamp, transcript, duration_seconds)
-            VALUES (?, ?, ?, ?)
-        """, params: [.text("t-local"), .text("2026-04-02T16:05:00Z"), .text("Late-night note"), .real(60)])
+            INSERT INTO audio_transcripts
+                (id, timestamp, segment_started_at, segment_ended_at, persisted_at, transcript, duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("t-local"),
+            .text("2026-04-02T16:05:00Z"),
+            .text("2026-04-02T16:05:00Z"),
+            .text("2026-04-02T16:06:00Z"),
+            .text("2026-04-02T16:06:01Z"),
+            .text("Late-night note"),
+            .real(60)
+        ])
 
         let transcriber = AudioTranscriber(db: db, timeZone: makassar)
         let transcripts = try transcriber.getTranscriptsForDate("2026-04-03")
 
         #expect(transcripts.count == 1)
         #expect(transcripts[0].text == "Late-night note")
+    }
+
+    @Test("Queued transcription retries without deleting the source file on failure")
+    func queuedTranscriptionRetries() async throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let audioPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("queued-audio-\(UUID().uuidString).wav")
+        try Data("fake audio".utf8).write(to: URL(fileURLWithPath: audioPath))
+        defer { try? FileManager.default.removeItem(atPath: audioPath) }
+
+        let transcriber = AudioTranscriber(
+            db: db,
+            venvPath: "/missing",
+            scriptPath: "/missing",
+            runtimeStatus: .missingPython("/missing"),
+            timeZone: utc
+        )
+        try transcriber.enqueueTranscriptionJob(
+            path: audioPath,
+            sessionId: nil,
+            source: "system",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:01:00Z")!
+        )
+
+        let drained = try await transcriber.drainQueuedTranscriptions(limit: 1)
+        #expect(drained == 0)
+        #expect(FileManager.default.fileExists(atPath: audioPath))
+
+        let rows = try db.query("""
+            SELECT status, retry_count
+            FROM sync_queue
+            WHERE job_type = ?
+        """, params: [.text("audio_transcription")])
+        #expect(rows.count == 1)
+        #expect(rows[0]["status"]?.textValue == "failed")
+        #expect(rows[0]["retry_count"]?.intValue == 1)
     }
 }

@@ -11,7 +11,8 @@ struct DailySummarizerTests {
         let db = try DatabaseManager(path: path)
         let runner = MigrationRunner(db: db, migrations: [
             V001_InitialSchema.migration,
-            V002_AudioTranscripts.migration
+            V002_AudioTranscripts.migration,
+            V004_AudioTranscriptDurability.migration
         ])
         try runner.runPending()
         return (db, path)
@@ -198,7 +199,7 @@ struct DailySummarizerTests {
         #expect(summary.summaryText?.contains("HTTP 500") == true)
     }
 
-    @Test("shouldGenerateSummary skips previous day when summary already exists")
+    @Test("shouldGenerateSummary finalizes previous day even when only a partial summary exists")
     func shouldGenerateSummaryForPreviousDay() throws {
         let (db, path) = try makeDB()
         defer { try? FileManager.default.removeItem(atPath: path) }
@@ -229,7 +230,7 @@ struct DailySummarizerTests {
             minimumIntervalMinutes: 60
         )
 
-        #expect(!shouldGenerate)
+        #expect(shouldGenerate)
     }
 
     @Test("pendingSummaryWindows advance from covered window end instead of generated_at")
@@ -287,6 +288,54 @@ struct DailySummarizerTests {
         #expect(windows.first?.end == ISO8601DateFormatter().date(from: "2026-04-03T04:01:55Z"))
     }
 
+    @Test("pendingSummaryWindows finalizes previous day from last covered window end")
+    func pendingSummaryWindowsFinalizePreviousDay() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.cursor"), .text("Cursor")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms, uncertainty_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("sess-prev"), .integer(1),
+            .text("2026-04-02T15:10:00Z"), .text("2026-04-02T15:40:00Z"),
+            .integer(1_800_000), .text("normal")
+        ])
+
+        let summarizer = DailySummarizer(db: db, timeZone: makassar)
+        try summarizer.persistSummary(
+            DailySummaryRecord(
+                date: "2026-04-02",
+                summaryText: "Earlier partial summary",
+                topAppsJson: nil,
+                topTopicsJson: nil,
+                aiSessionsJson: nil,
+                contextSwitchesJson: """
+                {"window_start":"2026-04-02T08:00:00Z","window_end":"2026-04-02T15:00:00Z","mode":"hourly"}
+                """,
+                unfinishedItemsJson: nil,
+                suggestedNotesJson: nil,
+                generatedAt: "2026-04-02T15:01:00Z",
+                modelName: "test",
+                tokenUsageInput: 0,
+                tokenUsageOutput: 0,
+                generationStatus: "success"
+            )
+        )
+
+        let windows = try summarizer.pendingSummaryWindows(
+            for: "2026-04-02",
+            currentLocalDate: "2026-04-03",
+            minimumIntervalMinutes: 60
+        )
+
+        #expect(windows.count == 1)
+        #expect(windows[0].start == ISO8601DateFormatter().date(from: "2026-04-02T15:00:00Z"))
+        #expect(windows[0].end == ISO8601DateFormatter().date(from: "2026-04-02T16:00:00Z"))
+    }
+
     @Test("collectSessionData includes overlapping sessions and filters context to the report window")
     func collectSessionDataUsesWindowOverlap() throws {
         let (db, path) = try makeDB()
@@ -342,5 +391,44 @@ struct DailySummarizerTests {
         #expect(sessions[0].contextTexts == ["Context inside the window"])
         #expect(sessions[0].windowTitles == ["inside.swift"])
         #expect(sessions[0].durationMs == 3_600_000)
+    }
+
+    @Test("buildPrompt includes audio transcript when segment overlaps the report window")
+    func buildPromptUsesAudioSegmentOverlap() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.cursor"), .text("Cursor")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms, uncertainty_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("sess-audio"), .integer(1),
+            .text("2026-04-03T02:40:00Z"), .text("2026-04-03T03:20:00Z"),
+            .integer(2_400_000), .text("normal")
+        ])
+
+        let transcriber = AudioTranscriber(db: db, timeZone: utc)
+        try transcriber.persistTranscript(
+            sessionId: "sess-audio",
+            text: "Crossing the hourly boundary",
+            language: "en",
+            durationSeconds: 300,
+            source: "system",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-03T02:58:00Z"),
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-03T03:03:00Z"),
+            persistedAt: ISO8601DateFormatter().date(from: "2026-04-03T03:05:00Z")
+        )
+
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
+        let window = summarizer.summaryWindow(
+            for: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T03:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T04:00:00Z")!
+        )
+
+        let prompt = try summarizer.buildPrompt(for: window)
+        #expect(prompt.contains("Crossing the hourly boundary"))
     }
 }

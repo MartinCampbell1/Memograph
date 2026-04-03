@@ -166,7 +166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let runner = MigrationRunner(db: db, migrations: [
                 V001_InitialSchema.migration,
                 V002_AudioTranscripts.migration,
-                V003_PerformanceIndexes.migration
+                V003_PerformanceIndexes.migration,
+                V004_AudioTranscriptDurability.migration
             ])
             try runner.runPending()
             databaseManager = db
@@ -256,6 +257,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audioTranscriber = transcriber
         visionAnalyzer = VisionAnalyzer(db: db)
         configureAudioEngines(forceRestart: true)
+        Task { @MainActor [weak self] in
+            await self?.drainPendingAudioTranscriptions(reason: "startup")
+        }
 
         logger.info("Phase 5 initialized (vision, mic audio, system audio)")
     }
@@ -455,9 +459,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        await drainPendingAudioTranscriptions(reason: "summary")
+
         if let analyzer = visionAnalyzer {
             do {
-                let count = try await analyzer.analyzeAllLowReadability(for: window.date)
+                let count = try await analyzer.analyzeAllLowReadability(in: window)
                 if count > 0 {
                     logger.info("Analyzed \(count) low-readability screenshots before summary")
                 }
@@ -513,6 +519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func generatePendingDailySummaries(reason: String) async {
         let settings = AppSettings()
         drainPendingSummaryExports(reason: reason)
+        await drainPendingAudioTranscriptions(reason: reason)
 
         guard settings.resolvedSummaryProvider != .disabled else {
             logger.info("Skipping auto-summary: summary provider is disabled")
@@ -521,7 +528,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let summarizer = dailySummarizer else { return }
 
         let today = dateSupport.currentLocalDateString()
-        let dates = [dateSupport.offsetLocalDateString(today, by: -1), today].compactMap { $0 }
+        let lookbackDays = max(2, min(settings.retentionDays, 30))
+        let dates = stride(from: lookbackDays - 1, through: 0, by: -1)
+            .compactMap { dateSupport.offsetLocalDateString(today, by: -$0) }
 
         for date in dates {
             do {
@@ -674,8 +683,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if drained > 0 {
                 logger.info("Drained \(drained) queued Obsidian exports during \(reason, privacy: .public)")
             }
+
+            let cleaned = try exporter.cleanupSyncQueueHistory()
+            if cleaned > 0 {
+                logger.info("Pruned \(cleaned) old sync queue rows during \(reason, privacy: .public)")
+            }
         } catch {
             logger.error("Failed to drain queued Obsidian exports during \(reason): \(error.localizedDescription)")
+        }
+    }
+
+    private func drainPendingAudioTranscriptions(reason: String) async {
+        guard let transcriber = audioTranscriber else { return }
+
+        do {
+            let drained = try await transcriber.drainQueuedTranscriptions()
+            if drained > 0 {
+                logger.info("Drained \(drained) queued audio transcription job(s) during \(reason, privacy: .public)")
+            }
+        } catch {
+            logger.error("Failed to drain queued audio transcriptions during \(reason): \(error.localizedDescription)")
         }
     }
 

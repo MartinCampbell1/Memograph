@@ -100,7 +100,8 @@ final class DailySummarizer: @unchecked Sendable {
             guard let endOfDay = dateSupport.endOfLocalDay(for: date) else {
                 return nil
             }
-            return SummaryWindowDescriptor(date: date, start: startOfDay, end: endOfDay)
+            let coveredUntil = min(max(try lastCoveredUntil(for: date) ?? startOfDay, startOfDay), endOfDay)
+            return SummaryWindowDescriptor(date: date, start: coveredUntil, end: endOfDay)
         }
 
         let currentTime = now()
@@ -136,13 +137,22 @@ final class DailySummarizer: @unchecked Sendable {
         }
 
         if date != currentLocalDate {
-            guard try summaryRecord(for: date) == nil,
-                  let endOfDay = dateSupport.endOfLocalDay(for: date) else {
+            guard let endOfDay = dateSupport.endOfLocalDay(for: date) else {
                 return []
             }
 
-            let fullDayWindow = SummaryWindowDescriptor(date: date, start: startOfDay, end: endOfDay)
-            return try hasActivity(in: fullDayWindow) ? [fullDayWindow] : []
+            let previousCoveredUntil = try lastCoveredUntil(for: date)
+            let coveredUntil = min(max(previousCoveredUntil ?? startOfDay, startOfDay), endOfDay)
+            guard coveredUntil < endOfDay else {
+                return []
+            }
+
+            let catchUpWindow = SummaryWindowDescriptor(date: date, start: coveredUntil, end: endOfDay)
+            if previousCoveredUntil != nil {
+                return [catchUpWindow]
+            }
+
+            return try hasActivity(in: catchUpWindow) ? [catchUpWindow] : []
         }
 
         let intervalSeconds = Double(max(15, minimumIntervalMinutes) * 60)
@@ -376,7 +386,7 @@ final class DailySummarizer: @unchecked Sendable {
         if !transcripts.isEmpty {
             prompt += "## Audio Transcripts\n\n"
             for transcript in transcripts {
-                let time = dateSupport.localDateTimeString(from: transcript.timestamp)
+                let time = dateSupport.localDateTimeString(from: transcript.segmentStartedAt ?? transcript.timestamp)
                 let lang = transcript.language ?? "?"
                 prompt += "[\(time)] (\(lang)): \(transcript.text)\n"
             }
@@ -723,9 +733,10 @@ final class DailySummarizer: @unchecked Sendable {
         let transcriptRows = try db.query("""
             SELECT 1
             FROM audio_transcripts
-            WHERE timestamp >= ? AND timestamp < ?
+            WHERE COALESCE(segment_started_at, timestamp) < ?
+              AND COALESCE(segment_ended_at, persisted_at, timestamp) >= ?
             LIMIT 1
-        """, params: [.text(rangeStart), .text(rangeEnd)])
+        """, params: [.text(rangeEnd), .text(rangeStart)])
         if !transcriptRows.isEmpty {
             return true
         }
@@ -783,11 +794,13 @@ final class DailySummarizer: @unchecked Sendable {
         let rangeStart = dateSupport.isoString(from: window.start)
         let rangeEnd = dateSupport.isoString(from: window.end)
         let rows = try db.query("""
-            SELECT id, session_id, timestamp, duration_seconds, transcript, language, source
+            SELECT id, session_id, timestamp, segment_started_at, segment_ended_at, persisted_at,
+                   duration_seconds, transcript, language, source
             FROM audio_transcripts
-            WHERE timestamp >= ? AND timestamp < ?
-            ORDER BY timestamp
-        """, params: [.text(rangeStart), .text(rangeEnd)])
+            WHERE COALESCE(segment_started_at, timestamp) < ?
+              AND COALESCE(segment_ended_at, persisted_at, timestamp) >= ?
+            ORDER BY COALESCE(segment_started_at, timestamp), timestamp
+        """, params: [.text(rangeEnd), .text(rangeStart)])
 
         return rows.compactMap { row in
             guard let id = row["id"]?.textValue,
@@ -800,6 +813,9 @@ final class DailySummarizer: @unchecked Sendable {
                 id: id,
                 sessionId: row["session_id"]?.textValue,
                 timestamp: timestamp,
+                segmentStartedAt: row["segment_started_at"]?.textValue,
+                segmentEndedAt: row["segment_ended_at"]?.textValue,
+                persistedAt: row["persisted_at"]?.textValue,
                 durationSeconds: row["duration_seconds"]?.realValue ?? 0,
                 text: text,
                 language: row["language"]?.textValue,

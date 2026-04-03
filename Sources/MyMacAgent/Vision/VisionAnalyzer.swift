@@ -30,11 +30,20 @@ final class VisionAnalyzer: @unchecked Sendable {
     }
 
     func findLowReadabilityCaptures(for date: String, threshold: Double = 0.3) throws -> [LowReadabilityCapture] {
-        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+        guard let startOfDay = dateSupport.startOfLocalDay(for: date),
+              let endOfDay = dateSupport.endOfLocalDay(for: date) else {
             logger.error("Vision: invalid local date requested: \(date)")
             return []
         }
+        let window = SummaryWindowDescriptor(date: date, start: startOfDay, end: endOfDay)
+        return try findLowReadabilityCaptures(in: window, threshold: threshold)
+    }
 
+    func findLowReadabilityCaptures(
+        in window: SummaryWindowDescriptor,
+        threshold: Double = 0.3,
+        limit: Int = 20
+    ) throws -> [LowReadabilityCapture] {
         let rows = try db.query("""
             SELECT cs.id as ctx_id, cs.source_capture_id, cs.readable_score,
                    cs.app_name, cs.window_title, c.image_path
@@ -44,8 +53,13 @@ final class VisionAnalyzer: @unchecked Sendable {
               AND cs.readable_score < ?
               AND cs.merged_text IS NULL
             ORDER BY cs.timestamp
-            LIMIT 20
-        """, params: [.text(range.start), .text(range.end), .real(threshold)])
+            LIMIT ?
+        """, params: [
+            .text(dateSupport.isoString(from: window.start)),
+            .text(dateSupport.isoString(from: window.end)),
+            .real(threshold),
+            .integer(Int64(limit))
+        ])
 
         return rows.compactMap { row -> LowReadabilityCapture? in
             guard let ctxId = row["ctx_id"]?.textValue,
@@ -158,7 +172,17 @@ final class VisionAnalyzer: @unchecked Sendable {
     }
 
     func analyzeAllLowReadability(for date: String) async throws -> Int {
-        let captures = try findLowReadabilityCaptures(for: date)
+        guard let startOfDay = dateSupport.startOfLocalDay(for: date),
+              let endOfDay = dateSupport.endOfLocalDay(for: date) else {
+            return 0
+        }
+        return try await analyzeAllLowReadability(
+            in: SummaryWindowDescriptor(date: date, start: startOfDay, end: endOfDay)
+        )
+    }
+
+    func analyzeAllLowReadability(in window: SummaryWindowDescriptor) async throws -> Int {
+        let captures = try findLowReadabilityCaptures(in: window)
         var analyzed = 0
 
         for capture in captures {

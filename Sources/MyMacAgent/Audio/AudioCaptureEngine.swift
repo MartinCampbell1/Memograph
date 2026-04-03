@@ -20,6 +20,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
     private let logger = Logger.app
     private var isMonitoring = false
     private var isCapturing = false
+    private var currentSegmentStartedAt: Date?
     private var inputDeviceID: AudioDeviceID = 0
     private let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
 
@@ -177,9 +178,12 @@ final class AudioCaptureEngine: @unchecked Sendable {
         isCapturing = false
 
         if let path = currentFilePath {
+            let segmentStart = currentSegmentStartedAt ?? Date()
+            let segmentEnd = Date()
             currentFile = nil
             currentFilePath = nil
-            transcribeAndCleanup(path: path)
+            currentSegmentStartedAt = nil
+            queueTranscription(path: path, segmentStartedAt: segmentStart, segmentEndedAt: segmentEnd)
         }
 
         logger.info("AudioCapture: mic released by other apps — recording stopped")
@@ -198,6 +202,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
         do {
             currentFile = try AVAudioFile(forWriting: URL(fileURLWithPath: path), settings: fmt.settings)
             currentFilePath = path
+            currentSegmentStartedAt = Date()
         } catch {
             logger.error("AudioCapture: failed to create file: \(error.localizedDescription)")
         }
@@ -206,35 +211,35 @@ final class AudioCaptureEngine: @unchecked Sendable {
     private func rotateSegment() {
         guard isCapturing else { return }
         let oldPath = currentFilePath
+        let segmentStart = currentSegmentStartedAt ?? Date()
+        let segmentEnd = Date()
         currentFile = nil
         startNewSegment()
         if let path = oldPath {
-            transcribeAndCleanup(path: path)
+            queueTranscription(path: path, segmentStartedAt: segmentStart, segmentEndedAt: segmentEnd)
         }
     }
 
-    private func transcribeAndCleanup(path: String) {
+    private func queueTranscription(path: String, segmentStartedAt: Date, segmentEndedAt: Date) {
         let sessionId = sessionManager.currentSessionId
         let transcriber = self.transcriber
 
         Task {
             do {
-                let result = try await transcriber.transcribeFile(audioPath: path)
-                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
-                    try transcriber.persistTranscript(
-                        sessionId: sessionId,
-                        text: text,
-                        language: result.language,
-                        durationSeconds: result.durationSeconds,
-                        source: "microphone"
-                    )
-                    Logger.app.info("AudioCapture: transcribed \(text.count) chars from mic")
+                try transcriber.enqueueTranscriptionJob(
+                    path: path,
+                    sessionId: sessionId,
+                    source: "microphone",
+                    segmentStartedAt: segmentStartedAt,
+                    segmentEndedAt: segmentEndedAt
+                )
+                let completed = try await transcriber.drainQueuedTranscriptions(limit: 1)
+                if completed > 0 {
+                    Logger.app.info("AudioCapture: drained \(completed) queued mic segment(s)")
                 }
             } catch {
-                Logger.app.error("AudioCapture: transcription failed: \(error.localizedDescription)")
+                Logger.app.error("AudioCapture: failed to queue transcription: \(error.localizedDescription)")
             }
-            try? FileManager.default.removeItem(atPath: path)
         }
     }
 }

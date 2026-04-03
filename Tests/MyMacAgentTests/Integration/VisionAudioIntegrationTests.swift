@@ -10,7 +10,8 @@ struct VisionAudioIntegrationTests {
         let db = try DatabaseManager(path: path)
         let runner = MigrationRunner(db: db, migrations: [
             V001_InitialSchema.migration,
-            V002_AudioTranscripts.migration
+            V002_AudioTranscripts.migration,
+            V004_AudioTranscriptDurability.migration
         ])
         try runner.runPending()
         return (db, path)

@@ -172,6 +172,33 @@ struct ObsidianExporterTests {
         #expect(timeline.contains("TestApp"))
     }
 
+    @Test("Generates hourly timeline using overlap semantics")
+    func generatesHourlyTimelineUsingWindowOverlap() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.test"), .text("TestApp")])
+        try db.execute("""
+            INSERT INTO sessions (id, app_id, started_at, ended_at, active_duration_ms)
+            VALUES (?, ?, ?, ?, ?)
+        """, params: [.text("s-hourly"), .integer(1),
+                      .text("2026-04-03T10:50:00Z"), .text("2026-04-03T11:20:00Z"),
+                      .integer(1_800_000)])
+
+        let exporter = ObsidianExporter(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T12:00:00Z")!
+        )
+        let timeline = try exporter.buildTimeline(for: window)
+
+        #expect(timeline.contains("11:00"))
+        #expect(timeline.contains("11:20"))
+        #expect(!timeline.contains("10:50"))
+    }
+
     @Test("formatDuration formats minutes to hours and minutes")
     func formatDuration() {
         #expect(ObsidianExporter.formatDuration(minutes: 134) == "2h 14m")
@@ -230,5 +257,44 @@ struct ObsidianExporterTests {
             WHERE job_type = ?
         """, params: [.text("obsidian_export_summary")])
         #expect(finished.first?["status"]?.textValue == "done")
+    }
+
+    @Test("cleanupSyncQueueHistory prunes stale completed rows")
+    func cleanupSyncQueueHistoryPrunesStaleRows() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO sync_queue (job_type, entity_id, status, finished_at)
+            VALUES (?, ?, 'done', ?)
+        """, params: [
+            .text("obsidian_export_summary"),
+            .text("old-done"),
+            .text("2026-03-01T00:00:00Z")
+        ])
+        try db.execute("""
+            INSERT INTO sync_queue (job_type, entity_id, status, finished_at)
+            VALUES (?, ?, 'failed', ?)
+        """, params: [
+            .text("audio_transcription"),
+            .text("old-failed"),
+            .text("2026-02-01T00:00:00Z")
+        ])
+        try db.execute("""
+            INSERT INTO sync_queue (job_type, entity_id, status, finished_at)
+            VALUES (?, ?, 'done', ?)
+        """, params: [
+            .text("obsidian_export_summary"),
+            .text("recent-done"),
+            .text(ISO8601DateFormatter().string(from: Date()))
+        ])
+
+        let exporter = ObsidianExporter(db: db, timeZone: utc)
+        let deleted = try exporter.cleanupSyncQueueHistory(doneOlderThanDays: 7, failedOlderThanDays: 30)
+        let remaining = try db.query("SELECT entity_id FROM sync_queue ORDER BY entity_id")
+
+        #expect(deleted == 2)
+        #expect(remaining.count == 1)
+        #expect(remaining.first?["entity_id"]?.textValue == "recent-done")
     }
 }

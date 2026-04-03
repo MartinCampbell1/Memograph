@@ -37,6 +37,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var currentFile: AVAudioFile?
     private var currentFilePath: String?
+    private var currentSegmentStartedAt: Date?
     private var segmentTimer: DispatchSourceTimer?
     private var statePollTimer: DispatchSourceTimer?
     private var pendingStopWorkItem: DispatchWorkItem?
@@ -381,13 +382,21 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
 
         if let path {
             if shouldPersistAudibleSegment {
-                transcribeAndCleanup(path: path, source: "system")
+                let segmentStart = currentSegmentStartedAt ?? Date()
+                let segmentEnd = Date()
+                queueTranscription(
+                    path: path,
+                    source: "system",
+                    segmentStartedAt: segmentStart,
+                    segmentEndedAt: segmentEnd
+                )
             } else {
                 try? FileManager.default.removeItem(atPath: path)
             }
         }
 
         currentCandidateSignature = nil
+        currentSegmentStartedAt = nil
         phase = .stopping
 
         guard let capturedStream else {
@@ -431,6 +440,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
             do {
                 currentFile = try AVAudioFile(forWriting: URL(fileURLWithPath: path), settings: format.settings)
                 currentFilePath = path
+                currentSegmentStartedAt = Date()
             } catch {
                 logger.error("SystemAudio: failed to create file: \(error.localizedDescription)")
             }
@@ -441,13 +451,20 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
         guard phase == .capturing else { return }
         let oldPath = currentFilePath
         let hadAudibleSamples = hasAudibleSamples
+        let segmentStart = currentSegmentStartedAt ?? Date()
+        let segmentEnd = Date()
         currentFile = nil
         startNewSegment()
         hasAudibleSamples = false
 
         if let path = oldPath {
             if hadAudibleSamples {
-                transcribeAndCleanup(path: path, source: "system")
+                queueTranscription(
+                    path: path,
+                    source: "system",
+                    segmentStartedAt: segmentStart,
+                    segmentEndedAt: segmentEnd
+                )
             } else {
                 try? FileManager.default.removeItem(atPath: path)
             }
@@ -460,6 +477,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
             try? FileManager.default.removeItem(atPath: path)
         }
         currentFilePath = nil
+        currentSegmentStartedAt = nil
         hasAudibleSamples = false
     }
 
@@ -583,29 +601,31 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
         }
     }
 
-    private func transcribeAndCleanup(path: String, source: String) {
+    private func queueTranscription(
+        path: String,
+        source: String,
+        segmentStartedAt: Date,
+        segmentEndedAt: Date
+    ) {
         let sessionId = sessionManager.currentSessionId
         let transcriber = self.transcriber
 
         Task {
             do {
-                let result = try await transcriber.transcribeFile(audioPath: path)
-                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
-                    try transcriber.persistTranscript(
-                        sessionId: sessionId,
-                        text: text,
-                        language: result.language,
-                        durationSeconds: result.durationSeconds,
-                        source: source
-                    )
-                    Logger.app.info("SystemAudio: transcribed \(text.count) chars")
+                try transcriber.enqueueTranscriptionJob(
+                    path: path,
+                    sessionId: sessionId,
+                    source: source,
+                    segmentStartedAt: segmentStartedAt,
+                    segmentEndedAt: segmentEndedAt
+                )
+                let completed = try await transcriber.drainQueuedTranscriptions(limit: 1)
+                if completed > 0 {
+                    Logger.app.info("SystemAudio: drained \(completed) queued audio segment(s)")
                 }
             } catch {
-                Logger.app.error("SystemAudio: transcription failed: \(error.localizedDescription)")
+                Logger.app.error("SystemAudio: failed to queue transcription: \(error.localizedDescription)")
             }
-
-            try? FileManager.default.removeItem(atPath: path)
         }
     }
 }

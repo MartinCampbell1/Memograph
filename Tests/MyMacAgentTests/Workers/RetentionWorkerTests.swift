@@ -9,7 +9,8 @@ struct RetentionWorkerTests {
         let runner = MigrationRunner(db: db, migrations: [
             V001_InitialSchema.migration,
             V002_AudioTranscripts.migration,
-            V003_PerformanceIndexes.migration
+            V003_PerformanceIndexes.migration,
+            V004_AudioTranscriptDurability.migration
         ])
         try runner.runPending()
         try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
@@ -167,5 +168,26 @@ struct RetentionWorkerTests {
         #expect(stats.totalOCRSnapshots >= 0)
         #expect(stats.totalSessionEvents >= 0)
         #expect(stats.totalAudioTranscripts >= 0)
+    }
+
+    @Test("runAll prunes stale sync queue history")
+    func prunesStaleSyncQueueRows() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO sync_queue (job_type, entity_id, status, finished_at)
+            VALUES (?, ?, 'done', ?)
+        """, params: [
+            .text("obsidian_export_summary"),
+            .text("old-sync-row"),
+            .text("2026-03-01T00:00:00Z")
+        ])
+
+        let worker = RetentionWorker(db: db, retentionDays: 30)
+        try worker.runAll()
+
+        let rows = try db.query("SELECT * FROM sync_queue WHERE entity_id = ?", params: [.text("old-sync-row")])
+        #expect(rows.isEmpty)
     }
 }

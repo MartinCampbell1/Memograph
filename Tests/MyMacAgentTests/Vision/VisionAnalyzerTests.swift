@@ -170,4 +170,39 @@ struct VisionAnalyzerTests {
         #expect(analyzedCount == 1)
         #expect(rows.first?["merged_text"]?.textValue == "Recovered screenshot text")
     }
+
+    @Test("window-scoped low-readability lookup only returns captures inside the summary window")
+    func findsLowReadabilityInsideWindowOnly() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("INSERT INTO apps (bundle_id, app_name) VALUES (?, ?)",
+            params: [.text("com.test"), .text("Test")])
+        try db.execute("INSERT INTO sessions (id, app_id, started_at) VALUES (?, ?, ?)",
+            params: [.text("s-window"), .integer(1), .text("2026-04-03T09:00:00Z")])
+
+        for (captureId, timestamp) in [("cap-before", "2026-04-03T09:05:00Z"), ("cap-inside", "2026-04-03T10:05:00Z")] {
+            try db.execute("""
+                INSERT INTO captures (id, session_id, timestamp, capture_type, image_path, sampling_mode)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, params: [.text(captureId), .text("s-window"), .text(timestamp),
+                          .text("window"), .text("/tmp/\(captureId).jpg"), .text("high_uncertainty")])
+            try db.execute("""
+                INSERT INTO context_snapshots (id, session_id, timestamp, readable_score, uncertainty_score, source_capture_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, params: [.text("ctx-\(captureId)"), .text("s-window"), .text(timestamp),
+                          .real(0.1), .real(0.9), .text(captureId)])
+        }
+
+        let analyzer = VisionAnalyzer(db: db)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        let captures = try analyzer.findLowReadabilityCaptures(in: window)
+        #expect(captures.count == 1)
+        #expect(captures[0].captureId == "cap-inside")
+    }
 }

@@ -11,7 +11,8 @@ struct Phase4IntegrationTests {
         let runner = MigrationRunner(db: db, migrations: [
             V001_InitialSchema.migration,
             V002_AudioTranscripts.migration,
-            V003_PerformanceIndexes.migration
+            V003_PerformanceIndexes.migration,
+            V004_AudioTranscriptDurability.migration
         ])
         try runner.runPending()
         return (db, path)

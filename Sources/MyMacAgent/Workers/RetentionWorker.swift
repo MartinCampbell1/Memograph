@@ -105,12 +105,19 @@ final class RetentionWorker {
 
         let cutoff = retentionCutoffISO8601()
         let countRows = try db.query(
-            "SELECT COUNT(*) as c FROM audio_transcripts WHERE timestamp < ?",
+            """
+            SELECT COUNT(*) as c
+            FROM audio_transcripts
+            WHERE COALESCE(segment_ended_at, persisted_at, timestamp) < ?
+            """,
             params: [.text(cutoff)]
         )
         let count = countRows.first?["c"]?.intValue ?? 0
 
-        try db.execute("DELETE FROM audio_transcripts WHERE timestamp < ?",
+        try db.execute("""
+            DELETE FROM audio_transcripts
+            WHERE COALESCE(segment_ended_at, persisted_at, timestamp) < ?
+        """,
             params: [.text(cutoff)])
 
         logger.info("Retention: deleted \(count) old audio transcripts")
@@ -160,8 +167,9 @@ final class RetentionWorker {
         let thinned = try thinHighFrequencyCaptures()
         let sessions = try cleanupOldSessions()
         let windows = try cleanupOrphanedWindows()
+        let syncQueueRows = try cleanupSyncQueueHistory()
 
-        if sessionEvents + audioTranscripts + context + ocr + ax + captures + thinned + sessions + windows > 0 {
+        if sessionEvents + audioTranscripts + context + ocr + ax + captures + thinned + sessions + windows + syncQueueRows > 0 {
             try? db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             try? db.execute("PRAGMA optimize")
         }
@@ -169,7 +177,7 @@ final class RetentionWorker {
         logger.info("""
             Retention complete: \(captures) captures, \(context) context, \(sessionEvents) events, \
             \(audioTranscripts) audio, \(ocr) OCR, \(ax) AX deleted, \(thinned) thinned, \
-            \(sessions) sessions and \(windows) windows pruned
+            \(sessions) sessions, \(windows) windows and \(syncQueueRows) sync queue rows pruned
         """)
     }
 
@@ -247,6 +255,46 @@ final class RetentionWorker {
               AND COALESCE(last_seen_at, first_seen_at, '1970-01-01T00:00:00Z') < ?
         """, params: [.text(cutoff)])
         return Int(count)
+    }
+
+    private func cleanupSyncQueueHistory(doneOlderThanDays: Int = 7, failedOlderThanDays: Int = 30) throws -> Int {
+        let now = Date()
+        let doneCutoff = ISO8601DateFormatter().string(
+            from: Calendar.current.date(byAdding: .day, value: -doneOlderThanDays, to: now) ?? now
+        )
+        let failedCutoff = ISO8601DateFormatter().string(
+            from: Calendar.current.date(byAdding: .day, value: -failedOlderThanDays, to: now) ?? now
+        )
+
+        let doneCount = try db.query("""
+            SELECT COUNT(*) as c
+            FROM sync_queue
+            WHERE status = 'done'
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        """, params: [.text(doneCutoff)]).first?["c"]?.intValue ?? 0
+        let failedCount = try db.query("""
+            SELECT COUNT(*) as c
+            FROM sync_queue
+            WHERE status = 'failed'
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        """, params: [.text(failedCutoff)]).first?["c"]?.intValue ?? 0
+
+        try db.execute("""
+            DELETE FROM sync_queue
+            WHERE status = 'done'
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        """, params: [.text(doneCutoff)])
+        try db.execute("""
+            DELETE FROM sync_queue
+            WHERE status = 'failed'
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+        """, params: [.text(failedCutoff)])
+
+        return Int(doneCount + failedCount)
     }
 
     private func retentionCutoffISO8601() -> String {
