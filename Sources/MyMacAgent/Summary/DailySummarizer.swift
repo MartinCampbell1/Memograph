@@ -39,6 +39,62 @@ final class DailySummarizer: @unchecked Sendable {
         self.now = now
     }
 
+    func sessionCount(for date: String) throws -> Int {
+        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+            return 0
+        }
+
+        let rows = try db.query("""
+            SELECT COUNT(*) as count
+            FROM sessions
+            WHERE started_at >= ? AND started_at < ?
+        """, params: [.text(range.start), .text(range.end)])
+
+        return rows.first?["count"]?.intValue.flatMap(Int.init) ?? 0
+    }
+
+    func summaryRecord(for date: String) throws -> DailySummaryRecord? {
+        let rows = try db.query("""
+            SELECT *
+            FROM daily_summaries
+            WHERE date = ?
+            LIMIT 1
+        """, params: [.text(date)])
+
+        guard let row = rows.first else { return nil }
+        return DailySummaryRecord(row: row)
+    }
+
+    func shouldGenerateSummary(
+        for date: String,
+        currentLocalDate: String,
+        minimumIntervalMinutes: Int
+    ) throws -> Bool {
+        let existingSummary = try summaryRecord(for: date)
+        let sessionCount = try sessionCount(for: date)
+
+        guard let existingSummary else {
+            return true
+        }
+
+        if date != currentLocalDate {
+            return false
+        }
+
+        if sessionCount == 0 {
+            return false
+        }
+
+        guard let generatedAt = existingSummary.generatedAt,
+              let generatedDate = dateSupport.parseDateTime(generatedAt) else {
+            return true
+        }
+
+        let minimumInterval = max(15, minimumIntervalMinutes)
+        let elapsed = now().timeIntervalSince(generatedDate)
+        return elapsed >= Double(minimumInterval * 60)
+    }
+
     func collectSessionData(for date: String) throws -> [SessionData] {
         guard let range = dateSupport.utcRange(forLocalDate: date) else {
             logger.error("Invalid local date requested for summarizer: \(date)")
@@ -281,6 +337,69 @@ final class DailySummarizer: @unchecked Sendable {
         return summary
     }
 
+    func buildFallbackSummary(for date: String, failureReason: String? = nil) throws -> DailySummaryRecord {
+        let sessions = try collectSessionData(for: date)
+        let totalMinutes = sessions.reduce(0) { $0 + Int($1.durationMs / 60000) }
+        let distinctApps = Array(Set(sessions.map(\.appName))).sorted()
+        let appDurations = Dictionary(grouping: sessions, by: \.appName)
+            .mapValues { $0.reduce(0) { $0 + Int($1.durationMs / 60000) } }
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value {
+                    return lhs.key < rhs.key
+                }
+                return lhs.value > rhs.value
+            }
+        let appDurationPayload = appDurations.map { ["name": $0.key, "duration_min": $0.value] as [String: Any] }
+
+        let topAppSummary = appDurations
+            .prefix(3)
+            .map { "\($0.key) (\($0.value)m)" }
+            .joined(separator: ", ")
+
+        let summaryText: String
+        if sessions.isEmpty {
+            summaryText = """
+            No recorded activity for \(date). Memograph generated a local fallback report because the configured summary provider did not return a usable result.
+            """
+        } else {
+            let reasonSuffix: String
+            if let failureReason,
+               !failureReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                reasonSuffix = " External summarization failed, so this note was generated locally. Reason: \(failureReason)"
+            } else {
+                reasonSuffix = " External summarization failed, so this note was generated locally."
+            }
+
+            summaryText = """
+            Recorded \(sessions.count) sessions across \(distinctApps.count) apps for about \(totalMinutes) active minutes on \(date). Main apps: \(topAppSummary.isEmpty ? "none" : topAppSummary).\(reasonSuffix)
+            """
+        }
+
+        let topics = Array(distinctApps.prefix(8))
+        let suggestedNotes = Array(appDurations.prefix(5).map(\.key))
+        let nowString = ISO8601DateFormatter().string(from: now())
+
+        let summary = DailySummaryRecord(
+            date: date,
+            summaryText: summaryText,
+            topAppsJson: jsonString(appDurationPayload),
+            topTopicsJson: jsonString(topics),
+            aiSessionsJson: nil,
+            contextSwitchesJson: "{\"count\":\(sessions.count)}",
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: jsonString(suggestedNotes),
+            generatedAt: nowString,
+            modelName: "local-fallback",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "fallback"
+        )
+
+        try persistSummary(summary)
+        logger.info("Daily fallback summary saved for \(date)")
+        return summary
+    }
+
     func persistSummary(_ summary: DailySummaryRecord) throws {
         try db.execute("""
             INSERT OR REPLACE INTO daily_summaries
@@ -362,5 +481,13 @@ final class DailySummarizer: @unchecked Sendable {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : String($0) }
             .filter { !$0.isEmpty }
+    }
+
+    private func jsonString(_ object: Any) -> String? {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 }

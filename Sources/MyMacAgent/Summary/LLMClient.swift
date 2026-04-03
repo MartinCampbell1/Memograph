@@ -34,7 +34,8 @@ final class LLMClient {
                 model: settings.summaryLocalModel
             )
         case .external:
-            let key = apiKeyOverride ?? settings.externalAPIKey
+            let key = (apiKeyOverride ?? settings.externalAPIKey)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { return nil }
             return LLMClient(
                 apiKey: key,

@@ -16,23 +16,36 @@ struct LowReadabilityCapture {
 final class VisionAnalyzer: @unchecked Sendable {
     private let db: DatabaseManager
     private let logger = Logger.ocr
+    private let dateSupport: LocalDateSupport
+    private let analyzeImageOverride: ((String) async throws -> String)?
 
-    init(db: DatabaseManager) {
+    init(
+        db: DatabaseManager,
+        timeZone: TimeZone = .autoupdatingCurrent,
+        analyzeImageOverride: ((String) async throws -> String)? = nil
+    ) {
         self.db = db
+        self.dateSupport = LocalDateSupport(timeZone: timeZone)
+        self.analyzeImageOverride = analyzeImageOverride
     }
 
     func findLowReadabilityCaptures(for date: String, threshold: Double = 0.3) throws -> [LowReadabilityCapture] {
+        guard let range = dateSupport.utcRange(forLocalDate: date) else {
+            logger.error("Vision: invalid local date requested: \(date)")
+            return []
+        }
+
         let rows = try db.query("""
             SELECT cs.id as ctx_id, cs.source_capture_id, cs.readable_score,
                    cs.app_name, cs.window_title, c.image_path
             FROM context_snapshots cs
             LEFT JOIN captures c ON cs.source_capture_id = c.id
-            WHERE cs.timestamp LIKE ?
+            WHERE cs.timestamp >= ? AND cs.timestamp < ?
               AND cs.readable_score < ?
               AND cs.merged_text IS NULL
             ORDER BY cs.timestamp
             LIMIT 20
-        """, params: [.text("\(date)%"), .real(threshold)])
+        """, params: [.text(range.start), .text(range.end), .real(threshold)])
 
         return rows.compactMap { row -> LowReadabilityCapture? in
             guard let ctxId = row["ctx_id"]?.textValue,
@@ -49,6 +62,10 @@ final class VisionAnalyzer: @unchecked Sendable {
     }
 
     func analyzeImage(at path: String) async throws -> String {
+        if let analyzeImageOverride {
+            return try await analyzeImageOverride(path)
+        }
+
         guard FileManager.default.fileExists(atPath: path),
               let imageData = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
             return ""
@@ -146,10 +163,14 @@ final class VisionAnalyzer: @unchecked Sendable {
 
         for capture in captures {
             guard let imagePath = capture.imagePath else { continue }
-            let description = try await analyzeImage(at: imagePath)
-            if !description.isEmpty {
-                try persistVisionResult(contextId: capture.contextId, description: description)
-                analyzed += 1
+            do {
+                let description = try await analyzeImage(at: imagePath)
+                if !description.isEmpty {
+                    try persistVisionResult(contextId: capture.contextId, description: description)
+                    analyzed += 1
+                }
+            } catch {
+                logger.error("Vision: failed for capture \(capture.captureId, privacy: .public): \(error.localizedDescription)")
             }
         }
 

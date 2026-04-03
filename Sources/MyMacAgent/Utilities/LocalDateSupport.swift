@@ -20,18 +20,40 @@ struct LocalDateSupport {
     }
 
     func localDateString(from isoString: String) -> String? {
-        guard let date = parseISO8601(isoString) else { return nil }
+        guard let date = parseDateTime(isoString) else { return nil }
         return localDayFormatter.string(from: date)
     }
 
     func localTimeString(from isoString: String) -> String {
-        guard let date = parseISO8601(isoString) else { return isoString }
+        guard let date = parseDateTime(isoString) else { return isoString }
         return localTimeFormatter.string(from: date)
     }
 
     func localDateTimeString(from isoString: String) -> String {
-        guard let date = parseISO8601(isoString) else { return isoString }
+        guard let date = parseDateTime(isoString) else { return isoString }
         return localDateTimeFormatter.string(from: date)
+    }
+
+    func offsetLocalDateString(_ dateString: String, by days: Int) -> String? {
+        guard let date = localDayFormatter.date(from: dateString),
+              let shifted = calendar.date(byAdding: .day, value: days, to: date) else {
+            return nil
+        }
+        return localDayFormatter.string(from: shifted)
+    }
+
+    func parseDateTime(_ value: String) -> Date? {
+        if let isoDate = parseISO8601(value) {
+            return isoDate
+        }
+
+        for formatter in sqliteFormatters {
+            if let date = formatter.date(from: value) {
+                return date
+            }
+        }
+
+        return nil
     }
 
     func effectiveDurationMs(
@@ -40,11 +62,11 @@ struct LocalDateSupport {
         storedActiveDurationMs: Int64,
         now: Date = Date()
     ) -> Int64 {
-        guard let startDate = parseISO8601(startedAt) else {
+        guard let startDate = parseDateTime(startedAt) else {
             return storedActiveDurationMs
         }
 
-        let endDate = endedAt.flatMap(parseISO8601) ?? now
+        let endDate = endedAt.flatMap(parseDateTime) ?? now
         let computedDurationMs = max(0, Int64(endDate.timeIntervalSince(startDate) * 1000))
         return max(storedActiveDurationMs, computedDurationMs)
     }
@@ -84,6 +106,25 @@ struct LocalDateSupport {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
+    }
+
+    private var sqliteFormatters: [DateFormatter] {
+        let patterns = [
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss.SSS",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS"
+        ]
+
+        return patterns.flatMap { pattern in
+            [timeZone, TimeZone(secondsFromGMT: 0) ?? timeZone].map { zone in
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = zone
+                formatter.dateFormat = pattern
+                return formatter
+            }
+        }
     }
 
     private func parseISO8601(_ value: String) -> Date? {

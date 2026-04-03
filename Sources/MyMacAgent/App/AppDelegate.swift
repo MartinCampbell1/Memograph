@@ -4,6 +4,7 @@ import os
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger.app
+    private let dateSupport = LocalDateSupport()
     private(set) var databaseManager: DatabaseManager?
     private var appMonitor: AppMonitor?
     private var windowMonitor: WindowMonitor?
@@ -32,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var captureHashTracker = CaptureHashTracker()
     private let captureGate = CaptureGate(maxConcurrent: 1)
     private var privacyGuard = PrivacyGuard.fromSettings()
+    private var summaryDatesInFlight = Set<String>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.applicationIconImage = AppIconArtwork.makeImage()
@@ -60,6 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         autoSummaryTimer?.invalidate()
         autoSummaryTimer = nil
         retentionTimer?.invalidate()
@@ -93,6 +97,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(handleDeleteAllLocalData),
             name: .deleteAllLocalDataRequested,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationDidBecomeActive),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemDidWake),
+            name: NSWorkspace.didWakeNotification,
             object: nil
         )
     }
@@ -194,24 +210,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = AppSettings()
         retentionWorker = RetentionWorker(db: db, retentionDays: settings.retentionDays)
 
-        // Run retention daily
-        retentionTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                try? self?.retentionWorker?.runAll()
-            }
-        }
+        scheduleRetentionTimer()
 
         // Run once on startup
         try? retentionWorker?.runAll()
 
-        // Auto-generate summary every hour if user is active
-        autoSummaryTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.autoGenerateSummaryIfActive()
-            }
+        scheduleAutoSummaryTimer()
+        Task { @MainActor [weak self] in
+            await self?.generatePendingDailySummaries(reason: "startup")
         }
 
-        logger.info("Phase 4 initialized (retention, hourly auto-summary)")
+        logger.info("Phase 4 initialized (retention, scheduled auto-summary)")
     }
 
     private func initializePhase5() {
@@ -238,22 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var isAudioRecording: Bool { audioCaptureEngine?.recording ?? false }
 
     private func autoGenerateSummaryIfActive() {
-        // Only generate if user was active (not idle) and we have an API key
-        guard let idleDetector, !idleDetector.isIdle else {
-            logger.info("Skipping auto-summary: user is idle")
-            return
+        Task { @MainActor [weak self] in
+            await self?.generatePendingDailySummaries(reason: "timer")
         }
-        let settings = AppSettings()
-        guard settings.resolvedSummaryProvider != .disabled else {
-            logger.info("Skipping auto-summary: summary provider is disabled")
-            return
-        }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        let today = formatter.string(from: Date())
-
-        generateDailySummary(for: today, apiKey: settings.externalAPIKey)
-        logger.info("Auto-summary triggered for \(today)")
     }
 
     private func performCapture(mode: UncertaintyMode) {
@@ -391,29 +387,138 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func generateDailySummary(for date: String, apiKey: String? = nil) {
-        let analyzer = visionAnalyzer
         Task { @MainActor in
+            await runDailySummary(for: date, apiKey: apiKey)
+        }
+    }
+
+    private func runDailySummary(for date: String, apiKey: String? = nil) async {
+        guard !summaryDatesInFlight.contains(date) else {
+            logger.info("Skipping summary generation for \(date): already running")
+            return
+        }
+
+        summaryDatesInFlight.insert(date)
+        defer { summaryDatesInFlight.remove(date) }
+
+        guard let summarizer = dailySummarizer else {
+            logger.error("Daily summary failed: summarizer is not initialized")
+            return
+        }
+
+        if let analyzer = visionAnalyzer {
             do {
-                let settings = AppSettings()
-                guard let client = LLMClient.client(for: settings, apiKeyOverride: apiKey) else {
-                    logger.info("Skipping summary generation: no configured summary provider")
-                    return
-                }
-                if let analyzer {
-                    let count = try await analyzer.analyzeAllLowReadability(for: date)
-                    if count > 0 {
-                        logger.info("Analyzed \(count) low-readability screenshots before summary")
-                    }
-                }
-                guard let summarizer = dailySummarizer else { return }
-                let summary = try await summarizer.summarize(for: date, using: client)
-                if let exporter = obsidianExporter {
-                    let path = try exporter.exportDailyNote(summary: summary)
-                    logger.info("Daily note exported to \(path)")
+                let count = try await analyzer.analyzeAllLowReadability(for: date)
+                if count > 0 {
+                    logger.info("Analyzed \(count) low-readability screenshots before summary")
                 }
             } catch {
-                logger.error("Daily summary failed: \(error.localizedDescription)")
+                logger.error("Vision pre-pass failed for \(date): \(error.localizedDescription)")
             }
+        }
+
+        let settings = AppSettings()
+        let summary: DailySummaryRecord
+
+        do {
+            if let client = LLMClient.client(for: settings, apiKeyOverride: apiKey) {
+                summary = try await summarizer.summarize(for: date, using: client)
+            } else {
+                logger.info("No summary provider configured for \(date), writing local fallback report")
+                summary = try summarizer.buildFallbackSummary(
+                    for: date,
+                    failureReason: "No configured summary provider"
+                )
+            }
+        } catch {
+            let sanitizedReason = sanitizedSummaryFailureReason(for: error)
+            logger.error("Daily summary model step failed for \(date): \(sanitizedReason, privacy: .public)")
+            do {
+                summary = try summarizer.buildFallbackSummary(
+                    for: date,
+                    failureReason: sanitizedReason
+                )
+            } catch {
+                logger.error("Daily summary failed: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        if let exporter = obsidianExporter {
+            do {
+                let path = try exporter.exportDailyNote(summary: summary)
+                logger.info("Daily note exported to \(path)")
+            } catch {
+                logger.error("Daily summary export failed for \(date): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func generatePendingDailySummaries(reason: String) async {
+        let settings = AppSettings()
+        guard settings.resolvedSummaryProvider != .disabled else {
+            logger.info("Skipping auto-summary: summary provider is disabled")
+            return
+        }
+        guard let summarizer = dailySummarizer else { return }
+
+        let today = dateSupport.currentLocalDateString()
+        let dates = [dateSupport.offsetLocalDateString(today, by: -1), today].compactMap { $0 }
+
+        for date in dates {
+            do {
+                guard try summarizer.shouldGenerateSummary(
+                    for: date,
+                    currentLocalDate: today,
+                    minimumIntervalMinutes: settings.summaryIntervalMinutes
+                ) else {
+                    continue
+                }
+
+                logger.info("Auto-summary catch-up (\(reason, privacy: .public)) for \(date)")
+                await runDailySummary(for: date, apiKey: settings.externalAPIKey)
+            } catch {
+                logger.error("Failed to evaluate summary schedule for \(date): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func scheduleRetentionTimer() {
+        retentionTimer?.invalidate()
+        retentionTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                try? self?.retentionWorker?.runAll()
+            }
+        }
+    }
+
+    private func scheduleAutoSummaryTimer() {
+        autoSummaryTimer?.invalidate()
+        let minutes = max(15, AppSettings().summaryIntervalMinutes)
+        let interval = TimeInterval(minutes * 60)
+        autoSummaryTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.autoGenerateSummaryIfActive()
+            }
+        }
+        autoSummaryTimer?.tolerance = min(60, interval * 0.1)
+        logger.info("Auto-summary timer scheduled every \(minutes) minutes")
+    }
+
+    private func sanitizedSummaryFailureReason(for error: Error) -> String {
+        guard let llmError = error as? LLMError else {
+            return error.localizedDescription
+        }
+
+        switch llmError {
+        case .httpError(let statusCode, _):
+            return "HTTP \(statusCode)"
+        case .invalidResponse:
+            return "Invalid HTTP response"
+        case .parseError(let message):
+            return "Parse error: \(message)"
+        case .noApiKey:
+            return "No API key configured"
         }
     }
 
@@ -481,7 +586,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ocrPipeline = OCRPipeline(provider: makeOCRProvider(settings: settings), db: db)
         }
 
+        scheduleAutoSummaryTimer()
         configureAudioEngines(forceRestart: true)
+        Task { @MainActor [weak self] in
+            await self?.generatePendingDailySummaries(reason: "settings")
+        }
     }
 
     @objc
@@ -519,6 +628,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         initializePhase3()
         initializePhase4()
         initializePhase5()
+    }
+
+    @objc
+    private func handleApplicationDidBecomeActive() {
+        Task { @MainActor [weak self] in
+            await self?.generatePendingDailySummaries(reason: "activation")
+        }
+    }
+
+    @objc
+    private func handleSystemDidWake() {
+        Task { @MainActor [weak self] in
+            await self?.generatePendingDailySummaries(reason: "wake")
+        }
     }
 }
 

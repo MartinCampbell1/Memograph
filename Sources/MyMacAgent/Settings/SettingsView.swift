@@ -662,6 +662,8 @@ struct SettingsView: View {
 
         settings.microphoneCaptureEnabled = microphoneCaptureEnabled
         settings.systemAudioCaptureEnabled = systemAudioCaptureEnabled
+        settings.experimentalAudioOptInConfirmed =
+            microphoneCaptureEnabled || systemAudioCaptureEnabled
         settings.audioPythonCommand = audioPythonCommand
         settings.audioModelName = audioModelName
 

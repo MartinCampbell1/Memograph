@@ -177,4 +177,55 @@ struct DailySummarizerTests {
         #expect(parsed.suggestedNotes.count == 2)
         #expect(parsed.continueTomorrow != nil)
     }
+
+    @Test("buildFallbackSummary creates local report when LLM fails")
+    func buildFallbackSummary() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try seedTestData(db: db)
+
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
+        let summary = try summarizer.buildFallbackSummary(
+            for: "2026-04-02",
+            failureReason: "HTTP 500"
+        )
+
+        #expect(summary.generationStatus == "fallback")
+        #expect(summary.modelName == "local-fallback")
+        #expect(summary.summaryText?.contains("HTTP 500") == true)
+    }
+
+    @Test("shouldGenerateSummary skips previous day when summary already exists")
+    func shouldGenerateSummaryForPreviousDay() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try seedTestData(db: db)
+
+        let summarizer = DailySummarizer(db: db, timeZone: utc)
+        try summarizer.persistSummary(
+            DailySummaryRecord(
+                date: "2026-04-02",
+                summaryText: "Done",
+                topAppsJson: nil,
+                topTopicsJson: nil,
+                aiSessionsJson: nil,
+                contextSwitchesJson: nil,
+                unfinishedItemsJson: nil,
+                suggestedNotesJson: nil,
+                generatedAt: "2026-04-02T23:00:00Z",
+                modelName: "test",
+                tokenUsageInput: 0,
+                tokenUsageOutput: 0,
+                generationStatus: "success"
+            )
+        )
+
+        let shouldGenerate = try summarizer.shouldGenerateSummary(
+            for: "2026-04-02",
+            currentLocalDate: "2026-04-03",
+            minimumIntervalMinutes: 60
+        )
+
+        #expect(!shouldGenerate)
+    }
 }

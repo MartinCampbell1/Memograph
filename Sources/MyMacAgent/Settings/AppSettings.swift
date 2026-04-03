@@ -92,6 +92,7 @@ struct AppSettings {
     private let defaults: UserDefaults
     private let credentialsStore: any CredentialsStore
     private static let hasExternalAPIKeyKey = "hasExternalAPIKey"
+    private static let experimentalAudioOptInConfirmedKey = "experimentalAudioOptInConfirmed"
 
     static let sharedCredentialsStore: any CredentialsStore =
         KeychainCredentialsStore(service: "com.memograph.credentials")
@@ -131,18 +132,23 @@ struct AppSettings {
         self.defaults = defaults
         self.credentialsStore = credentialsStore
         migrateLegacyCredentialsIfNeeded()
+        migrateExperimentalAudioOptInIfNeeded()
     }
 
     // MARK: - API
 
     var externalAPIKey: String {
-        get { credentialsStore.string(for: "externalAPIKey") ?? "" }
+        get {
+            (credentialsStore.string(for: "externalAPIKey") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         set {
-            if newValue.isEmpty {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
                 credentialsStore.removeValue(for: "externalAPIKey")
                 defaults.set(false, forKey: Self.hasExternalAPIKeyKey)
             } else {
-                credentialsStore.set(newValue, for: "externalAPIKey")
+                credentialsStore.set(trimmed, for: "externalAPIKey")
                 defaults.set(true, forKey: Self.hasExternalAPIKeyKey)
             }
         }
@@ -369,6 +375,11 @@ struct AppSettings {
         set { defaults.set(newValue, forKey: "audioModelName") }
     }
 
+    var experimentalAudioOptInConfirmed: Bool {
+        get { defaults.bool(forKey: Self.experimentalAudioOptInConfirmedKey) }
+        set { defaults.set(newValue, forKey: Self.experimentalAudioOptInConfirmedKey) }
+    }
+
     // MARK: - Prompts (editable by user)
 
     static let defaultSystemPrompt = """
@@ -438,6 +449,23 @@ struct AppSettings {
         }
         defaults.set(true, forKey: Self.hasExternalAPIKeyKey)
         defaults.removeObject(forKey: "openRouterApiKey")
+    }
+
+    private func migrateExperimentalAudioOptInIfNeeded() {
+        guard defaults.object(forKey: Self.experimentalAudioOptInConfirmedKey) == nil else {
+            return
+        }
+
+        let hadExperimentalAudioEnabled =
+            defaults.bool(forKey: "microphoneCaptureEnabled")
+            || defaults.bool(forKey: "systemAudioCaptureEnabled")
+
+        if hadExperimentalAudioEnabled {
+            defaults.set(false, forKey: "microphoneCaptureEnabled")
+            defaults.set(false, forKey: "systemAudioCaptureEnabled")
+        }
+
+        defaults.set(false, forKey: Self.experimentalAudioOptInConfirmedKey)
     }
 
     private func nonZeroDouble(forKey key: String, defaultValue: Double) -> Double {

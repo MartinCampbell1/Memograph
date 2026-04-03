@@ -132,4 +132,29 @@ struct Phase4IntegrationTests {
         #expect(loaded.retentionDays == 7)
         #expect(loaded.hasApiKey)
     }
+
+    @Test("Experimental audio is reset until user explicitly opts back in")
+    func experimentalAudioRequiresExplicitOptIn() {
+        let suiteName = "test_\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = InMemoryCredentialsStore()
+
+        defaults.set(true, forKey: "microphoneCaptureEnabled")
+        defaults.set(true, forKey: "systemAudioCaptureEnabled")
+
+        let migrated = AppSettings(defaults: defaults, credentialsStore: store)
+        #expect(!migrated.microphoneCaptureEnabled)
+        #expect(!migrated.systemAudioCaptureEnabled)
+        #expect(!migrated.experimentalAudioOptInConfirmed)
+
+        var settings = migrated
+        settings.microphoneCaptureEnabled = true
+        settings.systemAudioCaptureEnabled = false
+        settings.experimentalAudioOptInConfirmed = true
+
+        let reloaded = AppSettings(defaults: defaults, credentialsStore: store)
+        #expect(reloaded.microphoneCaptureEnabled)
+        #expect(!reloaded.systemAudioCaptureEnabled)
+        #expect(reloaded.experimentalAudioOptInConfirmed)
+    }
 }
