@@ -158,30 +158,24 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private func currentOutputObservation() -> OutputObservation {
         let processes = AudioProcessInspector.fetchProcesses()
         if !processes.isEmpty {
-            let externalProcesses = processes.filter {
-                $0.pid != currentPID &&
-                $0.isRunningOutput &&
-                $0.outputDeviceIDs.contains(outputDeviceID)
-            }
-
-            let signature = externalProcesses.isEmpty
-                ? nil
-                : externalProcesses
-                    .map { String($0.pid) }
-                    .sorted()
-                    .joined(separator: ",")
+            let hasExternalOutput = SystemAudioUsageEvaluator.hasExternalProcessUsingOutputDevice(
+                processes,
+                outputDeviceID: outputDeviceID,
+                currentPID: currentPID
+            )
+            let signature = SystemAudioUsageEvaluator.canonicalSignature(
+                processes,
+                outputDeviceID: outputDeviceID,
+                currentPID: currentPID
+            )
 
             return OutputObservation(
-                hasExternalOutput: !externalProcesses.isEmpty,
+                hasExternalOutput: hasExternalOutput,
                 signature: signature
             )
         }
 
-        let fallbackRunning = !isCapturing && isOutputRunningSomewhere()
-        return OutputObservation(
-            hasExternalOutput: fallbackRunning,
-            signature: fallbackRunning ? "device-\(outputDeviceID)" : nil
-        )
+        return OutputObservation(hasExternalOutput: false, signature: nil)
     }
 
     private func resolveDefaultOutputDevice() -> AudioDeviceID? {
@@ -199,18 +193,6 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
             return nil
         }
         return deviceID
-    }
-
-    private func isOutputRunningSomewhere() -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var isRunning: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioObjectGetPropertyData(outputDeviceID, &address, 0, nil, &size, &isRunning)
-        return status == noErr && isRunning != 0
     }
 
     // MARK: - Capture control

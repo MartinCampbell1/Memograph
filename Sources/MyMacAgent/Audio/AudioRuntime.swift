@@ -1,3 +1,4 @@
+import AppKit
 import CoreAudio
 import Foundation
 
@@ -126,6 +127,7 @@ enum AudioRuntimeResolver {
 
 struct AudioProcessInfo {
     let pid: pid_t
+    let bundleID: String?
     let inputDeviceIDs: [AudioDeviceID]
     let isRunningInput: Bool
     let outputDeviceIDs: [AudioDeviceID]
@@ -133,12 +135,14 @@ struct AudioProcessInfo {
 
     init(
         pid: pid_t,
+        bundleID: String? = nil,
         inputDeviceIDs: [AudioDeviceID] = [],
         isRunningInput: Bool = false,
         outputDeviceIDs: [AudioDeviceID] = [],
         isRunningOutput: Bool = false
     ) {
         self.pid = pid
+        self.bundleID = bundleID
         self.inputDeviceIDs = inputDeviceIDs
         self.isRunningInput = isRunningInput
         self.outputDeviceIDs = outputDeviceIDs
@@ -183,6 +187,7 @@ enum AudioProcessInspector {
 
             return AudioProcessInfo(
                 pid: pid_t(pid),
+                bundleID: NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier,
                 inputDeviceIDs: inputDevices,
                 isRunningInput: isRunningInput != 0,
                 outputDeviceIDs: outputDevices,
@@ -249,16 +254,50 @@ enum MicrophoneUsageEvaluator {
 }
 
 enum SystemAudioUsageEvaluator {
+    static func significantExternalProcesses(
+        _ processes: [AudioProcessInfo],
+        outputDeviceID: AudioDeviceID,
+        currentPID: pid_t = getpid()
+    ) -> [AudioProcessInfo] {
+        processes.filter { process in
+            process.pid != currentPID &&
+            process.isRunningOutput &&
+            process.outputDeviceIDs.contains(outputDeviceID) &&
+            !(process.bundleID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
+    }
+
     static func hasExternalProcessUsingOutputDevice(
         _ processes: [AudioProcessInfo],
         outputDeviceID: AudioDeviceID,
         currentPID: pid_t = getpid()
     ) -> Bool {
-        processes.contains { process in
-            process.pid != currentPID &&
-            process.isRunningOutput &&
-            process.outputDeviceIDs.contains(outputDeviceID)
+        !significantExternalProcesses(
+            processes,
+            outputDeviceID: outputDeviceID,
+            currentPID: currentPID
+        ).isEmpty
+    }
+
+    static func canonicalSignature(
+        _ processes: [AudioProcessInfo],
+        outputDeviceID: AudioDeviceID,
+        currentPID: pid_t = getpid()
+    ) -> String? {
+        let bundleIDs = significantExternalProcesses(
+            processes,
+            outputDeviceID: outputDeviceID,
+            currentPID: currentPID
+        )
+        .compactMap(\.bundleID)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+
+        guard !bundleIDs.isEmpty else {
+            return nil
         }
+
+        return Array(Set(bundleIDs)).sorted().joined(separator: "|")
     }
 }
 

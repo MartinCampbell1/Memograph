@@ -83,8 +83,8 @@ struct SystemAudioUsageEvaluatorTests {
     func detectsExternalProcess() {
         let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
         let processes = [
-            AudioProcessInfo(pid: currentPID, outputDeviceIDs: [21], isRunningOutput: true),
-            AudioProcessInfo(pid: currentPID + 1, outputDeviceIDs: [21], isRunningOutput: true)
+            AudioProcessInfo(pid: currentPID, bundleID: "com.memograph.app", outputDeviceIDs: [21], isRunningOutput: true),
+            AudioProcessInfo(pid: currentPID + 1, bundleID: "com.apple.Safari", outputDeviceIDs: [21], isRunningOutput: true)
         ]
 
         #expect(
@@ -93,6 +93,40 @@ struct SystemAudioUsageEvaluatorTests {
                 outputDeviceID: 21,
                 currentPID: currentPID
             )
+        )
+    }
+
+    @Test("Ignores output helpers without bundle identifiers")
+    func ignoresUnbundledHelpers() {
+        let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
+        let processes = [
+            AudioProcessInfo(pid: currentPID + 1, bundleID: nil, outputDeviceIDs: [21], isRunningOutput: true)
+        ]
+
+        #expect(
+            !SystemAudioUsageEvaluator.hasExternalProcessUsingOutputDevice(
+                processes,
+                outputDeviceID: 21,
+                currentPID: currentPID
+            )
+        )
+    }
+
+    @Test("Canonical output signature is stable across helper pid churn")
+    func canonicalSignatureUsesBundleIDs() {
+        let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
+        let processes = [
+            AudioProcessInfo(pid: currentPID + 10, bundleID: "com.apple.WebKit.GPU", outputDeviceIDs: [21], isRunningOutput: true),
+            AudioProcessInfo(pid: currentPID + 11, bundleID: "com.apple.WebKit.GPU", outputDeviceIDs: [21], isRunningOutput: true),
+            AudioProcessInfo(pid: currentPID + 12, bundleID: nil, outputDeviceIDs: [21], isRunningOutput: true)
+        ]
+
+        #expect(
+            SystemAudioUsageEvaluator.canonicalSignature(
+                processes,
+                outputDeviceID: 21,
+                currentPID: currentPID
+            ) == "com.apple.WebKit.GPU"
         )
     }
 
@@ -108,8 +142,8 @@ struct SystemAudioUsageEvaluatorTests {
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
-                outputSignature: "1255,2347",
-                suppressedSilentSignature: "1255,2347",
+                outputSignature: "com.apple.WebKit.GPU",
+                suppressedSilentSignature: "com.apple.WebKit.GPU",
                 suppressedSilentSignatureUntil: now.addingTimeInterval(30),
                 globalSilentCooldownUntil: .distantPast
             )
@@ -128,8 +162,8 @@ struct SystemAudioUsageEvaluatorTests {
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
-                outputSignature: "4444",
-                suppressedSilentSignature: "1255,2347",
+                outputSignature: "com.apple.Safari",
+                suppressedSilentSignature: "com.apple.WebKit.GPU",
                 suppressedSilentSignatureUntil: now.addingTimeInterval(30),
                 globalSilentCooldownUntil: .distantPast
             )
@@ -148,8 +182,8 @@ struct SystemAudioUsageEvaluatorTests {
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
-                outputSignature: "1255,2347",
-                suppressedSilentSignature: "1255,2347",
+                outputSignature: "com.apple.WebKit.GPU",
+                suppressedSilentSignature: "com.apple.WebKit.GPU",
                 suppressedSilentSignatureUntil: now.addingTimeInterval(-1),
                 globalSilentCooldownUntil: .distantPast
             )
@@ -168,7 +202,7 @@ struct SystemAudioUsageEvaluatorTests {
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-1),
                 minimumStableObservation: 3,
-                outputSignature: "1255,2347",
+                outputSignature: "com.apple.WebKit.GPU",
                 suppressedSilentSignature: nil,
                 suppressedSilentSignatureUntil: .distantPast,
                 globalSilentCooldownUntil: .distantPast
@@ -188,8 +222,8 @@ struct SystemAudioUsageEvaluatorTests {
                 retryCaptureAfter: .distantPast,
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
-                outputSignature: "new-renderer",
-                suppressedSilentSignature: "old-renderer",
+                outputSignature: "com.apple.Safari",
+                suppressedSilentSignature: "com.apple.WebKit.GPU",
                 suppressedSilentSignatureUntil: now.addingTimeInterval(-1),
                 globalSilentCooldownUntil: now.addingTimeInterval(10)
             )
