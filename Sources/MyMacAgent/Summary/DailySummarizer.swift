@@ -293,6 +293,11 @@ final class DailySummarizer: @unchecked Sendable {
         )
 
         let parsed = Self.parseSummaryResponse(response.content)
+        let summaryText = Self.shouldPreserveRichMarkdown(response.content)
+            ? response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            : (parsed.summaryText.isEmpty
+                ? response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                : parsed.summaryText)
         let now = ISO8601DateFormatter().string(from: Date())
 
         let topicsJson = try? String(
@@ -317,7 +322,7 @@ final class DailySummarizer: @unchecked Sendable {
 
         let summary = DailySummaryRecord(
             date: date,
-            summaryText: parsed.summaryText,
+            summaryText: summaryText,
             topAppsJson: appsJson,
             topTopicsJson: topicsJson,
             aiSessionsJson: nil,
@@ -440,12 +445,18 @@ final class DailySummarizer: @unchecked Sendable {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             } else if lines.hasPrefix("Main topics") {
                 topics = extractBullets(from: lines)
-            } else if lines.hasPrefix("Suggested notes") {
+            } else if lines.hasPrefix("Suggested notes")
+                        || lines.hasPrefix("Предлагаемые заметки") {
                 suggestedNotes = extractBullets(from: lines)
                     .map { $0.replacingOccurrences(of: "[[", with: "")
                            .replacingOccurrences(of: "]]", with: "") }
-            } else if lines.hasPrefix("Continue tomorrow") {
-                continueTomorrow = lines.replacingOccurrences(of: "Continue tomorrow\n", with: "")
+            } else if lines.hasPrefix("Continue tomorrow")
+                        || lines.hasPrefix("Продолжить завтра")
+                        || lines.hasPrefix("Продолжить далее") {
+                continueTomorrow = lines
+                    .replacingOccurrences(of: "Continue tomorrow\n", with: "")
+                    .replacingOccurrences(of: "Продолжить завтра\n", with: "")
+                    .replacingOccurrences(of: "Продолжить далее\n", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
@@ -481,6 +492,28 @@ final class DailySummarizer: @unchecked Sendable {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : String($0) }
             .filter { !$0.isEmpty }
+    }
+
+    private static func shouldPreserveRichMarkdown(_ text: String) -> Bool {
+        let headers = [
+            "## Детальный таймлайн",
+            "## Проекты и код",
+            "## Инструменты и технологии",
+            "## Что изучал / читал",
+            "## AI-взаимодействие",
+            "## Граф связей",
+            "## Предлагаемые заметки",
+            "## Продолжить далее",
+            "## Продолжить завтра"
+        ]
+
+        let matchCount = headers.reduce(into: 0) { count, header in
+            if text.contains(header) {
+                count += 1
+            }
+        }
+
+        return matchCount >= 2
     }
 
     private func jsonString(_ object: Any) -> String? {

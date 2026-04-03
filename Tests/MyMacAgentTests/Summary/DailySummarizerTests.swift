@@ -167,7 +167,7 @@ struct DailySummarizerTests {
         - [[Swift Testing patterns]]
         - [[Concurrency best practices]]
 
-        ## Continue tomorrow
+        ## Продолжить далее
         - Finish implementing the capture scheduler
         """
 

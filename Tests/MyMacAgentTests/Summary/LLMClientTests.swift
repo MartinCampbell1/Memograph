@@ -60,6 +60,54 @@ struct LLMClientTests {
         #expect(result.completionTokens == 50)
     }
 
+    @Test("Parses OpenRouter response with mixed message fields")
+    func parsesOpenRouterMessageObject() throws {
+        let responseJSON = """
+        {
+            "id": "gen-123",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Detailed summary.",
+                    "refusal": null,
+                    "reasoning": null,
+                    "reasoning_details": []
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+        }
+        """.data(using: .utf8)!
+
+        let result = try LLMClient.parseResponse(responseJSON)
+        #expect(result.content == "Detailed summary.")
+        #expect(result.promptTokens == 100)
+        #expect(result.completionTokens == 50)
+    }
+
+    @Test("Parses content array response")
+    func parsesContentArray() throws {
+        let responseJSON = """
+        {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Line 1"},
+                        {"type": "text", "text": "Line 2"}
+                    ]
+                }
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4}
+        }
+        """.data(using: .utf8)!
+
+        let result = try LLMClient.parseResponse(responseJSON)
+        #expect(result.content == "Line 1\nLine 2")
+        #expect(result.promptTokens == 10)
+        #expect(result.completionTokens == 4)
+    }
+
     @Test("Parse response throws on invalid JSON")
     func throwsOnInvalid() {
         #expect(throws: (any Error).self) {

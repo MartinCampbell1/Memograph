@@ -62,6 +62,45 @@ struct ObsidianExporterTests {
         #expect(markdown.contains("[[Swift Testing patterns]]"))
     }
 
+    @Test("Renders rich structured markdown without flattening it")
+    func rendersRichStructuredMarkdown() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Rich body.
+
+            ## Детальный таймлайн
+            - Block 1
+
+            ## Проекты и код
+            - Project
+            """,
+            topAppsJson: nil,
+            topTopicsJson: nil,
+            aiSessionsJson: nil,
+            contextSwitchesJson: nil,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: nil,
+            modelName: nil,
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let exporter = ObsidianExporter(db: db, timeZone: utc)
+        let markdown = try exporter.renderDailyNote(summary: summary)
+
+        #expect(markdown.contains("# Daily Log — 2026-04-03"))
+        #expect(markdown.contains("## Детальный таймлайн"))
+        #expect(markdown.contains("## Проекты и код"))
+        #expect(!markdown.contains("## Main apps"))
+    }
+
     @Test("Writes daily note to vault directory")
     func writesToVault() throws {
         let (db, path) = try makeDB()

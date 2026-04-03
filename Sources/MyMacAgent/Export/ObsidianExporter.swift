@@ -21,6 +21,13 @@ final class ObsidianExporter {
         let nextDay = offsetDate(summary.date, by: 1)
         md += "← [[Daily/\(prevDay)|\(prevDay)]] | [[Daily/\(nextDay)|\(nextDay)]] →\n\n"
 
+        if let richBody = richStructuredBody(from: summary.summaryText) {
+            if richBody.hasPrefix("# Daily Log —") {
+                return richBody + (richBody.hasSuffix("\n") ? "" : "\n")
+            }
+            return md + richBody + (richBody.hasSuffix("\n") ? "" : "\n")
+        }
+
         // Summary
         md += "## Summary\n"
         md += "\(summary.summaryText ?? "No summary available.")\n\n"
@@ -72,9 +79,9 @@ final class ObsidianExporter {
         }
         md += "\n"
 
-        // Continue tomorrow
+        // Continue next
         if let unfinished = summary.unfinishedItemsJson {
-            md += "## Continue tomorrow\n"
+            md += "## Продолжить далее\n"
             md += "- \(unfinished)\n\n"
         }
 
@@ -142,5 +149,21 @@ final class ObsidianExporter {
 
     private func formatTime(_ isoString: String) -> String {
         dateSupport.localTimeString(from: isoString)
+    }
+
+    private func richStructuredBody(from text: String?) -> String? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("# Daily Log —") {
+            return trimmed
+        }
+
+        if trimmed.contains("## Детальный таймлайн") && trimmed.contains("## Проекты и код") {
+            return trimmed
+        }
+
+        return nil
     }
 }

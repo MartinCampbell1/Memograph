@@ -93,8 +93,8 @@ final class LLMClient {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: String],
-              let content = message["content"] else {
+              let message = firstChoice["message"] as? [String: Any],
+              let content = extractContent(from: message["content"]) else {
             throw LLMError.parseError("Failed to parse LLM response")
         }
 
@@ -107,6 +107,44 @@ final class LLMClient {
             promptTokens: promptTokens,
             completionTokens: completionTokens
         )
+    }
+
+    private static func extractContent(from rawContent: Any?) -> String? {
+        switch rawContent {
+        case let text as String:
+            return text
+        case let parts as [[String: Any]]:
+            let joined = parts.compactMap { part -> String? in
+                if let text = part["text"] as? String {
+                    return text
+                }
+                if let text = part["content"] as? String {
+                    return text
+                }
+                return nil
+            }.joined(separator: "\n")
+            let trimmed = joined.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case let parts as [Any]:
+            let joined = parts.compactMap { item -> String? in
+                if let text = item as? String {
+                    return text
+                }
+                if let dict = item as? [String: Any] {
+                    if let text = dict["text"] as? String {
+                        return text
+                    }
+                    if let text = dict["content"] as? String {
+                        return text
+                    }
+                }
+                return nil
+            }.joined(separator: "\n")
+            let trimmed = joined.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        default:
+            return nil
+        }
     }
 }
 

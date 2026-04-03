@@ -437,7 +437,7 @@ struct AppSettings {
     - [[Topic]] — specific reason to create a note
     (minimum 10 notes)
 
-    ## Продолжить завтра
+    ## Продолжить далее
     (unfinished tasks with [[wiki-links]])
     """
 
