@@ -14,6 +14,8 @@ struct AppSettingsTests {
         #expect(settings.openRouterApiKey.isEmpty)
         #expect(settings.llmModel == "minimax/minimax-m2.7")
         #expect(settings.retentionDays == 30)
+        #expect(settings.knowledgeMaintenanceIntervalHours == 24)
+        #expect(settings.lastKnowledgeMaintenanceAt == nil)
         #expect(settings.maxCapturesPerSession == 500)
     }
 
@@ -25,11 +27,15 @@ struct AppSettingsTests {
         settings.obsidianVaultPath = "/Users/test/vault"
         settings.openRouterApiKey = "sk-test-123"
         settings.retentionDays = 14
+        settings.knowledgeMaintenanceIntervalHours = 12
+        settings.lastKnowledgeMaintenanceAt = "2026-04-03T12:00:00Z"
 
         let settings2 = AppSettings(defaults: defaults, credentialsStore: store)
         #expect(settings2.obsidianVaultPath == "/Users/test/vault")
         #expect(settings2.openRouterApiKey == "sk-test-123")
         #expect(settings2.retentionDays == 14)
+        #expect(settings2.knowledgeMaintenanceIntervalHours == 12)
+        #expect(settings2.lastKnowledgeMaintenanceAt == "2026-04-03T12:00:00Z")
     }
 
     @Test("Default credentials storage persists locally without Keychain")

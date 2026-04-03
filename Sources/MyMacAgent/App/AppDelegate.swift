@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var systemAudioEngine: SystemAudioCaptureEngine?
     private var retentionTimer: Timer?
     private var autoSummaryTimer: Timer?
+    private var knowledgeMaintenanceTimer: Timer?
     private var captureHashTracker = CaptureHashTracker()
     private let captureGate = CaptureGate(maxConcurrent: 1)
     private var privacyGuard = PrivacyGuard.fromSettings()
@@ -89,6 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoSummaryTimer = nil
         retentionTimer?.invalidate()
         retentionTimer = nil
+        knowledgeMaintenanceTimer?.invalidate()
+        knowledgeMaintenanceTimer = nil
         captureScheduler?.stop()
         appMonitor?.stop()
         windowMonitor?.stop()
@@ -246,7 +249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
         knowledgePipeline = KnowledgePipeline(db: db)
         logger.info("Phase 3 components initialized (fusion, summary, export)")
-        refreshKnowledgeMaterialization(reason: "startup")
+        performKnowledgeMaintenance(reason: "startup", force: true)
     }
 
     private func initializePhase4() {
@@ -900,7 +903,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         scheduleAutoSummaryTimer()
-        refreshKnowledgeMaterialization(reason: "settings")
+        performKnowledgeMaintenance(reason: "settings", force: true)
         configureAudioEngines(forceRestart: true)
         Task { @MainActor [weak self] in
             await self?.generatePendingDailySummaries(reason: "settings")
@@ -915,6 +918,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoSummaryTimer = nil
         retentionTimer?.invalidate()
         retentionTimer = nil
+        knowledgeMaintenanceTimer?.invalidate()
+        knowledgeMaintenanceTimer = nil
         captureScheduler?.stop()
         appMonitor?.stop()
         windowMonitor?.stop()
@@ -947,6 +952,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc
     private func handleApplicationDidBecomeActive() {
+        runKnowledgeMaintenanceIfDue(reason: "activation")
         Task { @MainActor [weak self] in
             await self?.generatePendingDailySummaries(reason: "activation")
         }
@@ -954,21 +960,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc
     private func handleSystemDidWake() {
+        runKnowledgeMaintenanceIfDue(reason: "wake")
         Task { @MainActor [weak self] in
             await self?.generatePendingDailySummaries(reason: "wake")
         }
     }
 
-    private func refreshKnowledgeMaterialization(reason: String) {
+    private func scheduleKnowledgeMaintenanceTimer() {
+        knowledgeMaintenanceTimer?.invalidate()
+
+        let settings = AppSettings()
+        let hours = max(6, settings.knowledgeMaintenanceIntervalHours)
+        let interval = TimeInterval(hours * 3600)
+        let delay = nextKnowledgeMaintenanceDelay(interval: interval)
+
+        knowledgeMaintenanceTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.performKnowledgeMaintenance(reason: "timer", force: true)
+            }
+        }
+        knowledgeMaintenanceTimer?.tolerance = min(600, max(60, delay * 0.1))
+        logger.info("Knowledge maintenance timer scheduled in \(Int(delay))s (interval \(hours) hours)")
+    }
+
+    private func nextKnowledgeMaintenanceDelay(interval: TimeInterval) -> TimeInterval {
+        let minimumDelay: TimeInterval = 30
+        let settings = AppSettings()
+        if let lastRun = settings.lastKnowledgeMaintenanceAt.flatMap(dateSupport.parseDateTime) {
+            let dueAt = lastRun.addingTimeInterval(interval)
+            return max(minimumDelay, dueAt.timeIntervalSinceNow)
+        }
+        return interval
+    }
+
+    private func runKnowledgeMaintenanceIfDue(reason: String) {
+        let settings = AppSettings()
+        let hours = max(6, settings.knowledgeMaintenanceIntervalHours)
+        let interval = TimeInterval(hours * 3600)
+
+        if let lastRun = settings.lastKnowledgeMaintenanceAt.flatMap(dateSupport.parseDateTime),
+           Date().timeIntervalSince(lastRun) < interval {
+            scheduleKnowledgeMaintenanceTimer()
+            return
+        }
+
+        performKnowledgeMaintenance(reason: reason, force: true)
+    }
+
+    private func performKnowledgeMaintenance(reason: String, force: Bool) {
         guard let knowledgePipeline else { return }
+        if !force {
+            runKnowledgeMaintenanceIfDue(reason: reason)
+            return
+        }
         do {
             let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: obsidianExporter)
+            var settings = AppSettings()
+            settings.lastKnowledgeMaintenanceAt = dateSupport.isoString(from: Date())
             if materializedCount > 0 {
-                logger.info("Knowledge materialization sync completed during \(reason, privacy: .public): \(materializedCount) notes")
+                logger.info("Knowledge maintenance sync completed during \(reason, privacy: .public): \(materializedCount) notes")
+            } else {
+                logger.info("Knowledge maintenance sync completed during \(reason, privacy: .public): no materialized changes")
             }
         } catch {
-            logger.error("Knowledge materialization sync failed during \(reason): \(error.localizedDescription)")
+            logger.error("Knowledge maintenance sync failed during \(reason): \(error.localizedDescription)")
         }
+        scheduleKnowledgeMaintenanceTimer()
     }
 }
 

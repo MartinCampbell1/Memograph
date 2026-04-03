@@ -271,6 +271,19 @@ struct AppSettings {
         set { defaults.set(newValue, forKey: "retentionDays") }
     }
 
+    var knowledgeMaintenanceIntervalHours: Int {
+        get {
+            let val = defaults.integer(forKey: "knowledgeMaintenanceIntervalHours")
+            return val > 0 ? val : 24
+        }
+        set { defaults.set(newValue, forKey: "knowledgeMaintenanceIntervalHours") }
+    }
+
+    var lastKnowledgeMaintenanceAt: String? {
+        get { defaults.string(forKey: "lastKnowledgeMaintenanceAt") }
+        set { defaults.set(newValue, forKey: "lastKnowledgeMaintenanceAt") }
+    }
+
     var maxCapturesPerSession: Int {
         get {
             let val = defaults.integer(forKey: "maxCapturesPerSession")
