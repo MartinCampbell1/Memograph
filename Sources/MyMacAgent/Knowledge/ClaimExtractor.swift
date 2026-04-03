@@ -34,6 +34,7 @@ private struct RelationSpec {
 final class ClaimExtractor {
     private let normalizer: EntityNormalizer
     private let dateSupport: LocalDateSupport
+    private let graphShaper = GraphShaper()
     private let relationStopTokens: Set<String> = [
         "the", "and", "for", "with", "from", "into", "onto", "guide",
         "roadmap", "benchmarks", "benchmark", "analysis", "report", "plan",
@@ -73,14 +74,16 @@ final class ClaimExtractor {
         let topics = extractTopics(summary: summary, knownToolNames: appNames)
         for entity in topics {
             entityMap[entity.stableKey] = merge(entityMap[entity.stableKey], entity)
-            claims.append(KnowledgeClaimCandidate(
-                subjectKey: entity.stableKey,
-                predicate: "topic_in_focus",
-                objectText: summary.date,
-                confidence: 0.8,
-                qualifiers: ["window": timeLabel(window: window)],
-                sourceKind: "hourly_summary"
-            ))
+            if entity.entityType == .topic {
+                claims.append(KnowledgeClaimCandidate(
+                    subjectKey: entity.stableKey,
+                    predicate: "topic_in_focus",
+                    objectText: summary.date,
+                    confidence: 0.8,
+                    qualifiers: ["window": timeLabel(window: window)],
+                    sourceKind: "hourly_summary"
+                ))
+            }
         }
 
         let suggestions = extractSuggestedNotes(summary: summary, knownToolNames: appNames)
@@ -121,7 +124,12 @@ final class ClaimExtractor {
         }
 
         let allEntities = Array(entityMap.values)
-        let relationExtraction = buildSemanticRelations(from: allEntities, window: window)
+        let relationExtraction = buildSemanticRelations(
+            from: allEntities,
+            summary: summary,
+            sessions: sessions,
+            window: window
+        )
         claims.append(contentsOf: relationExtraction.claims)
 
         let fallbackEdges = buildFallbackCoOccurrenceEdges(from: allEntities)
@@ -197,9 +205,12 @@ final class ClaimExtractor {
 
     private func buildSemanticRelations(
         from entities: [KnowledgeEntityCandidate],
+        summary: DailySummaryRecord,
+        sessions: [SessionData],
         window: SummaryWindowDescriptor
     ) -> (claims: [KnowledgeClaimCandidate], edges: [KnowledgeEdgeCandidate]) {
         let grouped = Dictionary(grouping: entities, by: \.entityType)
+        let summaryBlocks = summaryBlocks(from: summary.summaryText ?? "")
         let relationSpecs: [RelationSpec] = [
             RelationSpec(
                 fromType: .project,
@@ -261,7 +272,15 @@ final class ClaimExtractor {
 
             for from in fromEntities {
                 for to in toEntities where from.stableKey != to.stableKey {
-                    guard shouldLink(from: from, to: to, relation: spec) else { continue }
+                    guard shouldLink(
+                        from: from,
+                        to: to,
+                        relation: spec,
+                        summaryBlocks: summaryBlocks,
+                        sessions: sessions
+                    ) else {
+                        continue
+                    }
                     claims.append(KnowledgeClaimCandidate(
                         subjectKey: from.stableKey,
                         predicate: spec.forwardPredicate,
@@ -294,13 +313,60 @@ final class ClaimExtractor {
     private func shouldLink(
         from: KnowledgeEntityCandidate,
         to: KnowledgeEntityCandidate,
-        relation: RelationSpec
+        relation: RelationSpec,
+        summaryBlocks: [String],
+        sessions: [SessionData]
     ) -> Bool {
         switch relation.edgeType {
+        case "uses_tool", "focuses_on_topic", "blocked_by_issue", "uses_model", "generates_lesson":
+            return hasProjectRelationEvidence(
+                project: from,
+                target: to,
+                relation: relation,
+                summaryBlocks: summaryBlocks,
+                sessions: sessions
+            )
         case "explains_topic":
             return hasSemanticNameOverlap(lhs: from.canonicalName, rhs: to.canonicalName)
         default:
             return true
+        }
+    }
+
+    private func hasProjectRelationEvidence(
+        project: KnowledgeEntityCandidate,
+        target: KnowledgeEntityCandidate,
+        relation: RelationSpec,
+        summaryBlocks: [String],
+        sessions: [SessionData]
+    ) -> Bool {
+        guard relation.fromType == .project else { return true }
+        if relation.edgeType == "focuses_on_topic",
+           !graphShaper.isMeaningfulProjectRelationTopic(target.canonicalName) {
+            return false
+        }
+
+        let relevantBlocks = summaryBlocks.filter { blockContainsEntity($0, entity: project) }
+        if relevantBlocks.contains(where: { blockContainsEntity($0, entity: target) }) {
+            return true
+        }
+        if relation.edgeType == "generates_lesson",
+           relevantBlocks.contains(where: { hasSemanticNameOverlap(lhs: $0, rhs: target.canonicalName) }) {
+            return true
+        }
+
+        let projectSessions = sessions.filter { sessionMentionsEntity($0, entity: project) }
+        guard !projectSessions.isEmpty else {
+            return false
+        }
+
+        switch relation.edgeType {
+        case "uses_tool":
+            return projectSessions.contains { sessionUsesTool($0, tool: target) }
+        case "focuses_on_topic", "blocked_by_issue":
+            return projectSessions.contains { sessionMentionsEntity($0, entity: target) }
+        default:
+            return false
         }
     }
 
@@ -382,6 +448,75 @@ final class ClaimExtractor {
         "\(dateSupport.localTimeString(from: window.start))-\(dateSupport.localTimeString(from: window.end))"
     }
 
+    private func summaryBlocks(from markdown: String) -> [String] {
+        var blocks: [String] = []
+        var currentLines: [String] = []
+        var currentSubheading: String?
+
+        func flush() {
+            guard !currentLines.isEmpty else { return }
+            blocks.append(currentLines.joined(separator: "\n"))
+            currentLines.removeAll(keepingCapacity: true)
+        }
+
+        for rawLine in markdown.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty {
+                flush()
+                currentSubheading = nil
+                continue
+            }
+
+            if line.hasPrefix("### ") {
+                flush()
+                currentSubheading = line
+                continue
+            }
+
+            if line.hasPrefix("## ") {
+                flush()
+                currentSubheading = nil
+                currentLines.append(line)
+                continue
+            }
+
+            if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                flush()
+                if let currentSubheading {
+                    blocks.append([currentSubheading, line].joined(separator: "\n"))
+                } else {
+                    blocks.append(line)
+                }
+                continue
+            }
+
+            currentLines.append(line)
+        }
+
+        flush()
+        return blocks
+    }
+
+    private func blockContainsEntity(_ text: String, entity: KnowledgeEntityCandidate) -> Bool {
+        let normalizedText = normalizedKey(text)
+        return entityTerms(for: entity).contains { term in
+            normalizedText.contains(term)
+        }
+    }
+
+    private func sessionMentionsEntity(_ session: SessionData, entity: KnowledgeEntityCandidate) -> Bool {
+        let text = ([session.appName] + session.windowTitles + session.contextTexts).joined(separator: "\n")
+        return blockContainsEntity(text, entity: entity)
+    }
+
+    private func sessionUsesTool(_ session: SessionData, tool: KnowledgeEntityCandidate) -> Bool {
+        guard tool.entityType == .tool,
+              let sessionTool = normalizer.normalize(rawName: session.appName, typeHint: .tool) else {
+            return false
+        }
+        return sessionTool.stableKey == tool.stableKey
+    }
+
     private func normalizedKey(_ text: String) -> String {
         text.precomposedStringWithCanonicalMapping
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
@@ -399,5 +534,11 @@ final class ClaimExtractor {
                     !relationStopTokens.contains(token)
                 }
         )
+    }
+
+    private func entityTerms(for entity: KnowledgeEntityCandidate) -> Set<String> {
+        Set(([entity.canonicalName] + entity.aliases)
+            .map(normalizedKey)
+            .filter { !$0.isEmpty })
     }
 }

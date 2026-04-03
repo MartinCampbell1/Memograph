@@ -17,6 +17,7 @@ final class KnowledgeCompiler {
     private let db: DatabaseManager
     private let dateSupport: LocalDateSupport
     private let normalizer: EntityNormalizer
+    private let graphShaper = GraphShaper()
 
     init(
         db: DatabaseManager,
@@ -186,6 +187,7 @@ final class KnowledgeCompiler {
         claims: [KnowledgeClaimRecord],
         relatedReferences: [RelatedKnowledgeReference]
     ) -> String {
+        let visibleRelationObjects = Set(relatedReferences.map { $0.entity.canonicalName })
         var markdown = "# \(entity.canonicalName)\n\n"
         markdown += "_Type: \(entity.entityType.rawValue)_\n\n"
 
@@ -207,7 +209,7 @@ final class KnowledgeCompiler {
             markdown += "\n"
         }
 
-        let signals = keySignals(for: entity, claims: claims)
+        let signals = keySignals(for: entity, claims: claims, visibleRelationObjects: visibleRelationObjects)
         if !signals.isEmpty {
             markdown += "## Key Signals\n"
             for signal in signals {
@@ -216,9 +218,14 @@ final class KnowledgeCompiler {
             markdown += "\n"
         }
 
-        if !claims.isEmpty {
+        let recentClaims = selectedRecentClaims(
+            from: claims,
+            for: entity,
+            visibleRelationObjects: visibleRelationObjects
+        )
+        if !recentClaims.isEmpty {
             markdown += "## Recent Windows\n"
-            for claim in claims.prefix(8) {
+            for claim in recentClaims {
                 let when = claim.windowStart.map { dateSupport.localDateTimeString(from: $0) }
                     ?? claim.sourceSummaryGeneratedAt.map { dateSupport.localDateTimeString(from: $0) }
                     ?? "unknown time"
@@ -260,7 +267,11 @@ final class KnowledgeCompiler {
             .sorted()
     }
 
-    private func keySignals(for entity: KnowledgeEntityRecord, claims: [KnowledgeClaimRecord]) -> [String] {
+    private func keySignals(
+        for entity: KnowledgeEntityRecord,
+        claims: [KnowledgeClaimRecord],
+        visibleRelationObjects: Set<String>
+    ) -> [String] {
         let grouped = Dictionary(grouping: claims, by: \.predicate)
         let orderedPredicates = [
             "advanced_during_window",
@@ -287,9 +298,18 @@ final class KnowledgeCompiler {
                 return nil
             }
 
-            let count = predicateClaims.count
-            let examples = predicateExamples(from: predicateClaims)
-            let latest = predicateClaims.compactMap { claim in
+            let filteredClaims = predicateClaims.filter {
+                shouldShowForVisibleRelations($0, visibleRelationObjects: visibleRelationObjects)
+            }
+            guard !filteredClaims.isEmpty else { return nil }
+
+            let count = filteredClaims.count
+            let examples = predicateExamples(
+                from: filteredClaims,
+                predicate: predicate,
+                visibleRelationObjects: visibleRelationObjects
+            )
+            let latest = filteredClaims.compactMap { claim in
                 claim.windowEnd
                     ?? claim.windowStart
                     ?? claim.sourceSummaryGeneratedAt
@@ -383,12 +403,238 @@ final class KnowledgeCompiler {
         return dateSupport.localDateTimeString(from: value)
     }
 
-    private func predicateExamples(from claims: [KnowledgeClaimRecord]) -> String {
+    private func predicateExamples(
+        from claims: [KnowledgeClaimRecord],
+        predicate: String,
+        visibleRelationObjects: Set<String>
+    ) -> String {
         let examples = Array(Set(claims.compactMap {
-            $0.objectText?.trimmingCharacters(in: .whitespacesAndNewlines)
+            filteredExampleObject(
+                from: $0,
+                predicate: predicate,
+                visibleRelationObjects: visibleRelationObjects
+            )
         })).filter { !$0.isEmpty }.sorted()
         guard !examples.isEmpty else { return "" }
         return " (\(examples.prefix(3).joined(separator: ", ")))"
+    }
+
+    private func filteredExampleObject(
+        from claim: KnowledgeClaimRecord,
+        predicate: String,
+        visibleRelationObjects: Set<String>
+    ) -> String? {
+        guard let object = claim.objectText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !object.isEmpty else {
+            return nil
+        }
+
+        switch predicate {
+        case "focuses_on_topic", "relevant_to_project":
+            guard graphShaper.isMeaningfulProjectRelationTopic(object) else { return nil }
+            return visibleRelationObjects.isEmpty || visibleRelationObjects.contains(object) ? object : nil
+        case "uses_tool", "supports_project", "uses_model", "used_in_project", "blocked_by_issue",
+             "affects_project", "generates_lesson", "derived_from_project", "explains_topic", "documented_in_lesson":
+            return visibleRelationObjects.isEmpty || visibleRelationObjects.contains(object) ? object : nil
+        default:
+            return object
+        }
+    }
+
+    private func selectedRecentClaims(
+        from claims: [KnowledgeClaimRecord],
+        for entity: KnowledgeEntityRecord,
+        visibleRelationObjects: Set<String>,
+        limit: Int = 8
+    ) -> [KnowledgeClaimRecord] {
+        let ordered = claims.sorted { lhs, rhs in
+            let lhsTimestamp = claimSortTimestamp(lhs)
+            let rhsTimestamp = claimSortTimestamp(rhs)
+            if lhsTimestamp != rhsTimestamp {
+                return lhsTimestamp > rhsTimestamp
+            }
+
+            let lhsPriority = recentClaimPriority(lhs, entityType: entity.entityType)
+            let rhsPriority = recentClaimPriority(rhs, entityType: entity.entityType)
+            if lhsPriority != rhsPriority {
+                return lhsPriority > rhsPriority
+            }
+
+            let lhsSourcePriority = sourceKindPriority(lhs.sourceKind)
+            let rhsSourcePriority = sourceKindPriority(rhs.sourceKind)
+            if lhsSourcePriority != rhsSourcePriority {
+                return lhsSourcePriority > rhsSourcePriority
+            }
+
+            if lhs.confidence != rhs.confidence {
+                return lhs.confidence > rhs.confidence
+            }
+
+            return (lhs.objectText ?? "") < (rhs.objectText ?? "")
+        }
+
+        var selected: [KnowledgeClaimRecord] = []
+        var seenSignatures: Set<String> = []
+        var relationCountsByWindow: [String: Int] = [:]
+        var predicateCountsByWindow: [String: Int] = [:]
+
+        for claim in ordered {
+            guard shouldShowInRecentWindows(
+                claim,
+                entityType: entity.entityType,
+                visibleRelationObjects: visibleRelationObjects
+            ) else {
+                continue
+            }
+
+            let signature = claimSignature(claim)
+            guard seenSignatures.insert(signature).inserted else { continue }
+
+            let windowKey = claimWindowKey(claim)
+            let predicateWindowKey = "\(windowKey)|\(claim.predicate)"
+
+            if isRelationClaim(claim) {
+                if relationCountsByWindow[windowKey, default: 0] >= maxRelationClaimsPerWindow(for: entity.entityType) {
+                    continue
+                }
+                if predicateCountsByWindow[predicateWindowKey, default: 0] >= maxRelationClaimsPerPredicate(
+                    for: entity.entityType,
+                    predicate: claim.predicate
+                ) {
+                    continue
+                }
+            } else if predicateCountsByWindow[predicateWindowKey, default: 0] >= 1 {
+                continue
+            }
+
+            selected.append(claim)
+            predicateCountsByWindow[predicateWindowKey, default: 0] += 1
+            if isRelationClaim(claim) {
+                relationCountsByWindow[windowKey, default: 0] += 1
+            }
+
+            if selected.count == limit {
+                break
+            }
+        }
+
+        return selected
+    }
+
+    private func shouldShowInRecentWindows(
+        _ claim: KnowledgeClaimRecord,
+        entityType: KnowledgeEntityType,
+        visibleRelationObjects: Set<String>
+    ) -> Bool {
+        guard shouldShowForVisibleRelations(claim, visibleRelationObjects: visibleRelationObjects) else {
+            return false
+        }
+
+        switch claim.predicate {
+        case "topic_in_focus":
+            return entityType == .topic
+        case "focuses_on_topic", "relevant_to_project":
+            if let object = claim.objectText?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                return graphShaper.isMeaningfulProjectRelationTopic(object)
+            }
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func shouldShowForVisibleRelations(
+        _ claim: KnowledgeClaimRecord,
+        visibleRelationObjects: Set<String>
+    ) -> Bool {
+        guard isRelationClaim(claim),
+              let object = claim.objectText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !object.isEmpty else {
+            return true
+        }
+
+        return visibleRelationObjects.isEmpty || visibleRelationObjects.contains(object)
+    }
+
+    private func claimSortTimestamp(_ claim: KnowledgeClaimRecord) -> String {
+        claim.windowEnd
+            ?? claim.windowStart
+            ?? claim.sourceSummaryGeneratedAt
+            ?? ""
+    }
+
+    private func claimWindowKey(_ claim: KnowledgeClaimRecord) -> String {
+        [
+            claim.windowStart ?? "",
+            claim.windowEnd ?? "",
+            claim.sourceSummaryGeneratedAt ?? "",
+            claim.sourceSummaryDate ?? ""
+        ].joined(separator: "|")
+    }
+
+    private func claimSignature(_ claim: KnowledgeClaimRecord) -> String {
+        [
+            claimWindowKey(claim),
+            claim.predicate,
+            claim.objectText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            claim.sourceKind ?? ""
+        ].joined(separator: "|")
+    }
+
+    private func isRelationClaim(_ claim: KnowledgeClaimRecord) -> Bool {
+        claim.sourceKind == "relation_inference"
+    }
+
+    private func maxRelationClaimsPerWindow(for entityType: KnowledgeEntityType) -> Int {
+        switch entityType {
+        case .project:
+            return 3
+        case .topic, .lesson:
+            return 2
+        default:
+            return 2
+        }
+    }
+
+    private func maxRelationClaimsPerPredicate(for entityType: KnowledgeEntityType, predicate: String) -> Int {
+        switch (entityType, predicate) {
+        case (.project, "uses_tool"), (.tool, "supports_project"):
+            return 2
+        default:
+            return 1
+        }
+    }
+
+    private func recentClaimPriority(_ claim: KnowledgeClaimRecord, entityType: KnowledgeEntityType) -> Int {
+        switch claim.predicate {
+        case "advanced_during_window", "surfaced_in_window", "used_during_window":
+            return 6
+        case "topic_in_focus":
+            return entityType == .topic ? 6 : 1
+        case "blocked_by_issue", "affects_project":
+            return 5
+        case "uses_tool", "supports_project":
+            return 4
+        case "focuses_on_topic", "relevant_to_project", "uses_model", "used_in_project", "generates_lesson", "derived_from_project":
+            return 3
+        case "explains_topic", "documented_in_lesson", "worth_capturing":
+            return 2
+        default:
+            return 1
+        }
+    }
+
+    private func sourceKindPriority(_ sourceKind: String?) -> Int {
+        switch sourceKind {
+        case "hourly_summary":
+            return 3
+        case "summary_suggestion":
+            return 2
+        case "relation_inference":
+            return 1
+        default:
+            return 0
+        }
     }
 
     private func prefer(

@@ -198,6 +198,160 @@ struct KnowledgePipelineTests {
         #expect(note?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]]") == true)
     }
 
+    @Test("Project notes suppress generic topic relations and avoid topic in focus self-noise")
+    func suppressesGenericProjectTopicNoise() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Worked on [[Memograph]] in [[Codex]] while researching [[AI]] and debugging [[Screen Recording]].
+            """,
+            topAppsJson: """
+            [{"name":"Codex","duration_min":45}]
+            """,
+            topTopicsJson: """
+            ["Memograph","AI","Screen Recording"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T10:00:00Z","window_end":"2026-04-03T11:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-03T11:01:55Z",
+            modelName: "test",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Codex",
+                bundleId: "com.openai.codex",
+                windowTitles: ["Memograph"],
+                startedAt: "2026-04-03T10:00:00Z",
+                endedAt: "2026-04-03T11:00:00Z",
+                durationMs: 3_600_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Worked on Memograph"]
+            )
+        ]
+
+        let vaultPath = NSTemporaryDirectory() + "kb_vault_\(UUID().uuidString)/"
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultPath, timeZone: utc)
+        defer { try? FileManager.default.removeItem(atPath: vaultPath) }
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions, exporter: exporter)
+
+        let projectClaims = try db.query("""
+            SELECT kc.predicate, kc.object_text
+            FROM knowledge_claims kc
+            JOIN knowledge_entities ke ON ke.id = kc.subject_entity_id
+            WHERE ke.canonical_name = 'Memograph'
+            ORDER BY kc.predicate, kc.object_text
+        """)
+
+        #expect(projectClaims.contains {
+            $0["predicate"]?.textValue == "focuses_on_topic" &&
+            $0["object_text"]?.textValue == "Screen Recording"
+        })
+        #expect(projectClaims.contains {
+            $0["predicate"]?.textValue == "focuses_on_topic" &&
+            $0["object_text"]?.textValue == "AI"
+        } == false)
+        #expect(projectClaims.contains {
+            $0["predicate"]?.textValue == "topic_in_focus"
+        } == false)
+    }
+
+    @Test("Recent windows prioritizes real activity over relation spam")
+    func recentWindowsPrioritizesActivitySignals() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("tool-1"), .text("ChatGPT"), .text("chatgpt"), .text("tool"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("tool-2"), .text("Codex"), .text("codex"), .text("tool"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("tool-3"), .text("Telegram"), .text("telegram"), .text("tool"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("topic-1"), .text("System Audio Capture"), .text("system-audio-capture"), .text("topic"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("used_during_window"), .text("2026-04-03 20:02-21:02"), .real(0.95), .text("hourly_summary"),
+            .text("claim-2"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("advanced_during_window"), .text("2026-04-03"), .real(0.9), .text("hourly_summary"),
+            .text("claim-3"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("uses_tool"), .text("ChatGPT"), .real(0.9), .text("relation_inference"),
+            .text("claim-4"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("uses_tool"), .text("Codex"), .real(0.9), .text("relation_inference"),
+            .text("claim-5"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("uses_tool"), .text("Telegram"), .real(0.9), .text("relation_inference"),
+            .text("claim-6"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("focuses_on_topic"), .text("System Audio Capture"), .real(0.88), .text("relation_inference")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
+
+        #expect(note?.bodyMarkdown.contains("Used during 2026-04-03 20:02-21:02.") == true)
+        #expect(note?.bodyMarkdown.contains("Advanced in summary window 2026-04-03.") == true)
+        #expect(note?.bodyMarkdown.contains("Worked on with ChatGPT.") == true)
+        #expect(note?.bodyMarkdown.contains("Worked on with Codex.") == true)
+        #expect(note?.bodyMarkdown.contains("Focused on System Audio Capture.") == true)
+        #expect(note?.bodyMarkdown.contains("Worked on with Telegram.") == false)
+    }
+
     @Test("Knowledge edge weights stay stable when the same window is reprocessed")
     func knowledgeEdgesAreIdempotentForReruns() throws {
         let (db, path) = try makeDB()
