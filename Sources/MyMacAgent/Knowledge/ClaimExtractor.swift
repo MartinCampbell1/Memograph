@@ -22,6 +22,15 @@ struct KnowledgeExtractionResult {
     let edges: [KnowledgeEdgeCandidate]
 }
 
+private struct RelationSpec {
+    let fromType: KnowledgeEntityType
+    let toType: KnowledgeEntityType
+    let edgeType: String
+    let forwardPredicate: String
+    let reversePredicate: String
+    let confidence: Double
+}
+
 final class ClaimExtractor {
     private let normalizer: EntityNormalizer
     private let dateSupport: LocalDateSupport
@@ -107,7 +116,11 @@ final class ClaimExtractor {
         }
 
         let allEntities = Array(entityMap.values)
-        let edges = buildCoOccurrenceEdges(from: allEntities)
+        let relationExtraction = buildSemanticRelations(from: allEntities, window: window)
+        claims.append(contentsOf: relationExtraction.claims)
+
+        let fallbackEdges = buildFallbackCoOccurrenceEdges(from: allEntities)
+        let edges = relationExtraction.edges + fallbackEdges
 
         return KnowledgeExtractionResult(
             entities: allEntities.sorted { $0.canonicalName < $1.canonicalName },
@@ -177,7 +190,111 @@ final class ClaimExtractor {
         })
     }
 
-    private func buildCoOccurrenceEdges(from entities: [KnowledgeEntityCandidate]) -> [KnowledgeEdgeCandidate] {
+    private func buildSemanticRelations(
+        from entities: [KnowledgeEntityCandidate],
+        window: SummaryWindowDescriptor
+    ) -> (claims: [KnowledgeClaimCandidate], edges: [KnowledgeEdgeCandidate]) {
+        let grouped = Dictionary(grouping: entities, by: \.entityType)
+        let relationSpecs: [RelationSpec] = [
+            RelationSpec(
+                fromType: .project,
+                toType: .tool,
+                edgeType: "uses_tool",
+                forwardPredicate: "uses_tool",
+                reversePredicate: "supports_project",
+                confidence: 0.9
+            ),
+            RelationSpec(
+                fromType: .project,
+                toType: .topic,
+                edgeType: "focuses_on_topic",
+                forwardPredicate: "focuses_on_topic",
+                reversePredicate: "relevant_to_project",
+                confidence: 0.84
+            ),
+            RelationSpec(
+                fromType: .project,
+                toType: .issue,
+                edgeType: "blocked_by_issue",
+                forwardPredicate: "blocked_by_issue",
+                reversePredicate: "affects_project",
+                confidence: 0.82
+            ),
+            RelationSpec(
+                fromType: .project,
+                toType: .model,
+                edgeType: "uses_model",
+                forwardPredicate: "uses_model",
+                reversePredicate: "used_in_project",
+                confidence: 0.8
+            ),
+            RelationSpec(
+                fromType: .project,
+                toType: .lesson,
+                edgeType: "generates_lesson",
+                forwardPredicate: "generates_lesson",
+                reversePredicate: "derived_from_project",
+                confidence: 0.76
+            ),
+            RelationSpec(
+                fromType: .lesson,
+                toType: .topic,
+                edgeType: "explains_topic",
+                forwardPredicate: "explains_topic",
+                reversePredicate: "documented_in_lesson",
+                confidence: 0.72
+            )
+        ]
+
+        var claims: [KnowledgeClaimCandidate] = []
+        var edges: [KnowledgeEdgeCandidate] = []
+
+        for spec in relationSpecs {
+            let fromEntities = grouped[spec.fromType] ?? []
+            let toEntities = grouped[spec.toType] ?? []
+            guard !fromEntities.isEmpty, !toEntities.isEmpty else { continue }
+
+            for from in fromEntities {
+                for to in toEntities where from.stableKey != to.stableKey {
+                    claims.append(KnowledgeClaimCandidate(
+                        subjectKey: from.stableKey,
+                        predicate: spec.forwardPredicate,
+                        objectText: to.canonicalName,
+                        confidence: spec.confidence,
+                        qualifiers: ["window": timeLabel(window: window)],
+                        sourceKind: "relation_inference"
+                    ))
+                    claims.append(KnowledgeClaimCandidate(
+                        subjectKey: to.stableKey,
+                        predicate: spec.reversePredicate,
+                        objectText: from.canonicalName,
+                        confidence: max(0.65, spec.confidence - 0.05),
+                        qualifiers: ["window": timeLabel(window: window)],
+                        sourceKind: "relation_inference"
+                    ))
+                    edges.append(KnowledgeEdgeCandidate(
+                        fromKey: from.stableKey,
+                        toKey: to.stableKey,
+                        edgeType: spec.edgeType,
+                        weight: 1
+                    ))
+                }
+            }
+        }
+
+        return (claims, edges)
+    }
+
+    private func buildFallbackCoOccurrenceEdges(from entities: [KnowledgeEntityCandidate]) -> [KnowledgeEdgeCandidate] {
+        let grouped = Dictionary(grouping: entities, by: \.entityType)
+        var edges: [KnowledgeEdgeCandidate] = []
+        for sameTypeEntities in grouped.values {
+            edges.append(contentsOf: buildCoOccurrenceEdges(within: sameTypeEntities))
+        }
+        return edges
+    }
+
+    private func buildCoOccurrenceEdges(within entities: [KnowledgeEntityCandidate]) -> [KnowledgeEdgeCandidate] {
         let sorted = entities.sorted { $0.stableKey < $1.stableKey }
         guard sorted.count > 1 else { return [] }
 

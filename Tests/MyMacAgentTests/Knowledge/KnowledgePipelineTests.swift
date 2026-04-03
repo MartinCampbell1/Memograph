@@ -260,6 +260,75 @@ struct KnowledgePipelineTests {
         #expect(supportJson.contains("kbclm_"))
     }
 
+    @Test("Knowledge pipeline creates directed semantic project relations")
+    func persistsDirectedSemanticRelations() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-03",
+            summaryText: """
+            ## Summary
+            Worked on [[Memograph]] in [[Codex]] using [[Gemini 3 Flash]] while debugging [[macOS permissions]] and focusing on [[System Audio Capture]].
+            """,
+            topAppsJson: """
+            [{"name":"Codex","duration_min":45}]
+            """,
+            topTopicsJson: """
+            ["Memograph","System Audio Capture","macOS permissions","Gemini 3 Flash"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-03T10:00:00Z","window_end":"2026-04-03T11:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: "Finish residual audio blinking fixes",
+            suggestedNotesJson: """
+            ["macOS System Audio Capture Guide"]
+            """,
+            generatedAt: "2026-04-03T11:01:55Z",
+            modelName: "google/gemini-3-flash-preview",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Codex",
+                bundleId: "com.openai.codex",
+                windowTitles: ["Fix Memograph audio relations"],
+                startedAt: "2026-04-03T10:00:00Z",
+                endedAt: "2026-04-03T10:50:00Z",
+                durationMs: 3_000_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Worked on Memograph audio fixes"]
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-03",
+            start: ISO8601DateFormatter().date(from: "2026-04-03T10:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T11:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let rows = try db.query("""
+            SELECT edge_type
+            FROM knowledge_edges
+            ORDER BY edge_type
+        """)
+        let edgeTypes = rows.compactMap { $0["edge_type"]?.textValue }
+
+        #expect(edgeTypes.contains("uses_tool"))
+        #expect(edgeTypes.contains("focuses_on_topic"))
+        #expect(edgeTypes.contains("blocked_by_issue"))
+        #expect(edgeTypes.contains("uses_model"))
+        #expect(edgeTypes.contains("generates_lesson"))
+    }
+
     @Test("Knowledge entities track window boundaries instead of only summary midnight")
     func knowledgeEntitiesTrackWindowBoundaries() throws {
         let (db, path) = try makeDB()
@@ -310,5 +379,67 @@ struct KnowledgePipelineTests {
         #expect(rows.count == 1)
         #expect(rows.first?["first_seen_at"]?.textValue == "2026-04-02T13:24:00Z")
         #expect(rows.first?["last_seen_at"]?.textValue == "2026-04-03T00:00:00Z")
+    }
+
+    @Test("Knowledge compiler renders semantic relationship descriptions")
+    func rendersSemanticRelationshipDescriptions() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("tool-1"), .text("Codex"), .text("codex"), .text("tool"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("topic-1"), .text("System Audio Capture"), .text("system-audio-capture"), .text("topic"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("project-1"), .text("uses_tool"), .text("Codex"), .real(0.9), .text("relation_inference"),
+            .text("claim-2"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("project-1"), .text("focuses_on_topic"), .text("System Audio Capture"), .real(0.85), .text("relation_inference")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_edges
+                (id, from_entity_id, to_entity_id, edge_type, weight, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?),
+                   (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("edge-1"), .text("project-1"), .text("tool-1"), .text("uses_tool"), .real(1),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-2"), .text("project-1"), .text("topic-1"), .text("focuses_on_topic"), .real(1),
+            .text("2026-04-03T11:01:00Z")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let projectNote = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
+        let toolNote = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-03")
+
+        #expect(projectNote?.bodyMarkdown.contains("Worked on with Codex.") == true)
+        #expect(projectNote?.bodyMarkdown.contains("Focused on System Audio Capture.") == true)
+        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — tool used in this project") == true)
+        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — focus topic for this project") == true)
+        #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — project this tool was used in") == true)
     }
 }

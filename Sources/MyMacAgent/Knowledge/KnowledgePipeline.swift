@@ -263,8 +263,7 @@ final class KnowledgePipeline {
         toEntityId: String,
         supportingClaimIds: [String]
     ) throws {
-        let orderedIds = [fromEntityId, toEntityId].sorted()
-        let edgeId = stableIdentifier(prefix: "kbedge", components: orderedIds + [edge.edgeType])
+        let edgeId = stableIdentifier(prefix: "kbedge", components: [fromEntityId, toEntityId, edge.edgeType])
         let existingRows = try db.query(
             "SELECT * FROM knowledge_edges WHERE id = ? LIMIT 1",
             params: [.text(edgeId)]
@@ -298,8 +297,8 @@ final class KnowledgePipeline {
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, params: [
                 .text(edgeId),
-                .text(orderedIds[0]),
-                .text(orderedIds[1]),
+                .text(fromEntityId),
+                .text(toEntityId),
                 .text(edge.edgeType),
                 .real(weight),
                 supportJson.map(SQLiteValue.text) ?? .null,

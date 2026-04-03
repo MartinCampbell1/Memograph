@@ -1,5 +1,18 @@
 import Foundation
 
+private enum RelationshipDirection {
+    case outgoing
+    case incoming
+    case undirected
+}
+
+private struct RelatedKnowledgeReference {
+    let entity: KnowledgeEntityRecord
+    let edgeType: String
+    let direction: RelationshipDirection
+    let weight: Double
+}
+
 final class KnowledgeCompiler {
     private let db: DatabaseManager
     private let dateSupport: LocalDateSupport
@@ -46,10 +59,10 @@ final class KnowledgeCompiler {
             LIMIT 12
         """, params: [.text(entityId), .text(entityId)]).compactMap(KnowledgeEdgeRecord.init(row:))
 
-        let relatedEntities = try fetchRelatedEntities(for: entityId, edges: edges)
-            .filter { allowedEntityIds?.contains($0.id) ?? true }
-        let markdown = renderMarkdown(entity: entity, claims: claims, relatedEntities: relatedEntities)
-        let links = relatedEntities.map { linkTarget(for: $0) }
+        let relatedReferences = try fetchRelatedReferences(for: entityId, edges: edges)
+            .filter { allowedEntityIds?.contains($0.entity.id) ?? true }
+        let markdown = renderMarkdown(entity: entity, claims: claims, relatedReferences: relatedReferences)
+        let links = relatedReferences.map { linkTarget(for: $0.entity) }
         let tags = [entity.entityType.rawValue, "memograph-kb-v1"]
         let effectiveSourceDate = sourceDate ?? claims.first?.sourceSummaryDate
 
@@ -114,10 +127,10 @@ final class KnowledgeCompiler {
         return markdown
     }
 
-    private func fetchRelatedEntities(
+    private func fetchRelatedReferences(
         for entityId: String,
         edges: [KnowledgeEdgeRecord]
-    ) throws -> [KnowledgeEntityRecord] {
+    ) throws -> [RelatedKnowledgeReference] {
         let relatedIds = Set(edges.map { $0.fromEntityId == entityId ? $0.toEntityId : $0.fromEntityId })
         guard !relatedIds.isEmpty else { return [] }
 
@@ -129,13 +142,49 @@ final class KnowledgeCompiler {
         )
         let entities = rows.compactMap(KnowledgeEntityRecord.init(row:))
         let map = Dictionary(uniqueKeysWithValues: entities.map { ($0.id, $0) })
-        return relatedIds.compactMap { map[$0] }.sorted { $0.canonicalName < $1.canonicalName }
+
+        var preferredByEntityId: [String: RelatedKnowledgeReference] = [:]
+        for edge in edges {
+            let relatedId: String
+            let direction: RelationshipDirection
+
+            if edge.fromEntityId == entityId {
+                relatedId = edge.toEntityId
+                direction = .outgoing
+            } else if edge.toEntityId == entityId {
+                relatedId = edge.fromEntityId
+                direction = .incoming
+            } else {
+                continue
+            }
+
+            guard let entity = map[relatedId] else { continue }
+            let reference = RelatedKnowledgeReference(
+                entity: entity,
+                edgeType: edge.edgeType,
+                direction: direction,
+                weight: edge.weight
+            )
+
+            if let existing = preferredByEntityId[relatedId] {
+                preferredByEntityId[relatedId] = prefer(reference, over: existing)
+            } else {
+                preferredByEntityId[relatedId] = reference
+            }
+        }
+
+        return preferredByEntityId.values.sorted { lhs, rhs in
+            if lhs.entity.entityType != rhs.entity.entityType {
+                return lhs.entity.entityType.folderName < rhs.entity.entityType.folderName
+            }
+            return lhs.entity.canonicalName < rhs.entity.canonicalName
+        }
     }
 
     private func renderMarkdown(
         entity: KnowledgeEntityRecord,
         claims: [KnowledgeClaimRecord],
-        relatedEntities: [KnowledgeEntityRecord]
+        relatedReferences: [RelatedKnowledgeReference]
     ) -> String {
         var markdown = "# \(entity.canonicalName)\n\n"
         markdown += "_Type: \(entity.entityType.rawValue)_\n\n"
@@ -179,12 +228,17 @@ final class KnowledgeCompiler {
             markdown += "\n"
         }
 
-        if !relatedEntities.isEmpty {
-            markdown += "## Related\n"
-            for group in groupedRelatedEntities(relatedEntities) {
+        if !relatedReferences.isEmpty {
+            markdown += "## Relationships\n"
+            for group in groupedRelatedEntities(relatedReferences) {
                 markdown += "### \(group.type.folderName)\n"
-                for related in group.entities {
-                    markdown += "- [[\(linkTarget(for: related))|\(related.canonicalName)]]\n"
+                for related in group.references {
+                    let relationship = describe(relationship: related, for: entity)
+                    markdown += "- [[\(linkTarget(for: related.entity))|\(related.entity.canonicalName)]]"
+                    if !relationship.isEmpty {
+                        markdown += " — \(relationship)"
+                    }
+                    markdown += "\n"
                 }
             }
             markdown += "\n"
@@ -213,6 +267,18 @@ final class KnowledgeCompiler {
             "surfaced_in_window",
             "used_during_window",
             "topic_in_focus",
+            "uses_tool",
+            "supports_project",
+            "focuses_on_topic",
+            "relevant_to_project",
+            "blocked_by_issue",
+            "affects_project",
+            "uses_model",
+            "used_in_project",
+            "generates_lesson",
+            "derived_from_project",
+            "explains_topic",
+            "documented_in_lesson",
             "worth_capturing"
         ]
 
@@ -222,6 +288,7 @@ final class KnowledgeCompiler {
             }
 
             let count = predicateClaims.count
+            let examples = predicateExamples(from: predicateClaims)
             let latest = predicateClaims.compactMap { claim in
                 claim.windowEnd
                     ?? claim.windowStart
@@ -237,6 +304,30 @@ final class KnowledgeCompiler {
                 return "\(entity.canonicalName) was used in \(count) captured work window\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
             case "topic_in_focus":
                 return "\(entity.canonicalName) appeared as a focus topic in \(count) summary window\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
+            case "uses_tool":
+                return "\(entity.canonicalName) was worked on with \(count) tool relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "supports_project":
+                return "\(entity.canonicalName) supported \(count) project relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "focuses_on_topic":
+                return "\(entity.canonicalName) focused on \(count) topic relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "relevant_to_project":
+                return "\(entity.canonicalName) was relevant to \(count) project window\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "blocked_by_issue":
+                return "\(entity.canonicalName) hit \(count) blocking issue relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "affects_project":
+                return "\(entity.canonicalName) affected \(count) project window\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "uses_model":
+                return "\(entity.canonicalName) was paired with \(count) model relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "used_in_project":
+                return "\(entity.canonicalName) appeared in \(count) project relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "generates_lesson":
+                return "\(entity.canonicalName) generated \(count) durable lesson relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "derived_from_project":
+                return "\(entity.canonicalName) was derived from \(count) project relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "explains_topic":
+                return "\(entity.canonicalName) explained \(count) topic relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
+            case "documented_in_lesson":
+                return "\(entity.canonicalName) was documented in \(count) lesson relation\(count == 1 ? "" : "s")\(examples), last seen \(formatTimestamp(latest))."
             case "worth_capturing":
                 return "\(entity.canonicalName) was suggested as durable knowledge \(count) time\(count == 1 ? "" : "s"), last seen \(formatTimestamp(latest))."
             default:
@@ -254,6 +345,30 @@ final class KnowledgeCompiler {
             return object.map { "Advanced in summary window \($0)." } ?? "Advanced in a summary window."
         case "topic_in_focus":
             return object.map { "Appeared as a focus topic for \($0)." } ?? "Appeared as a focus topic."
+        case "uses_tool":
+            return object.map { "Worked on with \($0)." } ?? "Worked on with a tool."
+        case "supports_project":
+            return object.map { "Supported work on \($0)." } ?? "Supported work on a project."
+        case "focuses_on_topic":
+            return object.map { "Focused on \($0)." } ?? "Focused on a topic."
+        case "relevant_to_project":
+            return object.map { "Relevant to \($0)." } ?? "Relevant to a project."
+        case "blocked_by_issue":
+            return object.map { "Blocked by \($0)." } ?? "Blocked by an issue."
+        case "affects_project":
+            return object.map { "Affected \($0)." } ?? "Affected a project."
+        case "uses_model":
+            return object.map { "Used model \($0)." } ?? "Used a model."
+        case "used_in_project":
+            return object.map { "Used in \($0)." } ?? "Used in a project."
+        case "generates_lesson":
+            return object.map { "Generated lesson \($0)." } ?? "Generated a durable lesson."
+        case "derived_from_project":
+            return object.map { "Derived from \($0)." } ?? "Derived from a project."
+        case "explains_topic":
+            return object.map { "Explains topic \($0)." } ?? "Explains a topic."
+        case "documented_in_lesson":
+            return object.map { "Documented in lesson \($0)." } ?? "Documented in a lesson."
         case "worth_capturing":
             return object.map { "Suggested as durable knowledge for \($0)." } ?? "Suggested as durable knowledge."
         case "surfaced_in_window":
@@ -268,11 +383,78 @@ final class KnowledgeCompiler {
         return dateSupport.localDateTimeString(from: value)
     }
 
-    private func groupedRelatedEntities(_ entities: [KnowledgeEntityRecord]) -> [(type: KnowledgeEntityType, entities: [KnowledgeEntityRecord])] {
-        let grouped = Dictionary(grouping: entities, by: \.entityType)
+    private func predicateExamples(from claims: [KnowledgeClaimRecord]) -> String {
+        let examples = Array(Set(claims.compactMap {
+            $0.objectText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        })).filter { !$0.isEmpty }.sorted()
+        guard !examples.isEmpty else { return "" }
+        return " (\(examples.prefix(3).joined(separator: ", ")))"
+    }
+
+    private func prefer(
+        _ candidate: RelatedKnowledgeReference,
+        over existing: RelatedKnowledgeReference
+    ) -> RelatedKnowledgeReference {
+        let candidatePriority = relationPriority(candidate.edgeType)
+        let existingPriority = relationPriority(existing.edgeType)
+        if candidatePriority != existingPriority {
+            return candidatePriority > existingPriority ? candidate : existing
+        }
+        if candidate.weight != existing.weight {
+            return candidate.weight > existing.weight ? candidate : existing
+        }
+        return candidate
+    }
+
+    private func relationPriority(_ edgeType: String) -> Int {
+        switch edgeType {
+        case "blocked_by_issue", "uses_tool", "focuses_on_topic", "uses_model", "generates_lesson", "explains_topic":
+            return 3
+        case "co_occurs_with":
+            return 1
+        default:
+            return 2
+        }
+    }
+
+    private func groupedRelatedEntities(_ references: [RelatedKnowledgeReference]) -> [(type: KnowledgeEntityType, references: [RelatedKnowledgeReference])] {
+        let grouped = Dictionary(grouping: references, by: { $0.entity.entityType })
         return KnowledgeEntityType.allCases.compactMap { type in
             guard let group = grouped[type], !group.isEmpty else { return nil }
-            return (type, group.sorted { $0.canonicalName < $1.canonicalName })
+            return (type, group.sorted { $0.entity.canonicalName < $1.entity.canonicalName })
+        }
+    }
+
+    private func describe(relationship: RelatedKnowledgeReference, for entity: KnowledgeEntityRecord) -> String {
+        switch relationship.edgeType {
+        case "uses_tool":
+            return relationship.direction == .outgoing
+                ? "tool used in this project"
+                : "project this tool was used in"
+        case "focuses_on_topic":
+            return relationship.direction == .outgoing
+                ? "focus topic for this project"
+                : "project where this topic was in focus"
+        case "blocked_by_issue":
+            return relationship.direction == .outgoing
+                ? "blocking issue"
+                : "project affected by this issue"
+        case "uses_model":
+            return relationship.direction == .outgoing
+                ? "model used in this project"
+                : "project that used this model"
+        case "generates_lesson":
+            return relationship.direction == .outgoing
+                ? "durable lesson generated from this project"
+                : "project this lesson came from"
+        case "explains_topic":
+            return relationship.direction == .outgoing
+                ? "topic explained by this lesson"
+                : "lesson that documents this topic"
+        case "co_occurs_with":
+            return "appeared in the same captured windows"
+        default:
+            return relationship.edgeType.replacingOccurrences(of: "_", with: " ")
         }
     }
 
