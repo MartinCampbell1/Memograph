@@ -7,10 +7,16 @@ import os
 /// Monitors default output usage and only opens ScreenCaptureKit while another
 /// app is actively sending audio to the selected output device.
 final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
+    private struct OutputObservation {
+        let hasExternalOutput: Bool
+        let signature: String?
+    }
+
     private let silenceTimeout: TimeInterval = 1.5
     private let signalWarmupWindow: TimeInterval = 2.0
     private let retryCooldownAfterSilence: TimeInterval = 4.0
     private let retryCooldownAfterPermissionFailure: TimeInterval = 30.0
+    private let retryCooldownAfterSilentRenderer: TimeInterval = 45.0
     private let audibleThreshold: Float = 0.003
     private var stream: SCStream?
     private var currentFile: AVAudioFile?
@@ -30,6 +36,8 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private var lastAudibleAt: Date?
     private var hasAudibleSamples = false
     private var retryCaptureAfter = Date.distantPast
+    private var suppressedSilentSignature: String?
+    private var suppressedSilentSignatureUntil = Date.distantPast
     private var audioFormat: AVAudioFormat?
     private var outputDeviceID: AudioDeviceID = 0
     private let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
@@ -95,19 +103,39 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
 
     private func checkOutputState() {
         let now = Date()
+        let observation = currentOutputObservation()
+
+        if observation.signature == nil {
+            clearSilentSignatureSuppression()
+        } else if observation.signature != suppressedSilentSignature {
+            clearSilentSignatureSuppression()
+        }
+
         if isCapturing, shouldStopForSilence(now: now) {
             retryCaptureAfter = now.addingTimeInterval(retryCooldownAfterSilence)
+            if let signature = observation.signature {
+                suppressedSilentSignature = signature
+                suppressedSilentSignatureUntil = now.addingTimeInterval(retryCooldownAfterSilentRenderer)
+            }
             stopCapture(reason: "output became silent")
             return
         }
 
-        let externalOutputInUse = isExternalProcessUsingOutput()
+        let externalOutputInUse = observation.hasExternalOutput
         if externalOutputInUse {
             pendingStopWorkItem?.cancel()
             pendingStopWorkItem = nil
         }
 
-        if externalOutputInUse && !isCapturing && now >= retryCaptureAfter {
+        if SystemAudioProbePolicy.shouldAttemptCapture(
+            now: now,
+            hasExternalOutput: externalOutputInUse,
+            isCapturing: isCapturing,
+            retryCaptureAfter: retryCaptureAfter,
+            outputSignature: observation.signature,
+            suppressedSilentSignature: suppressedSilentSignature,
+            suppressedSilentSignatureUntil: suppressedSilentSignatureUntil
+        ) {
             Task { await startCaptureIfNeeded() }
         } else if !externalOutputInUse && isCapturing && pendingStopWorkItem == nil {
             let workItem = DispatchWorkItem { [weak self] in
@@ -120,16 +148,36 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     }
 
     private func isExternalProcessUsingOutput() -> Bool {
+        currentOutputObservation().hasExternalOutput
+    }
+
+    private func currentOutputObservation() -> OutputObservation {
         let processes = AudioProcessInspector.fetchProcesses()
         if !processes.isEmpty {
-            return SystemAudioUsageEvaluator.hasExternalProcessUsingOutputDevice(
-                processes,
-                outputDeviceID: outputDeviceID,
-                currentPID: currentPID
+            let externalProcesses = processes.filter {
+                $0.pid != currentPID &&
+                $0.isRunningOutput &&
+                $0.outputDeviceIDs.contains(outputDeviceID)
+            }
+
+            let signature = externalProcesses.isEmpty
+                ? nil
+                : externalProcesses
+                    .map { String($0.pid) }
+                    .sorted()
+                    .joined(separator: ",")
+
+            return OutputObservation(
+                hasExternalOutput: !externalProcesses.isEmpty,
+                signature: signature
             )
         }
 
-        return !isCapturing && isOutputRunningSomewhere()
+        let fallbackRunning = !isCapturing && isOutputRunningSomewhere()
+        return OutputObservation(
+            hasExternalOutput: fallbackRunning,
+            signature: fallbackRunning ? "device-\(outputDeviceID)" : nil
+        )
     }
 
     private func resolveDefaultOutputDevice() -> AudioDeviceID? {
@@ -300,6 +348,11 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
         }
         currentFilePath = nil
         hasAudibleSamples = false
+    }
+
+    private func clearSilentSignatureSuppression() {
+        suppressedSilentSignature = nil
+        suppressedSilentSignatureUntil = .distantPast
     }
 
     private func shouldStopForSilence(now: Date) -> Bool {

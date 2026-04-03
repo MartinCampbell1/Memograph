@@ -95,4 +95,55 @@ struct SystemAudioUsageEvaluatorTests {
             )
         )
     }
+
+    @Test("Suppresses repeated probe for the same silent renderer signature")
+    func suppressesRepeatedProbeForSameSignature() {
+        let now = Date()
+
+        #expect(
+            !SystemAudioProbePolicy.shouldAttemptCapture(
+                now: now,
+                hasExternalOutput: true,
+                isCapturing: false,
+                retryCaptureAfter: .distantPast,
+                outputSignature: "1255,2347",
+                suppressedSilentSignature: "1255,2347",
+                suppressedSilentSignatureUntil: now.addingTimeInterval(30)
+            )
+        )
+    }
+
+    @Test("Allows probe when renderer signature changes")
+    func allowsProbeWhenSignatureChanges() {
+        let now = Date()
+
+        #expect(
+            SystemAudioProbePolicy.shouldAttemptCapture(
+                now: now,
+                hasExternalOutput: true,
+                isCapturing: false,
+                retryCaptureAfter: .distantPast,
+                outputSignature: "4444",
+                suppressedSilentSignature: "1255,2347",
+                suppressedSilentSignatureUntil: now.addingTimeInterval(30)
+            )
+        )
+    }
+
+    @Test("Allows probe again after suppression expires")
+    func allowsProbeAfterSuppressionExpires() {
+        let now = Date()
+
+        #expect(
+            SystemAudioProbePolicy.shouldAttemptCapture(
+                now: now,
+                hasExternalOutput: true,
+                isCapturing: false,
+                retryCaptureAfter: .distantPast,
+                outputSignature: "1255,2347",
+                suppressedSilentSignature: "1255,2347",
+                suppressedSilentSignatureUntil: now.addingTimeInterval(-1)
+            )
+        )
+    }
 }

@@ -261,3 +261,25 @@ enum SystemAudioUsageEvaluator {
         }
     }
 }
+
+enum SystemAudioProbePolicy {
+    static func shouldAttemptCapture(
+        now: Date,
+        hasExternalOutput: Bool,
+        isCapturing: Bool,
+        retryCaptureAfter: Date,
+        outputSignature: String?,
+        suppressedSilentSignature: String?,
+        suppressedSilentSignatureUntil: Date
+    ) -> Bool {
+        guard hasExternalOutput, !isCapturing, now >= retryCaptureAfter else {
+            return false
+        }
+
+        guard let outputSignature else {
+            return true
+        }
+
+        return outputSignature != suppressedSilentSignature || now >= suppressedSilentSignatureUntil
+    }
+}
