@@ -188,6 +188,7 @@ final class KnowledgeCompiler {
         relatedReferences: [RelatedKnowledgeReference]
     ) -> String {
         let visibleRelationObjects = Set(relatedReferences.map { $0.entity.canonicalName })
+        let displayedRelatedReferences = filteredRelatedReferences(relatedReferences, for: entity)
         var markdown = "# \(entity.canonicalName)\n\n"
         markdown += "_Type: \(entity.entityType.rawValue)_\n\n"
 
@@ -199,6 +200,19 @@ final class KnowledgeCompiler {
             markdown += "- Last seen: \(dateSupport.localDateTimeString(from: lastSeen))\n"
         }
         markdown += "- Claims collected: \(claims.count)\n\n"
+
+        let overviewLines = buildOverviewLines(
+            for: entity,
+            claims: claims,
+            relatedReferences: displayedRelatedReferences
+        )
+        if !overviewLines.isEmpty {
+            markdown += "## Overview\n"
+            for line in overviewLines {
+                markdown += "- \(line)\n"
+            }
+            markdown += "\n"
+        }
 
         let aliases = aliases(for: entity)
         if !aliases.isEmpty {
@@ -235,9 +249,9 @@ final class KnowledgeCompiler {
             markdown += "\n"
         }
 
-        if !relatedReferences.isEmpty {
+        if !displayedRelatedReferences.isEmpty {
             markdown += "## Relationships\n"
-            for group in groupedRelatedEntities(relatedReferences) {
+            for group in groupedRelatedEntities(displayedRelatedReferences) {
                 markdown += "### \(group.type.folderName)\n"
                 for related in group.references {
                     let relationship = describe(relationship: related, for: entity)
@@ -252,6 +266,93 @@ final class KnowledgeCompiler {
         }
 
         return markdown
+    }
+
+    private func buildOverviewLines(
+        for entity: KnowledgeEntityRecord,
+        claims: [KnowledgeClaimRecord],
+        relatedReferences: [RelatedKnowledgeReference]
+    ) -> [String] {
+        let relationCounts = Dictionary(grouping: relatedReferences, by: { $0.entity.entityType }).mapValues(\.count)
+        let recentWindowCount = Set(claims.compactMap { claimWindowKey($0) }.filter { !$0.isEmpty }).count
+
+        switch entity.entityType {
+        case .project:
+            var parts: [String] = []
+            if let toolCount = relationCounts[.tool], toolCount > 0 {
+                parts.append("\(toolCount) tool\(toolCount == 1 ? "" : "s")")
+            }
+            if let topicCount = relationCounts[.topic], topicCount > 0 {
+                parts.append("\(topicCount) focus topic\(topicCount == 1 ? "" : "s")")
+            }
+            if let issueCount = relationCounts[.issue], issueCount > 0 {
+                parts.append("\(issueCount) issue\(issueCount == 1 ? "" : "s")")
+            }
+            if let lessonCount = relationCounts[.lesson], lessonCount > 0 {
+                parts.append("\(lessonCount) durable lesson\(lessonCount == 1 ? "" : "s")")
+            }
+            guard !parts.isEmpty else { return [] }
+            return ["Project activity linked to \(joinNaturalLanguage(parts))."]
+
+        case .topic:
+            var lines: [String] = []
+            if let projectCount = relationCounts[.project], projectCount > 0 {
+                lines.append("This topic is connected to \(projectCount) project\(projectCount == 1 ? "" : "s").")
+            }
+            if let topicCount = relationCounts[.topic], topicCount > 0 {
+                lines.append("It clusters with \(topicCount) nearby topic\(topicCount == 1 ? "" : "s").")
+            }
+            if let lessonCount = relationCounts[.lesson], lessonCount > 0 {
+                lines.append("It is documented by \(lessonCount) lesson\(lessonCount == 1 ? "" : "s").")
+            }
+            return Array(lines.prefix(2))
+
+        case .lesson:
+            var parts: [String] = []
+            if let projectCount = relationCounts[.project], projectCount > 0 {
+                parts.append("\(projectCount) source project\(projectCount == 1 ? "" : "s")")
+            }
+            if let topicCount = relationCounts[.topic], topicCount > 0 {
+                parts.append("\(topicCount) documented topic\(topicCount == 1 ? "" : "s")")
+            }
+            if !parts.isEmpty {
+                return ["Durable lesson distilled from \(joinNaturalLanguage(parts))."]
+            }
+            return []
+
+        case .tool:
+            var parts: [String] = []
+            if recentWindowCount > 0 {
+                parts.append("\(recentWindowCount) recent work window\(recentWindowCount == 1 ? "" : "s")")
+            }
+            if let projectCount = relationCounts[.project], projectCount > 0 {
+                parts.append("\(projectCount) project\(projectCount == 1 ? "" : "s")")
+            }
+            if let topicCount = relationCounts[.topic], topicCount > 0 {
+                parts.append("\(topicCount) topic\(topicCount == 1 ? "" : "s")")
+            }
+            guard !parts.isEmpty else { return [] }
+            return ["Tool activity captured across \(joinNaturalLanguage(parts))."]
+
+        case .issue:
+            var parts: [String] = []
+            if let projectCount = relationCounts[.project], projectCount > 0 {
+                parts.append("\(projectCount) affected project\(projectCount == 1 ? "" : "s")")
+            }
+            if recentWindowCount > 0 {
+                parts.append("\(recentWindowCount) surfaced window\(recentWindowCount == 1 ? "" : "s")")
+            }
+            guard !parts.isEmpty else { return [] }
+            return ["Issue evidence spans \(joinNaturalLanguage(parts))."]
+
+        case .model:
+            guard let projectCount = relationCounts[.project], projectCount > 0 else { return [] }
+            return ["Model usage was observed in \(projectCount) project\(projectCount == 1 ? "" : "s")."]
+
+        case .site, .person:
+            guard recentWindowCount > 0 else { return [] }
+            return ["Captured across \(recentWindowCount) recent window\(recentWindowCount == 1 ? "" : "s")."]
+        }
     }
 
     private func aliases(for entity: KnowledgeEntityRecord) -> [String] {
@@ -701,6 +802,34 @@ final class KnowledgeCompiler {
                 }
                 return lhs.entity.canonicalName < rhs.entity.canonicalName
             })
+        }
+    }
+
+    private func filteredRelatedReferences(
+        _ references: [RelatedKnowledgeReference],
+        for entity: KnowledgeEntityRecord
+    ) -> [RelatedKnowledgeReference] {
+        references.filter { reference in
+            if entity.entityType == .lesson &&
+                reference.entity.entityType == .lesson &&
+                reference.edgeType == "co_occurs_with" {
+                return false
+            }
+            return true
+        }
+    }
+
+    private func joinNaturalLanguage(_ parts: [String]) -> String {
+        switch parts.count {
+        case 0:
+            return ""
+        case 1:
+            return parts[0]
+        case 2:
+            return "\(parts[0]) and \(parts[1])"
+        default:
+            let head = parts.dropLast().joined(separator: ", ")
+            return "\(head), and \(parts.last!)"
         }
     }
 

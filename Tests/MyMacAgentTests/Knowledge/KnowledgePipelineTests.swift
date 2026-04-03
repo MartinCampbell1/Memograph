@@ -370,6 +370,8 @@ struct KnowledgePipelineTests {
         let note = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-03")
 
         #expect(note != nil)
+        #expect(note?.bodyMarkdown.contains("## Overview") == true)
+        #expect(note?.bodyMarkdown.contains("Tool activity captured across 1 recent work window and 1 project.") == true)
         #expect(note?.bodyMarkdown.contains("## Aliases") == true)
         #expect(note?.bodyMarkdown.contains("Claude.app") == true)
         #expect(note?.bodyMarkdown.contains("## Key Signals") == true)
@@ -1148,9 +1150,79 @@ struct KnowledgePipelineTests {
 
         #expect(projectNote?.bodyMarkdown.contains("Worked on with Codex.") == true)
         #expect(projectNote?.bodyMarkdown.contains("Focused on System Audio Capture.") == true)
+        #expect(projectNote?.bodyMarkdown.contains("## Overview") == true)
+        #expect(projectNote?.bodyMarkdown.contains("Project activity linked to 1 tool and 1 focus topic.") == true)
         #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — tool used in this project") == true)
         #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — focus topic for this project") == true)
         #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — project this tool was used in") == true)
+    }
+
+    @Test("Lesson notes hide noisy same-window lesson co-occurrence references")
+    func lessonNotesHideSameTypeCoOccurrenceNoise() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("lesson-1"), .text("macOS System Audio Capture Guide"), .text("macos-system-audio-capture-guide"), .text("lesson"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("topic-1"), .text("System Audio Capture"), .text("system-audio-capture"), .text("topic"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("lesson-2"), .text("Local-first AI Privacy Strategy"), .text("local-first-ai-privacy-strategy"), .text("lesson"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("lesson-1"), .text("derived_from_project"), .text("Memograph"), .real(0.8), .text("relation_inference"),
+            .text("claim-2"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("lesson-1"), .text("explains_topic"), .text("System Audio Capture"), .real(0.8), .text("relation_inference")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_edges
+                (id, from_entity_id, to_entity_id, edge_type, weight, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?),
+                   (?, ?, ?, ?, ?, ?),
+                   (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("edge-1"), .text("project-1"), .text("lesson-1"), .text("generates_lesson"), .real(1),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-2"), .text("lesson-1"), .text("topic-1"), .text("explains_topic"), .real(1),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-3"), .text("lesson-1"), .text("lesson-2"), .text("co_occurs_with"), .real(1),
+            .text("2026-04-03T11:01:00Z")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
+
+        #expect(note?.bodyMarkdown.contains("## Overview") == true)
+        #expect(note?.bodyMarkdown.contains("Durable lesson distilled from 1 source project and 1 documented topic.") == true)
+        #expect(note?.bodyMarkdown.contains("### Projects") == true)
+        #expect(note?.bodyMarkdown.contains("### Topics") == true)
+        #expect(note?.bodyMarkdown.contains("### Lessons") == false)
+        #expect(note?.bodyMarkdown.contains("Local-first AI Privacy Strategy") == false)
     }
 
     @Test("Versioned tool aliases collapse into one canonical tool entity")
