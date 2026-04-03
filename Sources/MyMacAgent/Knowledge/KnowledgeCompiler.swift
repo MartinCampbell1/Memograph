@@ -691,7 +691,12 @@ final class KnowledgeCompiler {
         aliases: [String],
         claims: [KnowledgeClaimRecord]
     ) throws -> [String: String] {
-        guard entity.entityType == .project else { return [:] }
+        switch entity.entityType {
+        case .project, .topic, .lesson:
+            break
+        default:
+            return [:]
+        }
 
         var snippets: [String: String] = [:]
         var summaryCache: [String: String?] = [:]
@@ -717,8 +722,9 @@ final class KnowledgeCompiler {
             }
 
             guard let summaryText,
-                  let snippet = extractProjectContextSnippet(
+                  let snippet = extractEntityContextSnippet(
                     from: summaryText,
+                    entityType: entity.entityType,
                     canonicalName: entity.canonicalName,
                     aliases: aliases
                   ) else {
@@ -751,22 +757,59 @@ final class KnowledgeCompiler {
         return rows.first?["summary_text"]?.textValue
     }
 
-    private func extractProjectContextSnippet(
+    private func extractEntityContextSnippet(
         from summaryText: String,
+        entityType: KnowledgeEntityType,
         canonicalName: String,
         aliases: [String]
     ) -> String? {
         let matchingNames = [canonicalName] + aliases
-        if let projectSectionSnippet = extractProjectSectionSnippet(
-            from: summaryText,
-            matchingNames: matchingNames
-        ) {
-            return projectSectionSnippet
+        switch entityType {
+        case .project:
+            if let projectSectionSnippet = extractProjectSectionSnippet(
+                from: summaryText,
+                matchingNames: matchingNames
+            ) {
+                return projectSectionSnippet
+            }
+            if let summarySentence = extractFallbackSummarySentence(
+                from: summaryText,
+                matchingNames: matchingNames
+            ) {
+                return summarySentence
+            }
+            return extractMatchingBulletSnippet(
+                from: summaryText,
+                matchingNames: matchingNames,
+                preferredSections: ["проекты и код", "детальный таймлайн"]
+            )
+        case .topic:
+            if let summarySentence = extractFallbackSummarySentence(
+                from: summaryText,
+                matchingNames: matchingNames
+            ) {
+                return summarySentence
+            }
+            return extractMatchingBulletSnippet(
+                from: summaryText,
+                matchingNames: matchingNames,
+                preferredSections: ["что изучал / читал", "инструменты и технологии", "проекты и код"]
+            )
+        case .lesson:
+            if let suggestedNoteSnippet = extractMatchingBulletSnippet(
+                from: summaryText,
+                matchingNames: matchingNames,
+                preferredSections: ["предлагаемые заметки"]
+            ) {
+                return suggestedNoteSnippet
+            }
+            return extractFallbackSummarySentence(
+                from: summaryText,
+                matchingNames: matchingNames
+            )
+        default:
+            return nil
         }
-        return extractFallbackSummarySentence(
-            from: summaryText,
-            matchingNames: matchingNames
-        )
     }
 
     private func extractProjectSectionSnippet(
@@ -827,7 +870,7 @@ final class KnowledgeCompiler {
         let summarySection = summaryText
             .components(separatedBy: "\n## ")
             .first ?? summaryText
-        let plain = stripKnowledgeMarkdown(summarySection)
+        let plain = stripLeadingSummaryLabel(from: stripKnowledgeMarkdown(summarySection))
         let sentences = plain.split(whereSeparator: \.isNewline)
             .flatMap { $0.split(separator: ".", omittingEmptySubsequences: true) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -842,6 +885,58 @@ final class KnowledgeCompiler {
         return nil
     }
 
+    private func stripLeadingSummaryLabel(from value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = ["summary ", "сводка "]
+        for prefix in prefixes {
+            if trimmed.lowercased().hasPrefix(prefix) {
+                return String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return trimmed
+    }
+
+    private func extractMatchingBulletSnippet(
+        from summaryText: String,
+        matchingNames: [String],
+        preferredSections: [String]
+    ) -> String? {
+        let preferred = Set(preferredSections.map { normalizedKnowledgeText($0) })
+        let lines = summaryText.components(separatedBy: .newlines)
+        var currentSection = ""
+        var bestPreferredMatches: [String] = []
+        var bestFallbackMatches: [String] = []
+
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("## ") {
+                currentSection = normalizedKnowledgeText(String(line.dropFirst(3)))
+                continue
+            }
+
+            guard line.hasPrefix("- ") else { continue }
+            let plain = stripKnowledgeMarkdown(line)
+            guard matchesAnyKnowledgeName(plain, names: matchingNames) else { continue }
+
+            let detail = extractBulletDetail(from: line)
+            guard !detail.isEmpty else { continue }
+
+            if preferred.contains(currentSection) {
+                bestPreferredMatches.append(detail)
+            } else {
+                bestFallbackMatches.append(detail)
+            }
+        }
+
+        if !bestPreferredMatches.isEmpty {
+            return condensedContextSnippet(from: Array(bestPreferredMatches.prefix(2)))
+        }
+        if !bestFallbackMatches.isEmpty {
+            return condensedContextSnippet(from: Array(bestFallbackMatches.prefix(2)))
+        }
+        return nil
+    }
+
     private func extractBulletDetail(from line: String) -> String {
         let withoutBullet = line.replacingOccurrences(
             of: #"^\-\s*"#,
@@ -850,7 +945,13 @@ final class KnowledgeCompiler {
         )
         let plain = stripKnowledgeMarkdown(withoutBullet)
         let value: String
-        if let colonIndex = plain.firstIndex(of: ":") {
+        if let separatorRange = plain.range(of: " — ") {
+            value = String(plain[separatorRange.upperBound...])
+        } else if let separatorRange = plain.range(of: " – ") {
+            value = String(plain[separatorRange.upperBound...])
+        } else if let separatorRange = plain.range(of: " - ") {
+            value = String(plain[separatorRange.upperBound...])
+        } else if let colonIndex = plain.firstIndex(of: ":") {
             value = String(plain[plain.index(after: colonIndex)...])
         } else {
             value = plain
@@ -895,6 +996,11 @@ final class KnowledgeCompiler {
 
     private func stripKnowledgeMarkdown(_ value: String) -> String {
         var cleaned = value
+        cleaned = cleaned.replacingOccurrences(
+            of: #"(?m)^\s*#+\s*"#,
+            with: "",
+            options: .regularExpression
+        )
         cleaned = cleaned.replacingOccurrences(
             of: #"\[\[([^\]|]+)\|([^\]]+)\]\]"#,
             with: "$2",

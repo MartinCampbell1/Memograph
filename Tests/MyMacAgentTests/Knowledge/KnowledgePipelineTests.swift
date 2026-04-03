@@ -598,6 +598,103 @@ struct KnowledgePipelineTests {
         #expect(note?.bodyMarkdown.contains("Context: Stabilize the background runtime. Notifications through UserNotificationCenter indicated active capture work.") == true)
     }
 
+    @Test("Topic recent windows include compact summary context when available")
+    func topicRecentWindowsIncludeSummaryContext() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("topic-1"), .text("System Audio Capture"), .text("system-audio-capture"), .text("topic"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("topic-1"), .text("topic_in_focus"), .text("2026-04-03"), .real(0.92), .text("hourly_summary")
+        ])
+
+        try db.execute("""
+            INSERT INTO daily_summaries
+                (date, summary_text, generated_at, generation_status)
+            VALUES (?, ?, ?, ?)
+        """, params: [
+            .text("2026-04-03"),
+            .text("""
+                ## Summary
+                Work on [[Memograph]] included planning [[System Audio Capture]] through [[ScreenCaptureKit]] to reduce background blinking.
+                """),
+            .text("2026-04-03T21:02:46Z"),
+            .text("success")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "topic-1", sourceDate: "2026-04-03")
+
+        #expect(note?.bodyMarkdown.contains("Appeared as a focus topic for 2026-04-03.") == true)
+        #expect(note?.bodyMarkdown.contains("Context: Work on Memograph included planning System Audio Capture through ScreenCaptureKit to reduce background blinking.") == true)
+    }
+
+    @Test("Lesson recent windows include proposed note context when available")
+    func lessonRecentWindowsIncludeSuggestedNoteContext() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("lesson-1"), .text("macOS System Audio Capture Guide"), .text("macos-system-audio-capture-guide"), .text("lesson"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("lesson-1"), .text("worth_capturing"), .text("2026-04-03"), .real(0.92), .text("summary_suggestion")
+        ])
+
+        try db.execute("""
+            INSERT INTO daily_summaries
+                (date, summary_text, generated_at, generation_status)
+            VALUES (?, ?, ?, ?)
+        """, params: [
+            .text("2026-04-03"),
+            .text("""
+                ## Summary
+                Investigated audio stability.
+
+                ## Предлагаемые заметки
+                - [[macOS System Audio Capture Guide]] — how to use ScreenCaptureKit without noisy false-positive probes.
+                """),
+            .text("2026-04-03T21:02:46Z"),
+            .text("success")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
+
+        #expect(note?.bodyMarkdown.contains("Suggested as durable knowledge for 2026-04-03.") == true)
+        #expect(note?.bodyMarkdown.contains("Context: how to use ScreenCaptureKit without noisy false-positive probes.") == true)
+    }
+
     @Test("Knowledge edge weights stay stable when the same window is reprocessed")
     func knowledgeEdgesAreIdempotentForReruns() throws {
         let (db, path) = try makeDB()
