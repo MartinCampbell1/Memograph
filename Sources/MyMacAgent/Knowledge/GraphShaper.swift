@@ -10,6 +10,7 @@ final class GraphShaper {
         "ai",
         "llm",
         "rag",
+        "api",
         "claims",
         "claim layer",
         "knowledge base",
@@ -20,8 +21,73 @@ final class GraphShaper {
         "wiki-links",
         "daily log",
         "hourly log",
+        "flash",
+        "menu bar",
+        "proxy",
         "topic",
         "topics"
+    ]
+    private let suppressedTopicNames: Set<String> = [
+        "amendment",
+        "claim extraction",
+        "claim extraction cost analysis",
+        "claim extraction efficiency",
+        "claim layer",
+        "claims",
+        "founderos knowledge base amendment",
+        "founderos_knowledge_base_amendment.md",
+        "funpay",
+        "martincampbell1/memograph",
+        "open source",
+        "screenpipe vs screencap",
+        "twitter account farming",
+        "twitter accounts"
+    ]
+    private let suppressedTopicFragments: [String] = [
+        ".md",
+        "/",
+        "_",
+        " vs ",
+        "account farming",
+        "cost analysis",
+        "marketing"
+    ]
+    private let durableTopicNames: Set<String> = [
+        "accessibility api",
+        "accessibility permissions",
+        "full disk access",
+        "graphrag",
+        "hardware for ai",
+        "local llm",
+        "obsidian knowledge graph",
+        "ocr",
+        "personal knowledge management",
+        "privacy & security",
+        "privacy-focused ocr",
+        "q4 quantization",
+        "screen recording",
+        "screencap",
+        "screencapturekit",
+        "sqlite",
+        "swift",
+        "system audio capture",
+        "vram"
+    ]
+    private let durableTopicFragments: [String] = [
+        "permission",
+        "privacy",
+        "screen recording",
+        "screen capture",
+        "screencapturekit",
+        "system audio",
+        "knowledge graph",
+        "local llm",
+        "hardware for ai",
+        "quantization"
+    ]
+    private let durableShortTopicNames: Set<String> = [
+        "ocr",
+        "vram"
     ]
     private let genericLessonNames: Set<String> = [
         "report generation"
@@ -95,10 +161,16 @@ final class GraphShaper {
         case .site, .person:
             return metric.claimCount >= 2 && isSpecificEnough(metric.entity.canonicalName, minimumTokens: 1, minimumLength: 4)
         case .topic:
+            guard !isSuppressedTopic(metric.entity.canonicalName) else { return false }
+            if isDurableTopic(metric.entity.canonicalName) {
+                guard metric.claimCount >= 1 else { return false }
+                guard !hasMoreSpecificSibling(for: metric, in: index) else { return false }
+                return isSpecificEnoughTopic(metric.entity.canonicalName)
+            }
             guard metric.claimCount >= 2 else { return false }
             guard !isGenericTopic(metric.entity.canonicalName) else { return false }
             guard !hasMoreSpecificSibling(for: metric, in: index) else { return false }
-            return isSpecificEnough(metric.entity.canonicalName, minimumTokens: 2, minimumLength: 6)
+            return isSpecificEnoughTopic(metric.entity.canonicalName)
         }
     }
 
@@ -117,6 +189,24 @@ final class GraphShaper {
 
     private func isGenericLesson(_ name: String) -> Bool {
         genericLessonNames.contains(name.lowercased())
+    }
+
+    private func isSuppressedTopic(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        if suppressedTopicNames.contains(lowered) {
+            return true
+        }
+
+        return suppressedTopicFragments.contains(where: { lowered.contains($0) })
+    }
+
+    private func isDurableTopic(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        if durableTopicNames.contains(lowered) {
+            return true
+        }
+
+        return durableTopicFragments.contains(where: { lowered.contains($0) })
     }
 
     private func isSuppressedTool(_ name: String) -> Bool {
@@ -167,13 +257,7 @@ final class GraphShaper {
         for candidate in index.values {
             guard candidate.entity.id != metric.entity.id else { continue }
             guard candidate.claimCount >= metric.claimCount else { continue }
-
-            switch candidate.entity.entityType {
-            case .lesson, .issue, .topic:
-                break
-            default:
-                continue
-            }
+            guard candidate.entity.entityType == metric.entity.entityType else { continue }
 
             let candidateTokens = tokenSet(for: candidate.entity.canonicalName)
             guard candidateTokens.count > baseTokens.count else { continue }
@@ -191,6 +275,13 @@ final class GraphShaper {
             return true
         }
         return name.count >= minimumLength
+    }
+
+    private func isSpecificEnoughTopic(_ name: String) -> Bool {
+        if durableShortTopicNames.contains(name.lowercased()) {
+            return true
+        }
+        return isSpecificEnough(name, minimumTokens: 2, minimumLength: 6)
     }
 
     private func versionlessToolName(from name: String) -> String? {

@@ -259,4 +259,56 @@ struct KnowledgePipelineTests {
         let supportJson = rows.first?["supporting_claim_ids_json"]?.textValue ?? ""
         #expect(supportJson.contains("kbclm_"))
     }
+
+    @Test("Knowledge entities track window boundaries instead of only summary midnight")
+    func knowledgeEntitiesTrackWindowBoundaries() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-02",
+            summaryText: "Worked on [[Memograph]] and reviewed [[System Audio Capture]].",
+            topAppsJson: "[{\"name\":\"Codex\",\"duration_min\":20}]",
+            topTopicsJson: "[\"System Audio Capture\"]",
+            aiSessionsJson: nil,
+            contextSwitchesJson: "{\"window_start\":\"2026-04-02T13:24:00Z\",\"window_end\":\"2026-04-03T00:00:00Z\",\"mode\":\"hourly\"}",
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-03T00:01:00Z",
+            modelName: "test",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Codex",
+                bundleId: "com.openai.codex",
+                windowTitles: ["Memograph"],
+                startedAt: "2026-04-02T13:24:00Z",
+                endedAt: "2026-04-02T14:00:00Z",
+                durationMs: 2_160_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Investigated system audio capture"]
+            )
+        ]
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-02",
+            start: ISO8601DateFormatter().date(from: "2026-04-02T13:24:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-03T00:00:00Z")!
+        )
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let rows = try db.query(
+            "SELECT first_seen_at, last_seen_at FROM knowledge_entities WHERE canonical_name = ? LIMIT 1",
+            params: [.text("System Audio Capture")]
+        )
+
+        #expect(rows.count == 1)
+        #expect(rows.first?["first_seen_at"]?.textValue == "2026-04-02T13:24:00Z")
+        #expect(rows.first?["last_seen_at"]?.textValue == "2026-04-03T00:00:00Z")
+    }
 }

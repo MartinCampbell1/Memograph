@@ -42,7 +42,11 @@ final class KnowledgePipeline {
 
         var persistedEntities: [String: KnowledgeEntityRecord] = [:]
         for entity in extraction.entities {
-            let persisted = try upsertEntity(entity, seenAt: window.end)
+            let persisted = try upsertEntity(
+                entity,
+                windowStart: window.start,
+                windowEnd: window.end
+            )
             persistedEntities[entity.stableKey] = persisted
         }
 
@@ -147,8 +151,13 @@ final class KnowledgePipeline {
         try db.execute("DELETE FROM knowledge_entities")
     }
 
-    private func upsertEntity(_ entity: KnowledgeEntityCandidate, seenAt: Date) throws -> KnowledgeEntityRecord {
-        let seenAtString = dateSupport.isoString(from: seenAt)
+    private func upsertEntity(
+        _ entity: KnowledgeEntityCandidate,
+        windowStart: Date,
+        windowEnd: Date
+    ) throws -> KnowledgeEntityRecord {
+        let firstSeenString = dateSupport.isoString(from: windowStart)
+        let lastSeenString = dateSupport.isoString(from: windowEnd)
         let slug = normalizer.slug(for: entity.canonicalName)
         let aliasesJson = jsonString(Array(entity.aliases).sorted())
         let existingRows = try db.query("""
@@ -160,8 +169,8 @@ final class KnowledgePipeline {
 
         if var existing = existingRows.first.flatMap(KnowledgeEntityRecord.init(row:)) {
             let mergedAliases = mergeAliases(existing.aliasesJson, incoming: entity.aliases)
-            let firstSeen = minTimestamp(existing.firstSeenAt, seenAtString)
-            let lastSeen = maxTimestamp(existing.lastSeenAt, seenAtString)
+            let firstSeen = minTimestamp(existing.firstSeenAt, firstSeenString)
+            let lastSeen = maxTimestamp(existing.lastSeenAt, lastSeenString)
 
             try db.execute("""
                 UPDATE knowledge_entities
@@ -198,8 +207,8 @@ final class KnowledgePipeline {
             .text(slug),
             .text(entity.entityType.rawValue),
             aliasesJson.map(SQLiteValue.text) ?? .null,
-            .text(seenAtString),
-            .text(seenAtString)
+            .text(firstSeenString),
+            .text(lastSeenString)
         ])
 
         return KnowledgeEntityRecord(
@@ -208,8 +217,8 @@ final class KnowledgePipeline {
             slug: slug,
             entityType: entity.entityType,
             aliasesJson: aliasesJson,
-            firstSeenAt: seenAtString,
-            lastSeenAt: seenAtString
+            firstSeenAt: firstSeenString,
+            lastSeenAt: lastSeenString
         )
     }
 

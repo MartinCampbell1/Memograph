@@ -210,4 +210,102 @@ struct GraphShaperTests {
         #expect(!ids.contains("lesson-1"))
         #expect(ids.contains("lesson-2"))
     }
+
+    @Test("Materializes durable one-off topics while suppressing topic artifacts")
+    func materializesDurableTopicsAndSuppressesArtifacts() {
+        let shaper = GraphShaper()
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "topic-1",
+                    canonicalName: "Accessibility Permissions",
+                    slug: "accessibility-permissions",
+                    entityType: .topic,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "topic-2",
+                    canonicalName: "System Audio Capture",
+                    slug: "system-audio-capture",
+                    entityType: .topic,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "topic-3",
+                    canonicalName: "FounderOS_Knowledge_Base_Amendment.md",
+                    slug: "founderos-knowledge-base-amendment-md",
+                    entityType: .topic,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "topic-4",
+                    canonicalName: "Screenpipe vs Screencap",
+                    slug: "screenpipe-vs-screencap",
+                    entityType: .topic,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 1
+            )
+        ]
+
+        let ids = shaper.materializedEntityIds(from: metrics)
+
+        #expect(ids.contains("topic-1"))
+        #expect(ids.contains("topic-2"))
+        #expect(!ids.contains("topic-3"))
+        #expect(!ids.contains("topic-4"))
+    }
+
+    @Test("Keeps durable topics even when a more specific lesson exists")
+    func keepsDurableTopicsAlongsideLessons() {
+        let shaper = GraphShaper()
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "topic-1",
+                    canonicalName: "Screen Recording",
+                    slug: "screen-recording",
+                    entityType: .topic,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: KnowledgeEntityRecord(
+                    id: "lesson-1",
+                    canonicalName: "macOS Screen Recording Permissions Guide",
+                    slug: "macos-screen-recording-permissions-guide",
+                    entityType: .lesson,
+                    aliasesJson: nil,
+                    firstSeenAt: nil,
+                    lastSeenAt: nil
+                ),
+                claimCount: 2
+            )
+        ]
+
+        let ids = shaper.materializedEntityIds(from: metrics)
+
+        #expect(ids.contains("topic-1"))
+        #expect(ids.contains("lesson-1"))
+    }
 }
