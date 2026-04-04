@@ -20,6 +20,7 @@ struct AppSettingsTests {
         #expect(settings.knowledgeAppliedActions.isEmpty)
         #expect(settings.knowledgeMergeOverlays.isEmpty)
         #expect(settings.knowledgeAliasOverrides.isEmpty)
+        #expect(settings.knowledgeReviewDecisions.isEmpty)
         #expect(settings.maxCapturesPerSession == 500)
     }
 
@@ -66,6 +67,16 @@ struct AppSettingsTests {
                 appliedAt: "2026-04-04T10:33:00Z"
             )
         ]
+        settings.knowledgeReviewDecisions = [
+            KnowledgeReviewDecisionRecord(
+                key: "reclassify:topic-1",
+                kind: .promoteToLesson,
+                status: .dismiss,
+                title: "Review Packet — Reclassify SQLite Optimization for Memograph",
+                path: "/Users/test/vault/Knowledge/_drafts/Review/reclassify-sqlite-optimization-for-memograph.md",
+                recordedAt: "2026-04-04T11:00:00Z"
+            )
+        ]
 
         let settings2 = AppSettings(defaults: defaults, credentialsStore: store)
         #expect(settings2.obsidianVaultPath == "/Users/test/vault")
@@ -81,6 +92,9 @@ struct AppSettingsTests {
         #expect(settings2.knowledgeMergeOverlays.first?.targetTitle == "OCR")
         #expect(settings2.knowledgeAliasOverrides.count == 1)
         #expect(settings2.knowledgeAliasOverrides.first?.canonicalName == "OCR")
+        #expect(settings2.knowledgeReviewDecisions.count == 1)
+        #expect(settings2.knowledgeReviewDecisions.first?.status == .dismiss)
+        #expect(settings2.knowledgeReviewDecisions.first?.recordedAt == "2026-04-04T11:00:00Z")
     }
 
     @Test("Default credentials storage persists locally without Keychain")

@@ -304,6 +304,11 @@ struct AppSettings {
         set { writeCodableArray(Array(newValue.suffix(300)), forKey: "knowledgeAliasOverrides") }
     }
 
+    var knowledgeReviewDecisions: [KnowledgeReviewDecisionRecord] {
+        get { readCodableArray(forKey: "knowledgeReviewDecisions") }
+        set { writeCodableArray(Array(newValue.suffix(300)), forKey: "knowledgeReviewDecisions") }
+    }
+
     var maxCapturesPerSession: Int {
         get {
             let val = defaults.integer(forKey: "maxCapturesPerSession")

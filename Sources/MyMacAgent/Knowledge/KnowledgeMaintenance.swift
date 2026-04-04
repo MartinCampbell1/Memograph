@@ -254,11 +254,17 @@ final class KnowledgeMaintenance {
         materializedEntityIds: Set<String>,
         graphShaper: GraphShaper,
         appliedActions: [KnowledgeAppliedActionRecord] = [],
-        aliasOverrides: [KnowledgeAliasOverrideRecord] = []
+        aliasOverrides: [KnowledgeAliasOverrideRecord] = [],
+        reviewDecisions: [KnowledgeReviewDecisionRecord] = []
     ) throws -> KnowledgeMaintenanceArtifacts {
         let appliedDecisionIndex = buildAppliedDecisionIndex(
             appliedActions: appliedActions,
             aliasOverrides: aliasOverrides
+        )
+        let dismissedReviewKeys = Set(
+            reviewDecisions
+                .filter { $0.status == .dismiss }
+                .map(\.key)
         )
         let metricIndex = Dictionary(uniqueKeysWithValues: metrics.map { ($0.entity.id, $0) })
         let entities = metrics
@@ -326,7 +332,6 @@ final class KnowledgeMaintenance {
         }
         let sortedHotspots = hotspots.sorted(by: compareHotspots)
         let topHotspotNames = sortedHotspots.prefix(3).map(\.entity.canonicalName)
-        let reviewItemCount = autoDemotedLessons.count + actionableAutoDemotedTopics.count + weakTopics.count
         let reclassifyCandidates = buildReclassifyCandidates(
             metrics: metrics,
             materializedEntityIds: materializedEntityIds,
@@ -346,28 +351,40 @@ final class KnowledgeMaintenance {
             metrics: metrics,
             reclassifyCandidates: reclassifyCandidates,
             consolidationCandidates: consolidationCandidates
-        )
+        ).filter { !dismissedReviewKeys.contains(manualReviewKey(for: $0)) }
         let safeActionSourceEntityIds = Set(safeActions.map(\.source.id))
         let filteredReclassifyCandidates = reclassifyCandidates.filter {
             !safeActionSourceEntityIds.contains($0.entity.id)
+                && !dismissedReviewKeys.contains(manualReviewKey(for: $0))
         }
         let filteredConsolidationCandidates = consolidationCandidates.filter {
             !safeActionSourceEntityIds.contains($0.source.id)
+                && !dismissedReviewKeys.contains(manualReviewKey(for: $0))
+        }
+        let filteredWeakTopics = weakTopics.filter {
+            !dismissedReviewKeys.contains(manualReviewKey(forWeakTopic: $0.entity))
+        }
+        let filteredActionableAutoDemotedTopics = actionableAutoDemotedTopics.filter {
+            !dismissedReviewKeys.contains(manualReviewKey(forWeakTopic: $0.entity))
+        }
+        let filteredStaleCandidates = staleCandidates.filter {
+            !dismissedReviewKeys.contains(manualReviewKey(for: $0))
         }
         let manualReviewItems = buildManualReviewItems(
-            actionableAutoDemotedTopics: actionableAutoDemotedTopics,
-            weakTopics: weakTopics,
+            actionableAutoDemotedTopics: filteredActionableAutoDemotedTopics,
+            weakTopics: filteredWeakTopics,
             reclassifyCandidates: filteredReclassifyCandidates,
             consolidationCandidates: filteredConsolidationCandidates,
-            staleCandidates: staleCandidates
+            staleCandidates: filteredStaleCandidates
         )
+        let reviewItemCount = manualReviewItems.count
         let draftArtifactEntries = try buildDraftArtifacts(from: safeActions)
         let manualReviewArtifactEntries = try buildManualReviewDraftArtifacts(
-            actionableAutoDemotedTopics: actionableAutoDemotedTopics,
-            weakTopics: weakTopics,
+            actionableAutoDemotedTopics: filteredActionableAutoDemotedTopics,
+            weakTopics: filteredWeakTopics,
             reclassifyCandidates: filteredReclassifyCandidates,
             consolidationCandidates: filteredConsolidationCandidates,
-            staleCandidates: staleCandidates
+            staleCandidates: filteredStaleCandidates
         )
         let draftArtifactsByKey = Dictionary(grouping: draftArtifactEntries, by: \.key)
             .mapValues { entries in
@@ -408,6 +425,9 @@ final class KnowledgeMaintenance {
         if !appliedActions.isEmpty {
             markdown += "- Recently applied actions tracked: \(appliedActions.count)\n\n"
         }
+        if !reviewDecisions.isEmpty {
+            markdown += "- Review decisions tracked: \(reviewDecisions.count)\n\n"
+        }
 
         markdown += "## Next Actions\n"
         if safeActions.isEmpty && manualReviewItems.isEmpty {
@@ -444,7 +464,7 @@ final class KnowledgeMaintenance {
         }
 
         markdown += "## Review Queue\n"
-        if autoDemotedLessons.isEmpty && weakTopics.isEmpty && actionableAutoDemotedTopics.isEmpty && commodityWeakTopics.isEmpty {
+        if autoDemotedLessons.isEmpty && filteredWeakTopics.isEmpty && filteredActionableAutoDemotedTopics.isEmpty && commodityWeakTopics.isEmpty {
             markdown += "- No immediate KB maintenance flags.\n\n"
         } else {
             if !autoDemotedLessons.isEmpty {
@@ -460,9 +480,9 @@ final class KnowledgeMaintenance {
                 markdown += "\n"
             }
 
-            if !actionableAutoDemotedTopics.isEmpty {
+            if !filteredActionableAutoDemotedTopics.isEmpty {
                 markdown += "### Auto-demoted Weak Topics\n"
-                for metric in actionableAutoDemotedTopics.prefix(8) {
+                for metric in filteredActionableAutoDemotedTopics.prefix(8) {
                     markdown += "- `\(metric.entity.canonicalName)`"
                     markdown += " — weak topic: \(metric.coOccurrenceEdgeCount) loose links"
                     markdown += ", only \(metric.typedEdgeCount) strong relation"
@@ -481,9 +501,9 @@ final class KnowledgeMaintenance {
                 markdown += "\n\n"
             }
 
-            if !weakTopics.isEmpty {
+            if !filteredWeakTopics.isEmpty {
                 markdown += "### Weak Durable Topics\n"
-                for hotspot in weakTopics.prefix(8) {
+                for hotspot in filteredWeakTopics.prefix(8) {
                     markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
                     markdown += " — durable but thinly supported: \(hotspot.relationStats.coOccurrenceEdges) loose links"
                     markdown += ", only \(hotspot.relationStats.typedEdges) strong relation"
@@ -532,7 +552,7 @@ final class KnowledgeMaintenance {
         }
 
         markdown += "## Improvement Candidates\n"
-        if filteredReclassifyCandidates.isEmpty && filteredConsolidationCandidates.isEmpty && staleCandidates.isEmpty {
+        if filteredReclassifyCandidates.isEmpty && filteredConsolidationCandidates.isEmpty && filteredStaleCandidates.isEmpty {
             markdown += "- No merge, reclassify, or stale review candidates right now.\n\n"
         } else {
             if !filteredReclassifyCandidates.isEmpty {
@@ -562,9 +582,9 @@ final class KnowledgeMaintenance {
                 markdown += "\n"
             }
 
-            if !staleCandidates.isEmpty {
+            if !filteredStaleCandidates.isEmpty {
                 markdown += "### Stale Review Candidates\n"
-                for candidate in staleCandidates.prefix(6) {
+                for candidate in filteredStaleCandidates.prefix(6) {
                     markdown += "- [[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
                     markdown += " — last seen \(candidate.daysSinceSeen) day"
                     if candidate.daysSinceSeen == 1 { markdown += "" } else { markdown += "s" }
@@ -593,6 +613,17 @@ final class KnowledgeMaintenance {
             markdown += "\n"
         }
 
+        markdown += "## Recently Reviewed\n"
+        let sortedReviewDecisions = reviewDecisions.sorted(by: compareReviewDecisions)
+        if sortedReviewDecisions.isEmpty {
+            markdown += "- No non-pending review decisions tracked yet.\n\n"
+        } else {
+            for decision in sortedReviewDecisions.prefix(8) {
+                markdown += "- \(formattedReviewDecision(decision))\n"
+            }
+            markdown += "\n"
+        }
+
         markdown += "## Hotspots\n"
         for hotspot in sortedHotspots.prefix(10) {
             markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
@@ -617,14 +648,16 @@ final class KnowledgeMaintenance {
         materializedEntityIds: Set<String>,
         graphShaper: GraphShaper,
         appliedActions: [KnowledgeAppliedActionRecord] = [],
-        aliasOverrides: [KnowledgeAliasOverrideRecord] = []
+        aliasOverrides: [KnowledgeAliasOverrideRecord] = [],
+        reviewDecisions: [KnowledgeReviewDecisionRecord] = []
     ) throws -> String {
         try buildArtifacts(
             metrics: metrics,
             materializedEntityIds: materializedEntityIds,
             graphShaper: graphShaper,
             appliedActions: appliedActions,
-            aliasOverrides: aliasOverrides
+            aliasOverrides: aliasOverrides,
+            reviewDecisions: reviewDecisions
         ).markdown
     }
 
@@ -714,6 +747,13 @@ final class KnowledgeMaintenance {
         return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
     }
 
+    private func compareReviewDecisions(_ lhs: KnowledgeReviewDecisionRecord, _ rhs: KnowledgeReviewDecisionRecord) -> Bool {
+        if lhs.recordedAt != rhs.recordedAt {
+            return (lhs.recordedAt ?? "") > (rhs.recordedAt ?? "")
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+
     private func formattedAppliedAction(_ action: KnowledgeAppliedActionRecord) -> String {
         let timestamp = dateSupport
             .parseDateTime(action.appliedAt)
@@ -734,6 +774,23 @@ final class KnowledgeMaintenance {
             return "`\(timestamp)` — merged context into [[\(linkTarget)|\(action.title)]]"
         case .suppression:
             return "`\(timestamp)` — suppressed [[\(linkTarget)|\(action.title)]] from the active knowledge graph"
+        }
+    }
+
+    private func formattedReviewDecision(_ decision: KnowledgeReviewDecisionRecord) -> String {
+        let timestamp = decision.recordedAt.flatMap(dateSupport.parseDateTime)
+            .map(dateSupport.localDateTimeString(from:))
+            ?? decision.recordedAt
+            ?? "unknown time"
+        let draftName = ((decision.path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let draftLink = "Knowledge/_drafts/Review/\(draftName)"
+        switch decision.status {
+        case .apply:
+            return "`\(timestamp)` — approved [[\(draftLink)|\(decision.title)]]"
+        case .dismiss:
+            return "`\(timestamp)` — dismissed [[\(draftLink)|\(decision.title)]]"
+        case .pending:
+            return "`\(timestamp)` — pending [[\(draftLink)|\(decision.title)]]"
         }
     }
 
@@ -1112,6 +1169,18 @@ final class KnowledgeMaintenance {
 
     private func manualReviewKey(forWeakTopic entity: KnowledgeEntityRecord) -> String {
         "weak:\(entity.id)"
+    }
+
+    private func manualReviewKey(for action: KnowledgeSafeAction) -> String {
+        switch action.kind {
+        case .promoteToLessonDraft:
+            return "reclassify:\(action.source.id)"
+        case .consolidateIntoRoot:
+            guard let target = action.target else {
+                return "consolidate:\(action.source.id)"
+            }
+            return "consolidate:\(action.source.id)->\(target.id)"
+        }
     }
 
     private func buildManualReviewDraftArtifacts(

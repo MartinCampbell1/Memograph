@@ -277,6 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
         knowledgePipeline = KnowledgePipeline(db: db)
         refreshKnowledgeAppliedActionHistory()
+        refreshKnowledgeReviewDecisionHistory()
         refreshKnowledgeMergeOverlayHistory()
         refreshKnowledgeAliasOverrideHistory()
         logger.info("Phase 3 components initialized (fusion, summary, export)")
@@ -876,9 +877,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 incoming: appliedDraftRecords + mergeAppliedActions + suppressionAppliedActions
             )
             settings.knowledgeAliasOverrides = derivedKnowledgeAliasOverrides(from: settings)
+            _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
+            settings.knowledgeReviewDecisions = exporter.discoverKnowledgeReviewDecisions()
             rebuildKnowledgePipeline()
             let activeKnowledgePipeline = self.knowledgePipeline ?? knowledgePipeline
-            _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
 
             let materializedCount = try activeKnowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
             logger.info("Knowledge review-action apply finished: \(approvedDecisions.count) approved decisions, \(applyResults.count) files applied, \(suppressionAppliedActions.count) suppressions recorded, \(mergeOverlayRecords.count) merge overlays stored, \(materializedCount) notes materialized")
@@ -900,6 +902,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settings.knowledgeAppliedActions = discovered
         _ = try? exporter.exportKnowledgeAppliedHistory(discovered)
+    }
+
+    private func refreshKnowledgeReviewDecisionHistory() {
+        guard let exporter = obsidianExporter else { return }
+        var settings = AppSettings()
+        let discovered = exporter.discoverKnowledgeReviewDecisions()
+        guard discovered != settings.knowledgeReviewDecisions else { return }
+        settings.knowledgeReviewDecisions = discovered
+        rebuildKnowledgePipeline()
     }
 
     private func refreshKnowledgeMergeOverlayHistory() {

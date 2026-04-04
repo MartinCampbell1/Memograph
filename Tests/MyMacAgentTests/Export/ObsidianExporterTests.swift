@@ -362,7 +362,7 @@ struct ObsidianExporterTests {
         #expect(updated.contains("# Updated Draft"))
     }
 
-    @Test("Preserves review decisions across draft sync and discovers approved review decisions")
+    @Test("Preserves review decisions across draft sync and discovers non-pending review decisions")
     func preservesAndDiscoversReviewDecisions() throws {
         let (db, path) = try makeDB()
         defer { try? FileManager.default.removeItem(atPath: path) }
@@ -416,11 +416,35 @@ struct ObsidianExporterTests {
         #expect(preserved.contains("Decision: apply"))
         #expect(preserved.contains("## Candidate"))
 
+        let dismissedArtifact = KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: "Review/weak-topic-gpu-rendering.md",
+            title: "Review Packet — Weak Topic GPU Rendering",
+            markdown: """
+            <!-- memograph-review-key: weak:topic-gpu -->
+            <!-- memograph-review-kind: suppress -->
+            # Review Packet — Weak Topic GPU Rendering
+
+            ## Decision
+            Decision: dismiss
+            """,
+            reviewPacketKey: "weak:topic-gpu",
+            reviewDecisionKind: .suppress
+        )
+        _ = try exporter.syncKnowledgeDraftArtifacts([refreshedArtifact, dismissedArtifact])
+
+        let allDecisions = exporter.discoverKnowledgeReviewDecisions()
+        #expect(allDecisions.count == 2)
+        #expect(allDecisions.contains {
+            $0.key == "weak:topic-gpu" && $0.kind == .suppress && $0.status == .dismiss
+        })
+
         let decisions = exporter.discoverApprovedKnowledgeReviewDecisions()
         #expect(decisions.count == 1)
         #expect(decisions.first?.key == "reclassify:topic-123")
         #expect(decisions.first?.kind == .promoteToLesson)
         #expect(decisions.first?.status == .apply)
+        #expect(decisions.first?.recordedAt != nil)
     }
 
     @Test("Applies safe knowledge draft artifacts into the main knowledge tree with backups")

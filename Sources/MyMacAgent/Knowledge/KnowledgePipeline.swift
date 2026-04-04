@@ -378,7 +378,8 @@ final class KnowledgePipeline {
             materializedEntityIds: materializedEntityIds,
             graphShaper: graphShaper,
             appliedActions: settings.knowledgeAppliedActions,
-            aliasOverrides: settings.knowledgeAliasOverrides
+            aliasOverrides: settings.knowledgeAliasOverrides,
+            reviewDecisions: settings.knowledgeReviewDecisions
         )
     }
 

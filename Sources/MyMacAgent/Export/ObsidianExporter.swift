@@ -288,7 +288,7 @@ final class ObsidianExporter {
         return results
     }
 
-    func discoverApprovedKnowledgeReviewDecisions() -> [KnowledgeReviewDecisionRecord] {
+    func discoverKnowledgeReviewDecisions() -> [KnowledgeReviewDecisionRecord] {
         let reviewRoot = (knowledgeDraftsDirectory() as NSString).appendingPathComponent("Review")
         guard FileManager.default.fileExists(atPath: reviewRoot),
               let files = try? FileManager.default.contentsOfDirectory(atPath: reviewRoot) else {
@@ -304,7 +304,7 @@ final class ObsidianExporter {
                       let kindRaw = reviewMetadataValue(named: "memograph-review-kind", in: markdown),
                       let kind = KnowledgeReviewDecisionKind(rawValue: kindRaw),
                       let status = extractReviewDecisionStatus(from: markdown),
-                      status == .apply else {
+                      status != .pending else {
                     return nil
                 }
                 return KnowledgeReviewDecisionRecord(
@@ -312,12 +312,20 @@ final class ObsidianExporter {
                     kind: kind,
                     status: status,
                     title: extractedTitle(from: markdown) ?? ((file as NSString).deletingPathExtension),
-                    path: path
+                    path: path,
+                    recordedAt: fileModificationISODate(at: path)
                 )
             }
             .sorted { lhs, rhs in
-                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                if lhs.recordedAt != rhs.recordedAt {
+                    return (lhs.recordedAt ?? "") > (rhs.recordedAt ?? "")
+                }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
+    }
+
+    func discoverApprovedKnowledgeReviewDecisions() -> [KnowledgeReviewDecisionRecord] {
+        discoverKnowledgeReviewDecisions().filter { $0.status == .apply }
     }
 
     func renderKnowledgeAppliedHistory(_ records: [KnowledgeAppliedActionRecord]) -> String {
@@ -1199,6 +1207,14 @@ final class ObsidianExporter {
             return String(trimmed.dropFirst(prefix.count).dropLast(4))
         }
         return nil
+    }
+
+    private func fileModificationISODate(at path: String) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let modifiedAt = attributes[.modificationDate] as? Date else {
+            return nil
+        }
+        return dateSupport.isoString(from: modifiedAt)
     }
 
     private func appliedActionKey(kind: KnowledgeAppliedActionKind, relativePath: String) -> String {

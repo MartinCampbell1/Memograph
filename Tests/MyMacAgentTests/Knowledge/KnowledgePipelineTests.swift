@@ -714,6 +714,104 @@ struct KnowledgePipelineTests {
         #expect(artifacts.draftArtifacts.count == 2)
     }
 
+    @Test("Knowledge maintenance suppresses dismissed review candidates and shows review history")
+    func maintenanceSuppressesDismissedReviewCandidates() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let maintenance = KnowledgeMaintenance(db: db, timeZone: utc)
+        let shaper = GraphShaper()
+
+        let rootTopic = KnowledgeEntityRecord(
+            id: "topic-1",
+            canonicalName: "TurboQuant",
+            slug: "turboquant",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: "2026-04-03T10:00:00Z",
+            lastSeenAt: "2026-04-03T11:00:00Z"
+        )
+        let expandedTopic = KnowledgeEntityRecord(
+            id: "topic-2",
+            canonicalName: "TurboQuant Algorithm",
+            slug: "turboquant-algorithm",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: "2026-04-03T10:00:00Z",
+            lastSeenAt: "2026-04-03T11:00:00Z"
+        )
+        let staleTool = KnowledgeEntityRecord(
+            id: "tool-1",
+            canonicalName: "Old Utility",
+            slug: "old-utility",
+            entityType: .tool,
+            aliasesJson: nil,
+            firstSeenAt: "2020-01-01T00:00:00Z",
+            lastSeenAt: "2020-01-02T00:00:00Z"
+        )
+
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: rootTopic,
+                claimCount: 5,
+                typedEdgeCount: 4,
+                coOccurrenceEdgeCount: 10,
+                projectRelationCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: expandedTopic,
+                claimCount: 2,
+                typedEdgeCount: 2,
+                coOccurrenceEdgeCount: 6,
+                projectRelationCount: 0
+            ),
+            KnowledgeEntityMetrics(
+                entity: staleTool,
+                claimCount: 2,
+                typedEdgeCount: 1,
+                coOccurrenceEdgeCount: 1,
+                projectRelationCount: 0
+            )
+        ]
+
+        let reviewDecisions = [
+            KnowledgeReviewDecisionRecord(
+                key: "consolidate:topic-2->topic-1",
+                kind: .consolidate,
+                status: .dismiss,
+                title: "Review Packet — Consolidate TurboQuant Algorithm",
+                path: "/tmp/Knowledge/_drafts/Review/consolidate-turboquant-algorithm-into-turboquant.md",
+                recordedAt: "2026-04-04T12:00:00Z"
+            ),
+            KnowledgeReviewDecisionRecord(
+                key: "stale:tool-1",
+                kind: .suppress,
+                status: .dismiss,
+                title: "Review Packet — Stale Note Old Utility",
+                path: "/tmp/Knowledge/_drafts/Review/stale-old-utility.md",
+                recordedAt: "2026-04-04T12:05:00Z"
+            )
+        ]
+
+        let artifacts = try maintenance.buildArtifacts(
+            metrics: metrics,
+            materializedEntityIds: Set(["topic-1", "topic-2", "tool-1"]),
+            graphShaper: shaper,
+            reviewDecisions: reviewDecisions
+        )
+        let markdown = artifacts.markdown
+
+        #expect(markdown.contains("## Recently Reviewed"))
+        #expect(markdown.contains("dismissed [[Knowledge/_drafts/Review/stale-old-utility|Review Packet — Stale Note Old Utility]]"))
+        #expect(markdown.contains("dismissed [[Knowledge/_drafts/Review/consolidate-turboquant-algorithm-into-turboquant|Review Packet — Consolidate TurboQuant Algorithm]]"))
+        #expect(!markdown.contains("### Stale Review Candidates"))
+        #expect(!markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]] — stale"))
+        #expect(!markdown.contains("### Consolidation Candidates"))
+        #expect(!markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]]"))
+        #expect(!artifacts.draftArtifacts.contains { $0.relativePath.contains("stale-old-utility") })
+        #expect(!artifacts.draftArtifacts.contains { $0.relativePath.contains("consolidate-turboquant-algorithm-into-turboquant") })
+    }
+
     @Test("Knowledge compiler renders readable signals aliases and grouped related entities")
     func rendersReadableKnowledgeNote() throws {
         let (db, path) = try makeDB()
