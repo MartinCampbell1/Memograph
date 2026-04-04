@@ -217,6 +217,7 @@ struct KnowledgePipelineTests {
 
         #expect(maintenance.contains("# Memograph Knowledge Maintenance"))
         #expect(maintenance.contains("## Snapshot"))
+        #expect(maintenance.contains("## Dashboard"))
         #expect(maintenance.contains("## Review Queue"))
         #expect(maintenance.contains("## Hotspots"))
         #expect(maintenance.contains("Auto-demoted Broad Lessons"))
@@ -305,6 +306,7 @@ struct KnowledgePipelineTests {
             graphShaper: shaper
         )
 
+        #expect(markdown.contains("Commodity weak topics already suppressed: 1"))
         #expect(markdown.contains("Suppressed commodity weak topics: 1"))
         #expect(markdown.contains("GPU"))
         #expect(!markdown.contains("NVIDIA Tesla"))
@@ -1591,9 +1593,14 @@ struct KnowledgePipelineTests {
 
         #expect(topicNote?.bodyMarkdown.contains("This topic stays active across 2 projects, especially around Memograph and geminicode.") == true)
         #expect(topicNote?.bodyMarkdown.contains("Its closest cluster includes Screen Recording and Accessibility Permissions.") == true)
+        #expect(topicNote?.bodyMarkdown.contains("Main projects: Memograph and geminicode;") == true)
+        #expect(topicNote?.bodyMarkdown.contains("Closest cluster: Screen Recording and Accessibility Permissions;") == true)
         #expect(topicNote?.bodyMarkdown.contains("[[Knowledge/Lessons/macos-system-audio-capture-guide|macOS System Audio Capture Guide]] — lesson that captures this topic") == true)
 
         #expect(lessonNote?.bodyMarkdown.contains("This lesson crystallizes work from Memograph into guidance on System Audio Capture.") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("Source projects: Memograph;") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("Core topic: System Audio Capture;") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("Captured as a durable note candidate") == false)
         #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — source project behind this lesson") == true)
         #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — topic this lesson helps explain") == true)
     }

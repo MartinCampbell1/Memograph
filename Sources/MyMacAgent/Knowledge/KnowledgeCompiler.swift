@@ -602,15 +602,15 @@ final class KnowledgeCompiler {
             ])
         case .topic:
             return compactSignalLines([
-                signalLine("topic_in_focus", label: "In focus", summaries: summaries, unit: "summary window"),
-                signalLine("relevant_to_project", label: "Project trail", summaries: summaries, fallbackNoun: "project"),
-                signalLine("related_topic", label: "Often appears near", summaries: summaries, fallbackNoun: "topic"),
-                signalLine("documented_in_lesson", label: "Explained in", summaries: summaries, fallbackNoun: "lesson")
+                signalLine("topic_in_focus", label: "Focused", summaries: summaries, unit: "summary window"),
+                signalLine("relevant_to_project", label: "Main projects", summaries: summaries, fallbackNoun: "project"),
+                signalLine("related_topic", label: "Closest cluster", summaries: summaries, fallbackNoun: "topic"),
+                signalLine("documented_in_lesson", label: "Best write-up", summaries: summaries, fallbackNoun: "lesson")
             ])
         case .lesson:
             return compactSignalLines([
-                signalLine("derived_from_project", label: "Distilled from", summaries: summaries, fallbackNoun: "project"),
-                signalLine("explains_topic", label: "Covers", summaries: summaries, fallbackNoun: "topic"),
+                signalLine("derived_from_project", label: "Source projects", summaries: summaries, fallbackNoun: "project"),
+                signalLine("explains_topic", label: "Core topic", summaries: summaries, fallbackNoun: "topic"),
                 signalLine("worth_capturing", label: nil, summaries: summaries)
             ])
         case .issue:
@@ -673,7 +673,7 @@ final class KnowledgeCompiler {
         unit: String?
     ) -> String {
         if summary.predicate == "worth_capturing" {
-            return "Promoted to a durable note candidate \(summary.evidenceCount == 1 ? "once" : "\(summary.evidenceCount) times"); last seen \(formatTimestamp(summary.latest))."
+            return "Captured as a durable note candidate \(summary.evidenceCount == 1 ? "once" : "\(summary.evidenceCount) times"); last seen \(formatTimestamp(summary.latest))."
         }
 
         if let unit {
@@ -749,7 +749,7 @@ final class KnowledgeCompiler {
         case "documented_in_lesson":
             return "Documented in \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
         case "worth_capturing":
-            return "Promoted to a durable note candidate \(summary.evidenceCount == 1 ? "once" : "\(summary.evidenceCount) times"); last seen \(formatTimestamp(summary.latest))."
+            return "Captured as a durable note candidate \(summary.evidenceCount == 1 ? "once" : "\(summary.evidenceCount) times"); last seen \(formatTimestamp(summary.latest))."
         default:
             return nil
         }

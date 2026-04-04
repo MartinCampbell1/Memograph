@@ -92,6 +92,16 @@ final class KnowledgeMaintenance {
         let actionableAutoDemotedTopics = autoDemotedTopics.filter {
             !graphShaper.shouldSuppressWeakTopicInMaintenance($0.entity.canonicalName)
         }
+        let sortedHotspots = hotspots.sorted(by: compareHotspots)
+        let topHotspotNames = sortedHotspots.prefix(3).map(\.entity.canonicalName)
+        let reviewItemCount = autoDemotedLessons.count + actionableAutoDemotedTopics.count + weakTopics.count
+
+        markdown += "## Dashboard\n"
+        if !topHotspotNames.isEmpty {
+            markdown += "- Strongest clusters right now: \(joinNaturalLanguage(topHotspotNames))\n"
+        }
+        markdown += "- Review items waiting: \(reviewItemCount)\n"
+        markdown += "- Commodity weak topics already suppressed: \(commodityWeakTopics.count)\n\n"
 
         markdown += "## Review Queue\n"
         if autoDemotedLessons.isEmpty && weakTopics.isEmpty && actionableAutoDemotedTopics.isEmpty && commodityWeakTopics.isEmpty {
@@ -101,8 +111,11 @@ final class KnowledgeMaintenance {
                 markdown += "### Auto-demoted Broad Lessons\n"
                 for metric in autoDemotedLessons.prefix(8) {
                     markdown += "- `\(metric.entity.canonicalName)`"
-                    markdown += " — linked to \(metric.projectRelationCount) projects"
-                    markdown += ", \(metric.claimCount) claims\n"
+                    markdown += " — broad lesson: linked to \(metric.projectRelationCount) project"
+                    if metric.projectRelationCount == 1 { markdown += "" } else { markdown += "s" }
+                    markdown += " across \(metric.claimCount) claim"
+                    if metric.claimCount == 1 { markdown += "" } else { markdown += "s" }
+                    markdown += "\n"
                 }
                 markdown += "\n"
             }
@@ -111,8 +124,8 @@ final class KnowledgeMaintenance {
                 markdown += "### Auto-demoted Weak Topics\n"
                 for metric in actionableAutoDemotedTopics.prefix(8) {
                     markdown += "- `\(metric.entity.canonicalName)`"
-                    markdown += " — \(metric.coOccurrenceEdgeCount) co-occurrence edges"
-                    markdown += ", only \(metric.typedEdgeCount) typed relation"
+                    markdown += " — weak topic: \(metric.coOccurrenceEdgeCount) loose links"
+                    markdown += ", only \(metric.typedEdgeCount) strong relation"
                     if metric.typedEdgeCount == 1 { markdown += "" } else { markdown += "s" }
                     markdown += "\n"
                 }
@@ -132,8 +145,8 @@ final class KnowledgeMaintenance {
                 markdown += "### Weak Durable Topics\n"
                 for hotspot in weakTopics.prefix(8) {
                     markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
-                    markdown += " — \(hotspot.relationStats.coOccurrenceEdges) co-occurrence edges"
-                    markdown += ", only \(hotspot.relationStats.typedEdges) typed relation"
+                    markdown += " — durable but thinly supported: \(hotspot.relationStats.coOccurrenceEdges) loose links"
+                    markdown += ", only \(hotspot.relationStats.typedEdges) strong relation"
                     if hotspot.relationStats.typedEdges == 1 { markdown += "" } else { markdown += "s" }
                     markdown += "\n"
                 }
@@ -142,9 +155,9 @@ final class KnowledgeMaintenance {
         }
 
         markdown += "## Hotspots\n"
-        for hotspot in hotspots.sorted(by: compareHotspots).prefix(10) {
+        for hotspot in sortedHotspots.prefix(10) {
             markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
-            markdown += " — \(hotspot.claimCount) claims, \(hotspot.relationStats.typedEdges) typed edges, \(hotspot.relationStats.coOccurrenceEdges) co-occurrence edges\n"
+            markdown += " — strongest cluster right now: \(hotspot.claimCount) claims, \(hotspot.relationStats.typedEdges) strong links, \(hotspot.relationStats.coOccurrenceEdges) loose links\n"
         }
         markdown += "\n"
 
@@ -220,5 +233,19 @@ final class KnowledgeMaintenance {
 
     private func linkTarget(for entity: KnowledgeEntityRecord) -> String {
         "Knowledge/\(entity.entityType.folderName)/\(entity.slug)"
+    }
+
+    private func joinNaturalLanguage(_ parts: [String]) -> String {
+        switch parts.count {
+        case 0:
+            return ""
+        case 1:
+            return parts[0]
+        case 2:
+            return "\(parts[0]) and \(parts[1])"
+        default:
+            let head = parts.dropLast().joined(separator: ", ")
+            return "\(head), and \(parts.last!)"
+        }
     }
 }
