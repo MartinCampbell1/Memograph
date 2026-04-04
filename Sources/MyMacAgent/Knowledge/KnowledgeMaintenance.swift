@@ -783,8 +783,7 @@ final class KnowledgeMaintenance {
             .map(dateSupport.localDateTimeString(from:))
             ?? decision.recordedAt
             ?? "unknown time"
-        let draftName = ((decision.path as NSString).lastPathComponent as NSString).deletingPathExtension
-        let draftLink = "Knowledge/_drafts/Review/\(draftName)"
+        let draftLink = reviewDecisionLinkTarget(for: decision)
         switch decision.status {
         case .apply:
             return "`\(timestamp)` — approved [[\(draftLink)|\(decision.title)]]"
@@ -793,6 +792,15 @@ final class KnowledgeMaintenance {
         case .pending:
             return "`\(timestamp)` — pending [[\(draftLink)|\(decision.title)]]"
         }
+    }
+
+    private func reviewDecisionLinkTarget(for decision: KnowledgeReviewDecisionRecord) -> String {
+        if let range = decision.path.range(of: "/Knowledge/_drafts/") {
+            let relative = String(decision.path[range.upperBound...]).replacingOccurrences(of: ".md", with: "")
+            return "Knowledge/_drafts/\(relative)"
+        }
+        let draftName = ((decision.path as NSString).lastPathComponent as NSString).deletingPathExtension
+        return "Knowledge/_drafts/Review/\(draftName)"
     }
 
     private func buildReclassifyCandidates(

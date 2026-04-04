@@ -224,10 +224,14 @@ final class ObsidianExporter {
         while let relativePath = enumerator?.nextObject() as? String {
             guard relativePath.hasSuffix(".md"),
                   !relativePath.hasPrefix("AppliedBackup/"),
+                  !relativePath.hasPrefix("ReviewResolved/"),
                   !expectedRelativePaths.contains(relativePath) else {
                 continue
             }
             let path = (draftsRoot as NSString).appendingPathComponent(relativePath)
+            if archiveResolvedReviewDraftIfNeeded(at: path, relativePath: relativePath, draftsRoot: draftsRoot) != nil {
+                continue
+            }
             try? FileManager.default.removeItem(atPath: path)
         }
 
@@ -289,43 +293,77 @@ final class ObsidianExporter {
     }
 
     func discoverKnowledgeReviewDecisions(existing: [KnowledgeReviewDecisionRecord] = []) -> [KnowledgeReviewDecisionRecord] {
-        let reviewRoot = (knowledgeDraftsDirectory() as NSString).appendingPathComponent("Review")
         var byKey = Dictionary(uniqueKeysWithValues: existing.map { ($0.key, $0) })
-        guard FileManager.default.fileExists(atPath: reviewRoot),
-              let files = try? FileManager.default.contentsOfDirectory(atPath: reviewRoot) else {
-            return Array(byKey.values).sorted(by: compareReviewDecisions)
-        }
 
-        for file in files where file.hasSuffix(".md") && file != "_index.md" {
-            let path = (reviewRoot as NSString).appendingPathComponent(file)
-            guard let markdown = try? String(contentsOfFile: path, encoding: .utf8),
-                  let key = reviewMetadataValue(named: "memograph-review-key", in: markdown),
-                  let kindRaw = reviewMetadataValue(named: "memograph-review-kind", in: markdown),
-                  let kind = KnowledgeReviewDecisionKind(rawValue: kindRaw),
-                  let status = extractReviewDecisionStatus(from: markdown) else {
+        let draftsRoot = knowledgeDraftsDirectory()
+        let archivedReviewRoot = (draftsRoot as NSString).appendingPathComponent("ReviewResolved")
+        let activeReviewRoot = (draftsRoot as NSString).appendingPathComponent("Review")
+
+        for root in [archivedReviewRoot, activeReviewRoot] {
+            guard FileManager.default.fileExists(atPath: root),
+                  let files = try? FileManager.default.contentsOfDirectory(atPath: root) else {
                 continue
             }
 
-            if status == .pending {
-                byKey.removeValue(forKey: key)
-                continue
-            }
+            for file in files where file.hasSuffix(".md") && file != "_index.md" {
+                let path = (root as NSString).appendingPathComponent(file)
+                guard let markdown = try? String(contentsOfFile: path, encoding: .utf8),
+                      let key = reviewMetadataValue(named: "memograph-review-key", in: markdown),
+                      let kindRaw = reviewMetadataValue(named: "memograph-review-kind", in: markdown),
+                      let kind = KnowledgeReviewDecisionKind(rawValue: kindRaw),
+                      let status = extractReviewDecisionStatus(from: markdown) else {
+                    continue
+                }
 
-            byKey[key] = KnowledgeReviewDecisionRecord(
-                key: key,
-                kind: kind,
-                status: status,
-                title: extractedTitle(from: markdown) ?? ((file as NSString).deletingPathExtension),
-                path: path,
-                recordedAt: fileModificationISODate(at: path)
-            )
+                if root == activeReviewRoot && status == .pending {
+                    byKey.removeValue(forKey: key)
+                    continue
+                }
+
+                guard status != .pending else { continue }
+                byKey[key] = KnowledgeReviewDecisionRecord(
+                    key: key,
+                    kind: kind,
+                    status: status,
+                    title: extractedTitle(from: markdown) ?? ((file as NSString).deletingPathExtension),
+                    path: path,
+                    recordedAt: fileModificationISODate(at: path)
+                )
+            }
         }
 
         return Array(byKey.values).sorted(by: compareReviewDecisions)
     }
 
     func discoverApprovedKnowledgeReviewDecisions() -> [KnowledgeReviewDecisionRecord] {
-        discoverKnowledgeReviewDecisions().filter { $0.status == .apply }
+        let reviewRoot = (knowledgeDraftsDirectory() as NSString).appendingPathComponent("Review")
+        guard FileManager.default.fileExists(atPath: reviewRoot),
+              let files = try? FileManager.default.contentsOfDirectory(atPath: reviewRoot) else {
+            return []
+        }
+
+        return files
+            .filter { $0.hasSuffix(".md") && $0 != "_index.md" }
+            .compactMap { file in
+                let path = (reviewRoot as NSString).appendingPathComponent(file)
+                guard let markdown = try? String(contentsOfFile: path, encoding: .utf8),
+                      let key = reviewMetadataValue(named: "memograph-review-key", in: markdown),
+                      let kindRaw = reviewMetadataValue(named: "memograph-review-kind", in: markdown),
+                      let kind = KnowledgeReviewDecisionKind(rawValue: kindRaw),
+                      let status = extractReviewDecisionStatus(from: markdown),
+                      status == .apply else {
+                    return nil
+                }
+                return KnowledgeReviewDecisionRecord(
+                    key: key,
+                    kind: kind,
+                    status: status,
+                    title: extractedTitle(from: markdown) ?? ((file as NSString).deletingPathExtension),
+                    path: path,
+                    recordedAt: fileModificationISODate(at: path)
+                )
+            }
+            .sorted(by: compareReviewDecisions)
     }
 
     func renderKnowledgeReviewHistory(_ records: [KnowledgeReviewDecisionRecord]) -> String {
@@ -344,8 +382,7 @@ final class ObsidianExporter {
                 .map(dateSupport.localDateTimeString(from:))
                 ?? record.recordedAt
                 ?? "unknown time"
-            let draftName = ((record.path as NSString).lastPathComponent as NSString).deletingPathExtension
-            let linkTarget = "Knowledge/_drafts/Review/\(draftName)"
+            let linkTarget = reviewDecisionLinkTarget(for: record)
             switch record.status {
             case .apply:
                 markdown += "- `\(recordedAt)` — approved [[\(linkTarget)|\(record.title)]]\n"
@@ -1245,6 +1282,42 @@ final class ObsidianExporter {
             updated.append(replacement)
         }
         return updated.joined(separator: "\n")
+    }
+
+    private func archiveResolvedReviewDraftIfNeeded(
+        at path: String,
+        relativePath: String,
+        draftsRoot: String
+    ) -> String? {
+        guard relativePath.hasPrefix("Review/"),
+              let markdown = try? String(contentsOfFile: path, encoding: .utf8),
+              let status = extractReviewDecisionStatus(from: markdown),
+              status != .pending else {
+            return nil
+        }
+
+        let resolvedRoot = (draftsRoot as NSString).appendingPathComponent("ReviewResolved")
+        let destinationPath = (resolvedRoot as NSString).appendingPathComponent((relativePath as NSString).lastPathComponent)
+        try? FileManager.default.createDirectory(atPath: resolvedRoot, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: destinationPath) {
+            try? FileManager.default.removeItem(atPath: destinationPath)
+        }
+        do {
+            try FileManager.default.moveItem(atPath: path, toPath: destinationPath)
+            return destinationPath
+        } catch {
+            logger.error("Failed to archive resolved review draft at \(path): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func reviewDecisionLinkTarget(for record: KnowledgeReviewDecisionRecord) -> String {
+        if let range = record.path.range(of: "/Knowledge/_drafts/") {
+            let relative = String(record.path[range.upperBound...]).replacingOccurrences(of: ".md", with: "")
+            return "Knowledge/_drafts/\(relative)"
+        }
+        let draftName = ((record.path as NSString).lastPathComponent as NSString).deletingPathExtension
+        return "Knowledge/_drafts/Review/\(draftName)"
     }
 
     private func reviewMetadataValue(named key: String, in markdown: String) -> String? {

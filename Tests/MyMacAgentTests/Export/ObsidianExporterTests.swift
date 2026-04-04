@@ -497,6 +497,52 @@ struct ObsidianExporterTests {
         #expect(history.contains("dismissed [[Knowledge/_drafts/Review/weak-topic-gpu-rendering|Review Packet — Weak Topic GPU Rendering]]"))
     }
 
+    @Test("Resolved review drafts are archived during sync and remain discoverable")
+    func archivesResolvedReviewDrafts() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_kb_review_archive_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        let reviewArtifact = KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: "Review/reclassify-prompt-engineering.md",
+            title: "Review Packet — Reclassify Prompt Engineering",
+            markdown: """
+            <!-- memograph-review-key: reclassify:topic-123 -->
+            <!-- memograph-review-kind: promote-to-lesson -->
+            # Review Packet — Reclassify Prompt Engineering
+
+            ## Decision
+            Decision: pending
+            """,
+            reviewPacketKey: "reclassify:topic-123",
+            reviewDecisionKind: .promoteToLesson
+        )
+
+        _ = try exporter.syncKnowledgeDraftArtifacts([reviewArtifact])
+        let activePath = (vaultDir as NSString).appendingPathComponent("Knowledge/_drafts/Review/reclassify-prompt-engineering.md")
+        let approved = try String(contentsOfFile: activePath, encoding: .utf8).replacingOccurrences(of: "Decision: pending", with: "Decision: apply")
+        try approved.write(toFile: activePath, atomically: true, encoding: .utf8)
+
+        _ = try exporter.syncKnowledgeDraftArtifacts([])
+
+        let archivedPath = (vaultDir as NSString).appendingPathComponent("Knowledge/_drafts/ReviewResolved/reclassify-prompt-engineering.md")
+        #expect(!FileManager.default.fileExists(atPath: activePath))
+        #expect(FileManager.default.fileExists(atPath: archivedPath))
+
+        let decisions = exporter.discoverKnowledgeReviewDecisions()
+        #expect(decisions.count == 1)
+        #expect(decisions.first?.status == .apply)
+        #expect(decisions.first?.path == archivedPath)
+
+        let historyPath = try exporter.exportKnowledgeReviewHistory(decisions)
+        let history = try String(contentsOfFile: historyPath, encoding: .utf8)
+        #expect(history.contains("approved [[Knowledge/_drafts/ReviewResolved/reclassify-prompt-engineering|Review Packet — Reclassify Prompt Engineering]]"))
+    }
+
     @Test("Applies safe knowledge draft artifacts into the main knowledge tree with backups")
     func appliesKnowledgeDraftArtifacts() throws {
         let (db, path) = try makeDB()
