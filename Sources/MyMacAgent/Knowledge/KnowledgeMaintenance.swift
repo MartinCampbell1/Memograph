@@ -1846,6 +1846,32 @@ final class KnowledgeMaintenance {
         markdown += "- Recently applied: \(appliedActions.count)\n"
         markdown += "- Recently reviewed: \(reviewDecisions.count)\n\n"
 
+        let actionableReviewItems = manualReviewItems.filter { $0.priority != .low }
+        let lowSignalReviewCount = manualReviewItems.count - actionableReviewItems.count
+        markdown += "## Recommended Next Moves\n"
+        if safeActions.isEmpty && actionableReviewItems.isEmpty {
+            markdown += "- No immediate workflow queue right now.\n"
+        } else {
+            for action in safeActions.prefix(3) {
+                switch action.kind {
+                case .promoteToLessonDraft:
+                    markdown += "- Apply: promote [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into `Lessons`.\n"
+                case .consolidateIntoRoot:
+                    guard let target = action.target else { continue }
+                    markdown += "- Apply: consolidate [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into [[\(linkTarget(for: target))|\(target.canonicalName)]].\n"
+                }
+            }
+            for item in actionableReviewItems.prefix(3) {
+                markdown += "- Review [\(item.priority.badge)]: \(item.markdownLine)\n"
+            }
+            if lowSignalReviewCount > 0 {
+                markdown += "- Defer: \(lowSignalReviewCount) low-signal review packet"
+                if lowSignalReviewCount == 1 { markdown += "" } else { markdown += "s" }
+                markdown += " remain in the review board.\n"
+            }
+        }
+        markdown += "\n"
+
         markdown += "## Active Queues\n"
         if let applyIndexArtifact {
             markdown += "- [[\(applyIndexArtifact.linkTarget)|apply board]]\n"

@@ -591,6 +591,10 @@ struct KnowledgePipelineTests {
         #expect(reviewBoard.contains("Low-signal review: 0"))
         #expect(reviewBoard.contains("## Standard Review"))
         #expect(reviewBoard.contains("Stale: [[Knowledge/Tools/old-utility|Old Utility]]"))
+        let workflowBoard = artifacts.draftArtifacts.first { $0.relativePath == "_index.md" }?.markdown ?? ""
+        #expect(workflowBoard.contains("## Recommended Next Moves"))
+        #expect(workflowBoard.contains("Apply: promote [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] into `Lessons`."))
+        #expect(workflowBoard.contains("Review [Medium]: [[Knowledge/Tools/old-utility|Old Utility]] — stale for 2284 days"))
     }
 
     @Test("Knowledge maintenance suppresses already applied promotions and consolidations")
