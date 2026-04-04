@@ -50,14 +50,16 @@ private struct KnowledgeSafeAction {
 enum KnowledgeDraftArtifactKind {
     case reviewDraft
     case applyReadyLesson
+    case applyReadyLessonRedirect
     case applyReadyRedirect
+    case applyReadyMergePatch
     case applyIndex
 
     var sortOrder: Int {
         switch self {
         case .reviewDraft:
             return 0
-        case .applyReadyLesson, .applyReadyRedirect:
+        case .applyReadyLesson, .applyReadyLessonRedirect, .applyReadyRedirect, .applyReadyMergePatch:
             return 1
         case .applyIndex:
             return 2
@@ -68,8 +70,12 @@ enum KnowledgeDraftArtifactKind {
         switch self {
         case .reviewDraft:
             return "Review"
-        case .applyReadyLesson, .applyReadyRedirect:
+        case .applyReadyLesson:
             return "Apply"
+        case .applyReadyLessonRedirect, .applyReadyRedirect:
+            return "Redirect"
+        case .applyReadyMergePatch:
+            return "Merge"
         case .applyIndex:
             return "Board"
         }
@@ -81,8 +87,10 @@ enum KnowledgeDraftArtifactKind {
             return "review draft"
         case .applyReadyLesson:
             return "apply-ready lesson"
-        case .applyReadyRedirect:
+        case .applyReadyLessonRedirect, .applyReadyRedirect:
             return "redirect stub"
+        case .applyReadyMergePatch:
+            return "merge patch"
         case .applyIndex:
             return "apply board"
         }
@@ -684,12 +692,16 @@ final class KnowledgeMaintenance {
             case .promoteToLessonDraft:
                 artifacts.append((key, buildLessonPromotionReviewDraft(for: action)))
                 artifacts.append((key, try buildLessonPromotionApplyDraft(for: action)))
+                artifacts.append((key, buildLessonPromotionRedirectDraft(for: action)))
             case .consolidateIntoRoot:
                 if let artifact = buildConsolidationReviewDraft(for: action) {
                     artifacts.append((key, artifact))
                 }
                 if let applyArtifact = try buildConsolidationApplyDraft(for: action) {
                     artifacts.append((key, applyArtifact))
+                }
+                if let mergeArtifact = try buildConsolidationMergeDraft(for: action) {
+                    artifacts.append((key, mergeArtifact))
                 }
             }
         }
@@ -789,6 +801,37 @@ final class KnowledgeMaintenance {
         )
     }
 
+    private func buildLessonPromotionRedirectDraft(for action: KnowledgeSafeAction) -> KnowledgeDraftArtifact {
+        let sourceSlug = slug(for: action.source.canonicalName)
+        let destinationSlug = slug(for: action.source.canonicalName)
+        let relativePath = "Apply/Redirects/\(sourceSlug)-to-lesson.md"
+        let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
+        let destinationLink = "[[Knowledge/Lessons/\(destinationSlug)|\(action.source.canonicalName)]]"
+        let aliases = aliases(for: action.source)
+
+        var draft = "# \(action.source.canonicalName)\n\n"
+        draft += "_Redirect stub generated from a safe lesson-promotion action._\n\n"
+        draft += "This topic now points to \(destinationLink).\n\n"
+        draft += "## Proposed Redirect Copy\n"
+        draft += "For durable guidance, use \(destinationLink).\n\n"
+        draft += "## Alias Trail\n"
+        draft += "- \(action.source.canonicalName)\n"
+        for alias in aliases.prefix(6) {
+            draft += "- \(alias)\n"
+        }
+        draft += "\n## Review Checklist\n"
+        draft += "- Keep this redirect in place until backlinks stop depending on \(sourceLink).\n"
+        draft += "- Preserve old aliases on the destination lesson note.\n"
+        draft += "- Remove the standalone topic only after the lesson note fully captures the reusable guidance.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .applyReadyLessonRedirect,
+            relativePath: relativePath,
+            title: action.source.canonicalName,
+            markdown: draft
+        )
+    }
+
     private func buildConsolidationReviewDraft(for action: KnowledgeSafeAction) -> KnowledgeDraftArtifact? {
         guard let target = action.target else { return nil }
         let sourceSlug = slug(for: action.source.canonicalName)
@@ -833,7 +876,8 @@ final class KnowledgeMaintenance {
     private func buildConsolidationApplyDraft(for action: KnowledgeSafeAction) throws -> KnowledgeDraftArtifact? {
         guard let target = action.target else { return nil }
         let sourceSlug = slug(for: action.source.canonicalName)
-        let relativePath = "Apply/Redirects/\(sourceSlug).md"
+        let targetSlug = slug(for: target.canonicalName)
+        let relativePath = "Apply/Redirects/\(sourceSlug)-to-\(targetSlug).md"
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
         let sourceNote = try loadKnowledgeNote(for: action.source)
@@ -874,21 +918,77 @@ final class KnowledgeMaintenance {
         )
     }
 
+    private func buildConsolidationMergeDraft(for action: KnowledgeSafeAction) throws -> KnowledgeDraftArtifact? {
+        guard let target = action.target else { return nil }
+        let sourceSlug = slug(for: action.source.canonicalName)
+        let targetSlug = slug(for: target.canonicalName)
+        let relativePath = "Apply/Merge/\(sourceSlug)-into-\(targetSlug).md"
+        let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
+        let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
+        let sourceNote = try loadKnowledgeNote(for: action.source)
+        let overview = extractOverview(from: sourceNote?.bodyMarkdown)
+        let signalLines = extractBulletSection("Key Signals", from: sourceNote?.bodyMarkdown).prefix(5)
+        let relationshipLines = extractBulletSection("Relationships", from: sourceNote?.bodyMarkdown).prefix(5)
+        let aliases = aliases(for: action.source)
+
+        var draft = "# Merge Patch — \(action.source.canonicalName) → \(target.canonicalName)\n\n"
+        draft += "_Apply-ready merge packet generated from a safe consolidation action._\n\n"
+        draft += "## Merge Intent\n"
+        draft += "Fold \(sourceLink) into \(targetLink) while preserving any unique context and aliases.\n\n"
+        draft += "## Source Summary\n"
+        if let overview {
+            draft += "- \(overview)\n"
+        } else {
+            draft += "- Source note: \(sourceLink)\n"
+        }
+        draft += "\n## Signals To Preserve\n"
+        if signalLines.isEmpty && relationshipLines.isEmpty {
+            draft += "- No extra structured signals were found beyond the source note title.\n"
+        } else {
+            for line in signalLines {
+                draft += "\(line)\n"
+            }
+            for line in relationshipLines {
+                draft += "\(line)\n"
+            }
+        }
+        draft += "\n## Suggested Root Additions\n"
+        draft += "- Add `\(action.source.canonicalName)` to the alias trail of \(targetLink).\n"
+        draft += "- Pull any unique summary or relationship context from \(sourceLink) into \(targetLink).\n"
+        if !aliases.isEmpty {
+            draft += "- Preserve aliases: \(joinNaturalLanguage(aliases))\n"
+        }
+        draft += "\n## Review Checklist\n"
+        draft += "- Update the stronger root note before replacing the standalone source note.\n"
+        draft += "- Keep a redirect stub until backlinks stop depending on the source title.\n"
+        draft += "- Rebuild the knowledge graph after merging to confirm the weaker note drops out cleanly.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .applyReadyMergePatch,
+            relativePath: relativePath,
+            title: "Merge Patch — \(action.source.canonicalName) → \(target.canonicalName)",
+            markdown: draft
+        )
+    }
+
     private func buildApplyIndexArtifact(
         from safeActions: [KnowledgeSafeAction],
         draftArtifactsByKey: [String: [KnowledgeDraftArtifact]]
     ) -> KnowledgeDraftArtifact? {
         var lessonRows: [String] = []
         var redirectRows: [String] = []
+        var mergeRows: [String] = []
 
         for action in safeActions {
             let artifacts = draftArtifactsByKey[safeActionKey(action)] ?? []
             switch action.kind {
             case .promoteToLessonDraft:
                 guard let applyArtifact = artifacts.first(where: { $0.kind == .applyReadyLesson }) else { continue }
+                let redirectArtifact = artifacts.first(where: { $0.kind == .applyReadyLessonRedirect })
                 lessonRows.append(
                     "- [[\(applyArtifact.linkTarget)|\(action.source.canonicalName)]]"
                     + " — promote [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into a lesson draft"
+                    + (redirectArtifact.map { " • [[\($0.linkTarget)|redirect]]" } ?? "")
                 )
             case .consolidateIntoRoot:
                 guard let target = action.target,
@@ -899,10 +999,16 @@ final class KnowledgeMaintenance {
                     "- [[\(applyArtifact.linkTarget)|\(action.source.canonicalName)]]"
                     + " → [[\(linkTarget(for: target))|\(target.canonicalName)]]"
                 )
+                if let mergeArtifact = artifacts.first(where: { $0.kind == .applyReadyMergePatch }) {
+                    mergeRows.append(
+                        "- [[\(mergeArtifact.linkTarget)|\(action.source.canonicalName)]]"
+                        + " → [[\(linkTarget(for: target))|\(target.canonicalName)]]"
+                    )
+                }
             }
         }
 
-        guard !lessonRows.isEmpty || !redirectRows.isEmpty else { return nil }
+        guard !lessonRows.isEmpty || !redirectRows.isEmpty || !mergeRows.isEmpty else { return nil }
 
         var markdown = "# Knowledge Apply Board\n\n"
         markdown += "_Apply-ready drafts exported from safe maintenance actions._\n\n"
@@ -914,6 +1020,11 @@ final class KnowledgeMaintenance {
         if !redirectRows.isEmpty {
             markdown += "## Redirect Stubs\n"
             markdown += redirectRows.joined(separator: "\n")
+            markdown += "\n\n"
+        }
+        if !mergeRows.isEmpty {
+            markdown += "## Merge Patches\n"
+            markdown += mergeRows.joined(separator: "\n")
             markdown += "\n\n"
         }
         markdown += "## Usage\n"

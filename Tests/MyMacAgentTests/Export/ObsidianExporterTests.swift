@@ -320,17 +320,25 @@ struct ObsidianExporterTests {
                 relativePath: "Apply/Redirects/ocr-accuracy.md",
                 title: "OCR Accuracy",
                 markdown: "# OCR Accuracy\n"
+            ),
+            KnowledgeDraftArtifact(
+                kind: .applyReadyMergePatch,
+                relativePath: "Apply/Merge/ocr-accuracy-into-ocr.md",
+                title: "Merge Patch — OCR Accuracy into OCR",
+                markdown: "# Merge Patch\n"
             )
         ]
 
         let written = try exporter.syncKnowledgeDraftArtifacts(firstBatch)
-        #expect(written.count == 2)
+        #expect(written.count == 3)
 
         let draftsRoot = (vaultDir as NSString).appendingPathComponent("Knowledge/_drafts")
         let firstFile = (draftsRoot as NSString).appendingPathComponent("Maintenance/lesson-promotion-sqlite.md")
         let secondFile = (draftsRoot as NSString).appendingPathComponent("Apply/Redirects/ocr-accuracy.md")
+        let thirdFile = (draftsRoot as NSString).appendingPathComponent("Apply/Merge/ocr-accuracy-into-ocr.md")
         #expect(FileManager.default.fileExists(atPath: firstFile))
         #expect(FileManager.default.fileExists(atPath: secondFile))
+        #expect(FileManager.default.fileExists(atPath: thirdFile))
 
         let secondBatch = [
             KnowledgeDraftArtifact(
@@ -344,6 +352,9 @@ struct ObsidianExporterTests {
         _ = try exporter.syncKnowledgeDraftArtifacts(secondBatch)
         #expect(FileManager.default.fileExists(atPath: firstFile))
         #expect(!FileManager.default.fileExists(atPath: secondFile))
+        #expect(!FileManager.default.fileExists(atPath: thirdFile))
+        #expect(!FileManager.default.fileExists(atPath: (draftsRoot as NSString).appendingPathComponent("Apply/Redirects")))
+        #expect(!FileManager.default.fileExists(atPath: (draftsRoot as NSString).appendingPathComponent("Apply/Merge")))
         let updated = try String(contentsOfFile: firstFile, encoding: .utf8)
         #expect(updated.contains("# Updated Draft"))
     }
