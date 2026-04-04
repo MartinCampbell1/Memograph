@@ -319,6 +319,13 @@ final class KnowledgeMaintenance {
             reclassifyCandidates: reclassifyCandidates,
             consolidationCandidates: consolidationCandidates
         )
+        let safeActionSourceEntityIds = Set(safeActions.map(\.source.id))
+        let filteredReclassifyCandidates = reclassifyCandidates.filter {
+            !safeActionSourceEntityIds.contains($0.entity.id)
+        }
+        let filteredConsolidationCandidates = consolidationCandidates.filter {
+            !safeActionSourceEntityIds.contains($0.source.id)
+        }
         let draftArtifactEntries = try buildDraftArtifacts(from: safeActions)
         let draftArtifactsByKey = Dictionary(grouping: draftArtifactEntries, by: \.key)
             .mapValues { entries in
@@ -434,21 +441,21 @@ final class KnowledgeMaintenance {
         }
 
         markdown += "## Improvement Candidates\n"
-        if reclassifyCandidates.isEmpty && consolidationCandidates.isEmpty && staleCandidates.isEmpty {
+        if filteredReclassifyCandidates.isEmpty && filteredConsolidationCandidates.isEmpty && staleCandidates.isEmpty {
             markdown += "- No merge, reclassify, or stale review candidates right now.\n\n"
         } else {
-            if !reclassifyCandidates.isEmpty {
+            if !filteredReclassifyCandidates.isEmpty {
                 markdown += "### Reclassify Candidates\n"
-                for candidate in reclassifyCandidates.prefix(6) {
+                for candidate in filteredReclassifyCandidates.prefix(6) {
                     markdown += "- [[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
                     markdown += " — consider moving to \(candidate.targetType.folderName): \(candidate.reason)\n"
                 }
                 markdown += "\n"
             }
 
-            if !consolidationCandidates.isEmpty {
+            if !filteredConsolidationCandidates.isEmpty {
                 markdown += "### Consolidation Candidates\n"
-                for candidate in consolidationCandidates.prefix(6) {
+                for candidate in filteredConsolidationCandidates.prefix(6) {
                     markdown += "- [[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]]"
                     markdown += " → [[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]"
                     markdown += " — \(candidate.reason)\n"
