@@ -882,6 +882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 existing: settings.knowledgeReviewDecisions
             )
             _ = try? exporter.exportKnowledgeReviewHistory(settings.knowledgeReviewDecisions)
+            _ = try? exporter.exportKnowledgeResolvedReviewBoard(settings.knowledgeReviewDecisions)
             rebuildKnowledgePipeline()
             let activeKnowledgePipeline = self.knowledgePipeline ?? knowledgePipeline
 
@@ -913,10 +914,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let discovered = exporter.discoverKnowledgeReviewDecisions(existing: settings.knowledgeReviewDecisions)
         guard discovered != settings.knowledgeReviewDecisions else {
             _ = try? exporter.exportKnowledgeReviewHistory(discovered)
+            _ = try? exporter.exportKnowledgeResolvedReviewBoard(discovered)
             return
         }
         settings.knowledgeReviewDecisions = discovered
         _ = try? exporter.exportKnowledgeReviewHistory(discovered)
+        _ = try? exporter.exportKnowledgeResolvedReviewBoard(discovered)
         rebuildKnowledgePipeline()
     }
 

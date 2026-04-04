@@ -540,7 +540,14 @@ struct ObsidianExporterTests {
 
         let historyPath = try exporter.exportKnowledgeReviewHistory(decisions)
         let history = try String(contentsOfFile: historyPath, encoding: .utf8)
+        #expect(history.contains("[[Knowledge/_drafts/ReviewResolved/_index|Resolved review board]]"))
         #expect(history.contains("approved [[Knowledge/_drafts/ReviewResolved/reclassify-prompt-engineering|Review Packet — Reclassify Prompt Engineering]]"))
+
+        let boardPath = try exporter.exportKnowledgeResolvedReviewBoard(decisions)
+        let board = try String(contentsOfFile: boardPath, encoding: .utf8)
+        #expect(board.contains("# Resolved Knowledge Review Board"))
+        #expect(board.contains("## Approved"))
+        #expect(board.contains("[[Knowledge/_drafts/ReviewResolved/reclassify-prompt-engineering|Review Packet — Reclassify Prompt Engineering]]"))
     }
 
     @Test("Applies safe knowledge draft artifacts into the main knowledge tree with backups")

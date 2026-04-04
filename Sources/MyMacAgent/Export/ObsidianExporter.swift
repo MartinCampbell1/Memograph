@@ -369,6 +369,7 @@ final class ObsidianExporter {
     func renderKnowledgeReviewHistory(_ records: [KnowledgeReviewDecisionRecord]) -> String {
         var markdown = "# Memograph Reviewed Knowledge Decisions\n\n"
         markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
+        markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|Resolved review board]]\n\n"
 
         guard !records.isEmpty else {
             markdown += "- No non-pending review decisions tracked yet.\n"
@@ -402,6 +403,61 @@ final class ObsidianExporter {
 
         let filePath = (knowledgeRoot as NSString).appendingPathComponent("_reviewed.md")
         let markdown = renderKnowledgeReviewHistory(records)
+        try markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
+        return filePath
+    }
+
+    func renderKnowledgeResolvedReviewBoard(_ records: [KnowledgeReviewDecisionRecord]) -> String {
+        var markdown = "# Resolved Knowledge Review Board\n\n"
+        markdown += "_Archived review packets that already received a decision._\n\n"
+
+        guard !records.isEmpty else {
+            markdown += "- No resolved review packets yet.\n"
+            return markdown
+        }
+
+        let approved = records.filter { $0.status == .apply }
+        let dismissed = records.filter { $0.status == .dismiss }
+
+        if !approved.isEmpty {
+            markdown += "## Approved\n"
+            for record in approved.sorted(by: compareReviewDecisions).prefix(30) {
+                let recordedAt = record.recordedAt
+                    .flatMap(dateSupport.parseDateTime)
+                    .map(dateSupport.localDateTimeString(from:))
+                    ?? record.recordedAt
+                    ?? "unknown time"
+                markdown += "- `\(recordedAt)` — [[\(reviewDecisionLinkTarget(for: record))|\(record.title)]]\n"
+            }
+            markdown += "\n"
+        }
+
+        if !dismissed.isEmpty {
+            markdown += "## Dismissed\n"
+            for record in dismissed.sorted(by: compareReviewDecisions).prefix(30) {
+                let recordedAt = record.recordedAt
+                    .flatMap(dateSupport.parseDateTime)
+                    .map(dateSupport.localDateTimeString(from:))
+                    ?? record.recordedAt
+                    ?? "unknown time"
+                markdown += "- `\(recordedAt)` — [[\(reviewDecisionLinkTarget(for: record))|\(record.title)]]\n"
+            }
+            markdown += "\n"
+        }
+
+        markdown += "## Usage\n"
+        markdown += "- Use this board to revisit previously resolved review packets.\n"
+        markdown += "- Approved packets should already be reflected in `Recently Applied` or persistent overrides.\n"
+        markdown += "- Dismissed packets stay archived here so they do not re-enter the active review queue.\n"
+        return markdown
+    }
+
+    func exportKnowledgeResolvedReviewBoard(_ records: [KnowledgeReviewDecisionRecord]) throws -> String {
+        let resolvedRoot = (knowledgeDraftsDirectory() as NSString).appendingPathComponent("ReviewResolved")
+        try FileManager.default.createDirectory(atPath: resolvedRoot, withIntermediateDirectories: true)
+
+        let filePath = (resolvedRoot as NSString).appendingPathComponent("_index.md")
+        let markdown = renderKnowledgeResolvedReviewBoard(records)
         try markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
         return filePath
     }

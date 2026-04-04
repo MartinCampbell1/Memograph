@@ -143,6 +143,7 @@ final class KnowledgePipeline {
             _ = try? exporter.exportKnowledgeIndex(indexMarkdown)
             _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
             _ = try? exporter.exportKnowledgeReviewHistory(settings.knowledgeReviewDecisions)
+            _ = try? exporter.exportKnowledgeResolvedReviewBoard(settings.knowledgeReviewDecisions)
 
             let maintenanceArtifacts = try buildMaintenanceArtifacts(metrics: metrics, materializedEntityIds: materializedIds)
             _ = try? exporter.exportKnowledgeMaintenance(maintenanceArtifacts.markdown)
