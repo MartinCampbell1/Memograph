@@ -550,11 +550,13 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("## Next Actions"))
         #expect(markdown.contains("[[Knowledge/_drafts/_index|workflow center]]"))
         #expect(markdown.contains("[[Knowledge/_drafts/Apply/_index|apply board]]"))
+        #expect(markdown.contains("High-priority review items:"))
         #expect(markdown.contains("### Safe to Apply"))
         #expect(markdown.contains("Promote [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] into `Lessons`."))
         #expect(markdown.contains("Consolidate [[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] into [[Knowledge/Topics/turboquant|TurboQuant]]."))
         #expect(markdown.contains("### Needs Review"))
         #expect(markdown.contains("[[Knowledge/_drafts/Review/_index|review board]]"))
+        #expect(markdown.contains("[Medium] [[Knowledge/Tools/old-utility|Old Utility]]"))
         #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]] — stale for"))
         #expect(markdown.contains("[[Knowledge/_drafts/Review/stale-old-utility|review]]"))
         #expect(markdown.contains("### Draft Lesson Promotions"))
@@ -579,6 +581,12 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("Review: [[Knowledge/_drafts/Review/stale-old-utility|review draft]]"))
         #expect(artifacts.draftArtifacts.count == 10)
         #expect(artifacts.draftArtifacts.contains { $0.relativePath == "_index.md" && $0.kind == .workflowIndex })
+        let reviewBoard = artifacts.draftArtifacts.first { $0.relativePath == "Review/_index.md" }?.markdown ?? ""
+        #expect(reviewBoard.contains("## Priority Overview"))
+        #expect(reviewBoard.contains("High priority: 0"))
+        #expect(reviewBoard.contains("Standard review: 1"))
+        #expect(reviewBoard.contains("## Standard Review"))
+        #expect(reviewBoard.contains("Stale: [[Knowledge/Tools/old-utility|Old Utility]]"))
     }
 
     @Test("Knowledge maintenance suppresses already applied promotions and consolidations")

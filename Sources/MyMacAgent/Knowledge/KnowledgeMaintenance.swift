@@ -42,10 +42,41 @@ private struct KnowledgeManualReviewItem {
         case stale
     }
 
+    enum Priority {
+        case high
+        case medium
+        case low
+
+        var sortOrder: Int {
+            switch self {
+            case .high: return 0
+            case .medium: return 1
+            case .low: return 2
+            }
+        }
+
+        var badge: String {
+            switch self {
+            case .high: return "High"
+            case .medium: return "Medium"
+            case .low: return "Low"
+            }
+        }
+
+        var sectionTitle: String {
+            switch self {
+            case .high: return "High Priority"
+            case .medium: return "Standard Review"
+            case .low: return "Low-Signal Review"
+            }
+        }
+    }
+
     let kind: Kind
     let title: String
     let markdownLine: String
     let score: Int
+    let priority: Priority
     let artifactKey: String
 }
 
@@ -385,6 +416,7 @@ final class KnowledgeMaintenance {
             staleCandidates: filteredStaleCandidates
         )
         let reviewItemCount = manualReviewItems.count
+        let highPriorityReviewCount = manualReviewItems.filter { $0.priority == .high }.count
         let draftArtifactEntries = try buildDraftArtifacts(from: safeActions)
         let manualReviewArtifactEntries = try buildManualReviewDraftArtifacts(
             actionableAutoDemotedTopics: filteredActionableAutoDemotedTopics,
@@ -438,6 +470,7 @@ final class KnowledgeMaintenance {
         markdown += "- Safe actions ready: \(safeActions.count)\n"
         markdown += "- Manual review candidates: \(manualReviewItems.count)\n"
         markdown += "- Review items waiting: \(reviewItemCount)\n"
+        markdown += "- High-priority review items: \(highPriorityReviewCount)\n"
         markdown += "- Commodity weak topics already suppressed: \(commodityWeakTopics.count)\n\n"
         if !appliedActions.isEmpty {
             markdown += "- Recently applied actions tracked: \(appliedActions.count)\n\n"
@@ -474,7 +507,7 @@ final class KnowledgeMaintenance {
                         .first(where: { $0.kind == .reviewDraft })
                         .map { " • [[\($0.linkTarget)|review]]" }
                         ?? ""
-                    markdown += "- \(item.markdownLine)\(reviewLink)\n"
+                    markdown += "- [\(item.priority.badge)] \(item.markdownLine)\(reviewLink)\n"
                 }
                 markdown += "\n"
             }
@@ -1111,6 +1144,7 @@ final class KnowledgeMaintenance {
                 title: candidate.entity.canonicalName,
                 markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] → consider moving to \(candidate.targetType.folderName.lowercased())",
                 score: candidate.score + 40,
+                priority: reviewPriority(for: candidate),
                 artifactKey: manualReviewKey(for: candidate)
             )
         }
@@ -1121,6 +1155,7 @@ final class KnowledgeMaintenance {
                 title: candidate.source.canonicalName,
                 markdownLine: "[[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]] → [[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]",
                 score: candidate.score + 50,
+                priority: reviewPriority(for: candidate),
                 artifactKey: manualReviewKey(for: candidate)
             )
         }
@@ -1131,6 +1166,7 @@ final class KnowledgeMaintenance {
                 title: metric.entity.canonicalName,
                 markdownLine: "`\(metric.entity.canonicalName)` — weak topic with \(metric.coOccurrenceEdgeCount) loose links and only \(metric.typedEdgeCount) strong relation\(metric.typedEdgeCount == 1 ? "" : "s")",
                 score: metric.coOccurrenceEdgeCount * 2 - metric.typedEdgeCount,
+                priority: .low,
                 artifactKey: manualReviewKey(forWeakTopic: metric.entity)
             )
         }
@@ -1141,6 +1177,7 @@ final class KnowledgeMaintenance {
                 title: hotspot.entity.canonicalName,
                 markdownLine: "[[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]] — durable but thinly supported",
                 score: hotspot.relationStats.coOccurrenceEdges + hotspot.relationStats.projectRelations * 4,
+                priority: hotspot.relationStats.projectRelations > 0 ? .medium : .low,
                 artifactKey: manualReviewKey(forWeakTopic: hotspot.entity)
             )
         }
@@ -1151,6 +1188,7 @@ final class KnowledgeMaintenance {
                 title: candidate.entity.canonicalName,
                 markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] — stale for \(candidate.daysSinceSeen) day\(candidate.daysSinceSeen == 1 ? "" : "s")",
                 score: min(candidate.daysSinceSeen, 365) / 7,
+                priority: candidate.daysSinceSeen >= 120 ? .medium : .low,
                 artifactKey: manualReviewKey(for: candidate)
             )
         }
@@ -1165,6 +1203,9 @@ final class KnowledgeMaintenance {
         var seenTitles = Set<String>()
         return (consolidationItems + reclassifyItems + weakTopicItems + weakDurableItems + staleItems)
             .sorted { lhs, rhs in
+                if lhs.priority != rhs.priority {
+                    return lhs.priority.sortOrder < rhs.priority.sortOrder
+                }
                 if lhs.score != rhs.score {
                     return lhs.score > rhs.score
                 }
@@ -1180,6 +1221,14 @@ final class KnowledgeMaintenance {
                 guard seenTitles.insert(key).inserted else { return false }
                 return true
             }
+    }
+
+    private func reviewPriority(for candidate: KnowledgeReclassifyCandidate) -> KnowledgeManualReviewItem.Priority {
+        candidate.score >= 55 ? .high : .medium
+    }
+
+    private func reviewPriority(for candidate: KnowledgeConsolidationCandidate) -> KnowledgeManualReviewItem.Priority {
+        candidate.score >= 65 ? .high : .medium
     }
 
     private func manualReviewKey(for candidate: KnowledgeReclassifyCandidate) -> String {
@@ -1705,54 +1754,35 @@ final class KnowledgeMaintenance {
         draftArtifactsByKey: [String: [KnowledgeDraftArtifact]]
     ) -> KnowledgeDraftArtifact? {
         guard !manualReviewItems.isEmpty else { return nil }
-
-        var reclassifyRows: [String] = []
-        var consolidationRows: [String] = []
-        var weakRows: [String] = []
-        var staleRows: [String] = []
-
-        for item in manualReviewItems {
+        let prioritizedRows = manualReviewItems.compactMap { item -> (KnowledgeManualReviewItem.Priority, String)? in
             guard let reviewArtifact = draftArtifactsByKey[item.artifactKey]?.first(where: { $0.kind == .reviewDraft }) else {
-                continue
+                return nil
             }
-            let row = "- [[\(reviewArtifact.linkTarget)|\(item.title)]] — \(item.markdownLine)"
-            switch item.kind {
-            case .reclassify:
-                reclassifyRows.append(row)
-            case .consolidate:
-                consolidationRows.append(row)
-            case .weakTopic:
-                weakRows.append(row)
-            case .stale:
-                staleRows.append(row)
-            }
+            return (
+                item.priority,
+                "- [\(item.priority.badge)] [[\(reviewArtifact.linkTarget)|\(item.title)]] — \(manualReviewKindLabel(for: item.kind)): \(item.markdownLine)"
+            )
         }
 
-        guard !reclassifyRows.isEmpty || !consolidationRows.isEmpty || !weakRows.isEmpty || !staleRows.isEmpty else {
-            return nil
-        }
+        guard !prioritizedRows.isEmpty else { return nil }
+
+        let groupedRows = Dictionary(grouping: prioritizedRows, by: \.0)
+        let highCount = groupedRows[.high]?.count ?? 0
+        let mediumCount = groupedRows[.medium]?.count ?? 0
+        let lowCount = groupedRows[.low]?.count ?? 0
 
         var markdown = "# Knowledge Review Board\n\n"
         markdown += "_Review packets exported from the current maintenance queue._\n\n"
         markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
-        if !consolidationRows.isEmpty {
-            markdown += "## Consolidations\n"
-            markdown += consolidationRows.prefix(8).joined(separator: "\n")
-            markdown += "\n\n"
-        }
-        if !reclassifyRows.isEmpty {
-            markdown += "## Reclassifications\n"
-            markdown += reclassifyRows.prefix(8).joined(separator: "\n")
-            markdown += "\n\n"
-        }
-        if !weakRows.isEmpty {
-            markdown += "## Weak Topics\n"
-            markdown += weakRows.prefix(8).joined(separator: "\n")
-            markdown += "\n\n"
-        }
-        if !staleRows.isEmpty {
-            markdown += "## Stale Notes\n"
-            markdown += staleRows.prefix(8).joined(separator: "\n")
+        markdown += "## Priority Overview\n"
+        markdown += "- High priority: \(highCount)\n"
+        markdown += "- Standard review: \(mediumCount)\n"
+        markdown += "- Low-signal review: \(lowCount)\n\n"
+
+        for priority in [KnowledgeManualReviewItem.Priority.high, .medium, .low] {
+            guard let rows = groupedRows[priority], !rows.isEmpty else { continue }
+            markdown += "## \(priority.sectionTitle)\n"
+            markdown += rows.map(\.1).prefix(10).joined(separator: "\n")
             markdown += "\n\n"
         }
         markdown += "## Usage\n"
@@ -1766,6 +1796,19 @@ final class KnowledgeMaintenance {
             title: "Knowledge Review Board",
             markdown: markdown
         )
+    }
+
+    private func manualReviewKindLabel(for kind: KnowledgeManualReviewItem.Kind) -> String {
+        switch kind {
+        case .reclassify:
+            return "Reclassify"
+        case .consolidate:
+            return "Consolidate"
+        case .weakTopic:
+            return "Weak Topic"
+        case .stale:
+            return "Stale"
+        }
     }
 
     private func buildWorkflowIndexArtifact(
