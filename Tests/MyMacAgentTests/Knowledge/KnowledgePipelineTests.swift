@@ -399,20 +399,23 @@ struct KnowledgePipelineTests {
             )
         ]
 
-        let markdown = try maintenance.buildMarkdown(
+        let artifacts = try maintenance.buildArtifacts(
             metrics: metrics,
             materializedEntityIds: Set(["topic-1", "topic-2", "topic-3", "tool-1"]),
             graphShaper: shaper
         )
+        let markdown = artifacts.markdown
 
         #expect(markdown.contains("## Improvement Candidates"))
         #expect(markdown.contains("## Safe Auto-Actions"))
         #expect(markdown.contains("### Draft Lesson Promotions"))
         #expect(markdown.contains("[[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]]"))
         #expect(markdown.contains("high-confidence lesson-like note with stable repeated evidence"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Maintenance/lesson-promotion-codex-workflow-for-ai-founders|draft]]"))
         #expect(markdown.contains("### Safe Consolidations"))
         #expect(markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]]"))
         #expect(markdown.contains("strong root note already dominates this topic family"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Maintenance/consolidate-turboquant-algorithm-into-turboquant|draft]]"))
         #expect(markdown.contains("### Reclassify Candidates"))
         #expect(markdown.contains("Codex Workflow for AI Founders"))
         #expect(markdown.contains("consider moving to Lessons"))
@@ -421,6 +424,7 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("### Stale Review Candidates"))
         #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]]"))
         #expect(markdown.contains("low-touch note with no active project trail"))
+        #expect(artifacts.draftArtifacts.count == 2)
     }
 
     @Test("Knowledge compiler renders readable signals aliases and grouped related entities")

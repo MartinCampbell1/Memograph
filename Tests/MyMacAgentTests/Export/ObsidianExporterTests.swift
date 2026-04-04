@@ -297,4 +297,51 @@ struct ObsidianExporterTests {
         #expect(remaining.count == 1)
         #expect(remaining.first?["entity_id"]?.textValue == "recent-done")
     }
+
+    @Test("Syncs knowledge maintenance draft artifacts and prunes stale files")
+    func syncsKnowledgeMaintenanceDraftArtifacts() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_kb_drafts_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+
+        let firstBatch = [
+            KnowledgeDraftArtifact(
+                fileName: "lesson-promotion-sqlite.md",
+                title: "Draft Lesson Promotion — SQLite",
+                markdown: "# Draft Lesson Promotion — SQLite\n"
+            ),
+            KnowledgeDraftArtifact(
+                fileName: "consolidate-ocr-accuracy-into-ocr.md",
+                title: "Draft Consolidation — OCR Accuracy into OCR",
+                markdown: "# Draft Consolidation — OCR Accuracy into OCR\n"
+            )
+        ]
+
+        let written = try exporter.syncKnowledgeDraftArtifacts(firstBatch)
+        #expect(written.count == 2)
+
+        let draftsDir = (vaultDir as NSString).appendingPathComponent("Knowledge/_drafts/Maintenance")
+        let firstFile = (draftsDir as NSString).appendingPathComponent("lesson-promotion-sqlite.md")
+        let secondFile = (draftsDir as NSString).appendingPathComponent("consolidate-ocr-accuracy-into-ocr.md")
+        #expect(FileManager.default.fileExists(atPath: firstFile))
+        #expect(FileManager.default.fileExists(atPath: secondFile))
+
+        let secondBatch = [
+            KnowledgeDraftArtifact(
+                fileName: "lesson-promotion-sqlite.md",
+                title: "Draft Lesson Promotion — SQLite",
+                markdown: "# Updated Draft\n"
+            )
+        ]
+
+        _ = try exporter.syncKnowledgeDraftArtifacts(secondBatch)
+        #expect(FileManager.default.fileExists(atPath: firstFile))
+        #expect(!FileManager.default.fileExists(atPath: secondFile))
+        let updated = try String(contentsOfFile: firstFile, encoding: .utf8)
+        #expect(updated.contains("# Updated Draft"))
+    }
 }

@@ -208,6 +208,28 @@ final class ObsidianExporter {
         return filePath
     }
 
+    @discardableResult
+    func syncKnowledgeDraftArtifacts(_ artifacts: [KnowledgeDraftArtifact]) throws -> [String] {
+        let draftsDirectory = knowledgeDraftsDirectory()
+        try FileManager.default.createDirectory(atPath: draftsDirectory, withIntermediateDirectories: true)
+
+        let expectedFileNames = Set(artifacts.map(\.fileName))
+        let existingFiles = (try? FileManager.default.contentsOfDirectory(atPath: draftsDirectory)) ?? []
+        for file in existingFiles where file.hasSuffix(".md") && !expectedFileNames.contains(file) {
+            let path = (draftsDirectory as NSString).appendingPathComponent(file)
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        var writtenPaths: [String] = []
+        for artifact in artifacts {
+            let filePath = (draftsDirectory as NSString).appendingPathComponent(artifact.fileName)
+            try artifact.markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
+            writtenPaths.append(filePath)
+        }
+
+        return writtenPaths
+    }
+
     func deleteKnowledgeNote(_ note: KnowledgeNoteRecord) throws {
         let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
         let folder = knowledgeFolderName(for: note.noteType)
@@ -455,6 +477,12 @@ final class ObsidianExporter {
 
     private func knowledgeFolderName(for noteType: String) -> String {
         KnowledgeEntityType(rawValue: noteType)?.folderName ?? "Topics"
+    }
+
+    private func knowledgeDraftsDirectory() -> String {
+        let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
+        let draftsRoot = (knowledgeRoot as NSString).appendingPathComponent("_drafts")
+        return (draftsRoot as NSString).appendingPathComponent("Maintenance")
     }
 
     private func knowledgeSlug(for title: String) -> String {

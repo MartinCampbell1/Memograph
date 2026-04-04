@@ -47,6 +47,21 @@ private struct KnowledgeSafeAction {
     let score: Int
 }
 
+struct KnowledgeDraftArtifact {
+    let fileName: String
+    let title: String
+    let markdown: String
+
+    var linkTarget: String {
+        "Knowledge/_drafts/Maintenance/\(fileName.replacingOccurrences(of: ".md", with: ""))"
+    }
+}
+
+struct KnowledgeMaintenanceArtifacts {
+    let markdown: String
+    let draftArtifacts: [KnowledgeDraftArtifact]
+}
+
 final class KnowledgeMaintenance {
     private let db: DatabaseManager
     private let dateSupport: LocalDateSupport
@@ -95,11 +110,11 @@ final class KnowledgeMaintenance {
         self.dateSupport = LocalDateSupport(timeZone: timeZone)
     }
 
-    func buildMarkdown(
+    func buildArtifacts(
         metrics: [KnowledgeEntityMetrics],
         materializedEntityIds: Set<String>,
         graphShaper: GraphShaper
-    ) throws -> String {
+    ) throws -> KnowledgeMaintenanceArtifacts {
         let metricIndex = Dictionary(uniqueKeysWithValues: metrics.map { ($0.entity.id, $0) })
         let entities = metrics
             .filter { materializedEntityIds.contains($0.entity.id) }
@@ -184,6 +199,9 @@ final class KnowledgeMaintenance {
             reclassifyCandidates: reclassifyCandidates,
             consolidationCandidates: consolidationCandidates
         )
+        let draftArtifactEntries = buildDraftArtifacts(from: safeActions)
+        let draftArtifactByKey = Dictionary(uniqueKeysWithValues: draftArtifactEntries)
+        let draftArtifacts = draftArtifactEntries.map(\.value)
 
         markdown += "## Dashboard\n"
         if !topHotspotNames.isEmpty {
@@ -255,6 +273,9 @@ final class KnowledgeMaintenance {
                 for action in lessonPromotions.prefix(6) {
                     markdown += "- [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
                     markdown += " — promote into \(KnowledgeEntityType.lesson.folderName): \(action.reason)\n"
+                    if let artifact = draftArtifactByKey[safeActionKey(action)] {
+                        markdown += "  Draft: [[\(artifact.linkTarget)|draft]]\n"
+                    }
                 }
                 markdown += "\n"
             }
@@ -266,6 +287,9 @@ final class KnowledgeMaintenance {
                     markdown += "- [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
                     markdown += " → [[\(linkTarget(for: target))|\(target.canonicalName)]]"
                     markdown += " — \(action.reason)\n"
+                    if let artifact = draftArtifactByKey[safeActionKey(action)] {
+                        markdown += "  Draft: [[\(artifact.linkTarget)|draft]]\n"
+                    }
                 }
                 markdown += "\n"
             }
@@ -319,7 +343,22 @@ final class KnowledgeMaintenance {
         markdown += "- Weak durable topics: durable topics stay visible, but low typed-relation coverage means relation extraction still needs improvement.\n"
         markdown += "- Hotspots: entities with the highest combined claim and relation pressure.\n"
 
-        return markdown
+        return KnowledgeMaintenanceArtifacts(
+            markdown: markdown,
+            draftArtifacts: draftArtifacts
+        )
+    }
+
+    func buildMarkdown(
+        metrics: [KnowledgeEntityMetrics],
+        materializedEntityIds: Set<String>,
+        graphShaper: GraphShaper
+    ) throws -> String {
+        try buildArtifacts(
+            metrics: metrics,
+            materializedEntityIds: materializedEntityIds,
+            graphShaper: graphShaper
+        ).markdown
     }
 
     private func loadEntities(materializedEntityIds: Set<String>) throws -> [KnowledgeEntityRecord] {
@@ -559,6 +598,97 @@ final class KnowledgeMaintenance {
         }
     }
 
+    private func buildDraftArtifacts(from safeActions: [KnowledgeSafeAction]) -> [(key: String, value: KnowledgeDraftArtifact)] {
+        safeActions.compactMap { action in
+            let artifact: KnowledgeDraftArtifact?
+            switch action.kind {
+            case .promoteToLessonDraft:
+                artifact = buildLessonPromotionDraft(for: action)
+            case .consolidateIntoRoot:
+                artifact = buildConsolidationDraft(for: action)
+            }
+            guard let artifact else { return nil }
+            return (safeActionKey(action), artifact)
+        }
+    }
+
+    private func buildLessonPromotionDraft(for action: KnowledgeSafeAction) -> KnowledgeDraftArtifact {
+        let destinationSlug = slug(for: action.source.canonicalName)
+        let fileName = "lesson-promotion-\(destinationSlug).md"
+        let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
+        let draft = """
+        # Draft Lesson Promotion — \(action.source.canonicalName)
+
+        ## Candidate
+        - Source note: \(sourceLink)
+        - Proposed destination: [[Knowledge/Lessons/\(destinationSlug)|\(action.source.canonicalName)]]
+        - Reason: \(action.reason)
+
+        ## Proposed Lesson Stub
+        ```md
+        # \(action.source.canonicalName)
+
+        _Type: lesson_
+
+        ## Draft Summary
+        - Promoted from \(sourceLink) because this note behaves like durable guidance rather than a standalone topic.
+
+        ## Source Material
+        - \(sourceLink)
+        ```
+
+        ## Review Checklist
+        - Keep the original topic note as an alias or short redirect if existing links already point to it.
+        - Fold reusable guidance into the lesson note before deleting or downgrading the topic note.
+        """
+
+        return KnowledgeDraftArtifact(
+            fileName: fileName,
+            title: "Draft Lesson Promotion — \(action.source.canonicalName)",
+            markdown: draft
+        )
+    }
+
+    private func buildConsolidationDraft(for action: KnowledgeSafeAction) -> KnowledgeDraftArtifact? {
+        guard let target = action.target else { return nil }
+        let sourceSlug = slug(for: action.source.canonicalName)
+        let targetSlug = slug(for: target.canonicalName)
+        let fileName = "consolidate-\(sourceSlug)-into-\(targetSlug).md"
+        let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
+        let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
+        let draft = """
+        # Draft Consolidation — \(action.source.canonicalName) → \(target.canonicalName)
+
+        ## Candidate
+        - Source note: \(sourceLink)
+        - Target note: \(targetLink)
+        - Reason: \(action.reason)
+
+        ## Suggested Redirect / Alias Stub
+        ```md
+        # \(action.source.canonicalName)
+
+        _Redirect candidate_
+
+        This note likely belongs under \(targetLink).
+
+        ## Alias Trail
+        - \(action.source.canonicalName)
+        ```
+
+        ## Merge Checklist
+        - Move any unique claims from \(sourceLink) into \(targetLink).
+        - Preserve \(action.source.canonicalName) as an alias if existing links still reference it.
+        - Replace or redirect weak standalone notes after the root note captures the missing context.
+        """
+
+        return KnowledgeDraftArtifact(
+            fileName: fileName,
+            title: "Draft Consolidation — \(action.source.canonicalName) → \(target.canonicalName)",
+            markdown: draft
+        )
+    }
+
     private func reclassifyReason(for name: String) -> String? {
         let lowered = name.lowercased()
         guard lessonLikeTopicSignals.contains(where: { lowered.contains($0) }) else {
@@ -598,5 +728,24 @@ final class KnowledgeMaintenance {
         value.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty && !tokenStopWords.contains($0) }
+    }
+
+    private func slug(for value: String) -> String {
+        let lowered = value.lowercased()
+        let allowed = lowered.map { char -> Character in
+            if char.isLetter || char.isNumber {
+                return char
+            }
+            return "-"
+        }
+        let collapsed = String(allowed)
+            .replacingOccurrences(of: "--+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return collapsed.isEmpty ? "draft" : collapsed
+    }
+
+    private func safeActionKey(_ action: KnowledgeSafeAction) -> String {
+        let targetId = action.target?.id ?? "-"
+        return "\(action.kind)-\(action.source.id)-\(targetId)"
     }
 }

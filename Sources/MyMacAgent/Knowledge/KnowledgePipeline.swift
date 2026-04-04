@@ -135,12 +135,13 @@ final class KnowledgePipeline {
             let indexMarkdown = try compiler.buildIndexMarkdown()
             _ = try? exporter.exportKnowledgeIndex(indexMarkdown)
 
-            let maintenanceMarkdown = try maintenance.buildMarkdown(
+            let maintenanceArtifacts = try maintenance.buildArtifacts(
                 metrics: metrics,
                 materializedEntityIds: materializedIds,
                 graphShaper: graphShaper
             )
-            _ = try? exporter.exportKnowledgeMaintenance(maintenanceMarkdown)
+            _ = try? exporter.exportKnowledgeMaintenance(maintenanceArtifacts.markdown)
+            _ = try? exporter.syncKnowledgeDraftArtifacts(maintenanceArtifacts.draftArtifacts)
         }
 
         return noteCount
