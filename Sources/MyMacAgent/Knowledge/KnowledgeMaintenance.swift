@@ -618,6 +618,7 @@ final class KnowledgeMaintenance {
         if sortedReviewDecisions.isEmpty {
             markdown += "- No non-pending review decisions tracked yet.\n\n"
         } else {
+            markdown += "- [[Knowledge/_reviewed|review history]]\n"
             for decision in sortedReviewDecisions.prefix(8) {
                 markdown += "- \(formattedReviewDecision(decision))\n"
             }

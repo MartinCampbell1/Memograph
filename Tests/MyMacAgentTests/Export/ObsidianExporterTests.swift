@@ -447,6 +447,56 @@ struct ObsidianExporterTests {
         #expect(decisions.first?.recordedAt != nil)
     }
 
+    @Test("Review decision discovery preserves prior history and clears it when a draft goes back to pending")
+    func preservesReviewDecisionHistoryAcrossPruning() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_kb_review_history_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        let existing = [
+            KnowledgeReviewDecisionRecord(
+                key: "weak:topic-gpu",
+                kind: .suppress,
+                status: .dismiss,
+                title: "Review Packet — Weak Topic GPU Rendering",
+                path: "/tmp/Knowledge/_drafts/Review/weak-topic-gpu-rendering.md",
+                recordedAt: "2026-04-04T12:00:00Z"
+            )
+        ]
+
+        let preserved = exporter.discoverKnowledgeReviewDecisions(existing: existing)
+        #expect(preserved.count == 1)
+        #expect(preserved.first?.status == .dismiss)
+
+        let pendingArtifact = KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: "Review/weak-topic-gpu-rendering.md",
+            title: "Review Packet — Weak Topic GPU Rendering",
+            markdown: """
+            <!-- memograph-review-key: weak:topic-gpu -->
+            <!-- memograph-review-kind: suppress -->
+            # Review Packet — Weak Topic GPU Rendering
+
+            ## Decision
+            Decision: pending
+            """,
+            reviewPacketKey: "weak:topic-gpu",
+            reviewDecisionKind: .suppress
+        )
+
+        _ = try exporter.syncKnowledgeDraftArtifacts([pendingArtifact])
+        let reset = exporter.discoverKnowledgeReviewDecisions(existing: existing)
+        #expect(reset.isEmpty)
+
+        let reviewHistoryPath = try exporter.exportKnowledgeReviewHistory(existing)
+        let history = try String(contentsOfFile: reviewHistoryPath, encoding: .utf8)
+        #expect(history.contains("# Memograph Reviewed Knowledge Decisions"))
+        #expect(history.contains("dismissed [[Knowledge/_drafts/Review/weak-topic-gpu-rendering|Review Packet — Weak Topic GPU Rendering]]"))
+    }
+
     @Test("Applies safe knowledge draft artifacts into the main knowledge tree with backups")
     func appliesKnowledgeDraftArtifacts() throws {
         let (db, path) = try makeDB()

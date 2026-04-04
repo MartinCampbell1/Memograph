@@ -288,44 +288,85 @@ final class ObsidianExporter {
         return results
     }
 
-    func discoverKnowledgeReviewDecisions() -> [KnowledgeReviewDecisionRecord] {
+    func discoverKnowledgeReviewDecisions(existing: [KnowledgeReviewDecisionRecord] = []) -> [KnowledgeReviewDecisionRecord] {
         let reviewRoot = (knowledgeDraftsDirectory() as NSString).appendingPathComponent("Review")
+        var byKey = Dictionary(uniqueKeysWithValues: existing.map { ($0.key, $0) })
         guard FileManager.default.fileExists(atPath: reviewRoot),
               let files = try? FileManager.default.contentsOfDirectory(atPath: reviewRoot) else {
-            return []
+            return Array(byKey.values).sorted(by: compareReviewDecisions)
         }
 
-        return files
-            .filter { $0.hasSuffix(".md") && $0 != "_index.md" }
-            .compactMap { file in
-                let path = (reviewRoot as NSString).appendingPathComponent(file)
-                guard let markdown = try? String(contentsOfFile: path, encoding: .utf8),
-                      let key = reviewMetadataValue(named: "memograph-review-key", in: markdown),
-                      let kindRaw = reviewMetadataValue(named: "memograph-review-kind", in: markdown),
-                      let kind = KnowledgeReviewDecisionKind(rawValue: kindRaw),
-                      let status = extractReviewDecisionStatus(from: markdown),
-                      status != .pending else {
-                    return nil
-                }
-                return KnowledgeReviewDecisionRecord(
-                    key: key,
-                    kind: kind,
-                    status: status,
-                    title: extractedTitle(from: markdown) ?? ((file as NSString).deletingPathExtension),
-                    path: path,
-                    recordedAt: fileModificationISODate(at: path)
-                )
+        for file in files where file.hasSuffix(".md") && file != "_index.md" {
+            let path = (reviewRoot as NSString).appendingPathComponent(file)
+            guard let markdown = try? String(contentsOfFile: path, encoding: .utf8),
+                  let key = reviewMetadataValue(named: "memograph-review-key", in: markdown),
+                  let kindRaw = reviewMetadataValue(named: "memograph-review-kind", in: markdown),
+                  let kind = KnowledgeReviewDecisionKind(rawValue: kindRaw),
+                  let status = extractReviewDecisionStatus(from: markdown) else {
+                continue
             }
-            .sorted { lhs, rhs in
-                if lhs.recordedAt != rhs.recordedAt {
-                    return (lhs.recordedAt ?? "") > (rhs.recordedAt ?? "")
-                }
-                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+
+            if status == .pending {
+                byKey.removeValue(forKey: key)
+                continue
             }
+
+            byKey[key] = KnowledgeReviewDecisionRecord(
+                key: key,
+                kind: kind,
+                status: status,
+                title: extractedTitle(from: markdown) ?? ((file as NSString).deletingPathExtension),
+                path: path,
+                recordedAt: fileModificationISODate(at: path)
+            )
+        }
+
+        return Array(byKey.values).sorted(by: compareReviewDecisions)
     }
 
     func discoverApprovedKnowledgeReviewDecisions() -> [KnowledgeReviewDecisionRecord] {
         discoverKnowledgeReviewDecisions().filter { $0.status == .apply }
+    }
+
+    func renderKnowledgeReviewHistory(_ records: [KnowledgeReviewDecisionRecord]) -> String {
+        var markdown = "# Memograph Reviewed Knowledge Decisions\n\n"
+        markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
+
+        guard !records.isEmpty else {
+            markdown += "- No non-pending review decisions tracked yet.\n"
+            return markdown
+        }
+
+        markdown += "## Recently Reviewed\n"
+        for record in records.sorted(by: compareReviewDecisions).prefix(30) {
+            let recordedAt = record.recordedAt
+                .flatMap(dateSupport.parseDateTime)
+                .map(dateSupport.localDateTimeString(from:))
+                ?? record.recordedAt
+                ?? "unknown time"
+            let draftName = ((record.path as NSString).lastPathComponent as NSString).deletingPathExtension
+            let linkTarget = "Knowledge/_drafts/Review/\(draftName)"
+            switch record.status {
+            case .apply:
+                markdown += "- `\(recordedAt)` — approved [[\(linkTarget)|\(record.title)]]\n"
+            case .dismiss:
+                markdown += "- `\(recordedAt)` — dismissed [[\(linkTarget)|\(record.title)]]\n"
+            case .pending:
+                continue
+            }
+        }
+        markdown += "\n"
+        return markdown
+    }
+
+    func exportKnowledgeReviewHistory(_ records: [KnowledgeReviewDecisionRecord]) throws -> String {
+        let knowledgeRoot = knowledgeRootDirectory()
+        try FileManager.default.createDirectory(atPath: knowledgeRoot, withIntermediateDirectories: true)
+
+        let filePath = (knowledgeRoot as NSString).appendingPathComponent("_reviewed.md")
+        let markdown = renderKnowledgeReviewHistory(records)
+        try markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
+        return filePath
     }
 
     func renderKnowledgeAppliedHistory(_ records: [KnowledgeAppliedActionRecord]) -> String {
@@ -777,6 +818,13 @@ final class ObsidianExporter {
     private func compareAppliedActions(_ lhs: KnowledgeAppliedActionRecord, _ rhs: KnowledgeAppliedActionRecord) -> Bool {
         if lhs.appliedAt != rhs.appliedAt {
             return lhs.appliedAt > rhs.appliedAt
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+
+    private func compareReviewDecisions(_ lhs: KnowledgeReviewDecisionRecord, _ rhs: KnowledgeReviewDecisionRecord) -> Bool {
+        if lhs.recordedAt != rhs.recordedAt {
+            return (lhs.recordedAt ?? "") > (rhs.recordedAt ?? "")
         }
         return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
     }

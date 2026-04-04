@@ -878,7 +878,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             settings.knowledgeAliasOverrides = derivedKnowledgeAliasOverrides(from: settings)
             _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
-            settings.knowledgeReviewDecisions = exporter.discoverKnowledgeReviewDecisions()
+            settings.knowledgeReviewDecisions = exporter.discoverKnowledgeReviewDecisions(
+                existing: settings.knowledgeReviewDecisions
+            )
+            _ = try? exporter.exportKnowledgeReviewHistory(settings.knowledgeReviewDecisions)
             rebuildKnowledgePipeline()
             let activeKnowledgePipeline = self.knowledgePipeline ?? knowledgePipeline
 
@@ -907,9 +910,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshKnowledgeReviewDecisionHistory() {
         guard let exporter = obsidianExporter else { return }
         var settings = AppSettings()
-        let discovered = exporter.discoverKnowledgeReviewDecisions()
-        guard discovered != settings.knowledgeReviewDecisions else { return }
+        let discovered = exporter.discoverKnowledgeReviewDecisions(existing: settings.knowledgeReviewDecisions)
+        guard discovered != settings.knowledgeReviewDecisions else {
+            _ = try? exporter.exportKnowledgeReviewHistory(discovered)
+            return
+        }
         settings.knowledgeReviewDecisions = discovered
+        _ = try? exporter.exportKnowledgeReviewHistory(discovered)
         rebuildKnowledgePipeline()
     }
 
