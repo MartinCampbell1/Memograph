@@ -34,6 +34,20 @@ private struct KnowledgeStaleCandidate {
     let reason: String
 }
 
+private struct KnowledgeManualReviewItem {
+    enum Kind {
+        case reclassify
+        case consolidate
+        case weakTopic
+        case stale
+    }
+
+    let kind: Kind
+    let title: String
+    let markdownLine: String
+    let score: Int
+}
+
 private struct KnowledgeSafeAction {
     enum ActionKind {
         case promoteToLessonDraft
@@ -326,6 +340,13 @@ final class KnowledgeMaintenance {
         let filteredConsolidationCandidates = consolidationCandidates.filter {
             !safeActionSourceEntityIds.contains($0.source.id)
         }
+        let manualReviewItems = buildManualReviewItems(
+            actionableAutoDemotedTopics: actionableAutoDemotedTopics,
+            weakTopics: weakTopics,
+            reclassifyCandidates: filteredReclassifyCandidates,
+            consolidationCandidates: filteredConsolidationCandidates,
+            staleCandidates: staleCandidates
+        )
         let draftArtifactEntries = try buildDraftArtifacts(from: safeActions)
         let draftArtifactsByKey = Dictionary(grouping: draftArtifactEntries, by: \.key)
             .mapValues { entries in
@@ -346,10 +367,39 @@ final class KnowledgeMaintenance {
         if !topHotspotNames.isEmpty {
             markdown += "- Strongest clusters right now: \(joinNaturalLanguage(topHotspotNames))\n"
         }
+        markdown += "- Safe actions ready: \(safeActions.count)\n"
+        markdown += "- Manual review candidates: \(manualReviewItems.count)\n"
         markdown += "- Review items waiting: \(reviewItemCount)\n"
         markdown += "- Commodity weak topics already suppressed: \(commodityWeakTopics.count)\n\n"
         if !appliedActions.isEmpty {
             markdown += "- Recently applied actions tracked: \(appliedActions.count)\n\n"
+        }
+
+        markdown += "## Next Actions\n"
+        if safeActions.isEmpty && manualReviewItems.isEmpty {
+            markdown += "- No immediate action queue right now.\n\n"
+        } else {
+            if !safeActions.isEmpty {
+                markdown += "### Safe to Apply\n"
+                for action in safeActions.prefix(3) {
+                    switch action.kind {
+                    case .promoteToLessonDraft:
+                        markdown += "- Promote [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into `Lessons`.\n"
+                    case .consolidateIntoRoot:
+                        guard let target = action.target else { continue }
+                        markdown += "- Consolidate [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into [[\(linkTarget(for: target))|\(target.canonicalName)]].\n"
+                    }
+                }
+                markdown += "\n"
+            }
+
+            if !manualReviewItems.isEmpty {
+                markdown += "### Needs Review\n"
+                for item in manualReviewItems.prefix(5) {
+                    markdown += "- \(item.markdownLine)\n"
+                }
+                markdown += "\n"
+            }
         }
 
         markdown += "## Review Queue\n"
@@ -905,6 +955,85 @@ final class KnowledgeMaintenance {
             }
             return lhs.source.canonicalName.localizedCaseInsensitiveCompare(rhs.source.canonicalName) == .orderedAscending
         }
+    }
+
+    private func buildManualReviewItems(
+        actionableAutoDemotedTopics: [KnowledgeEntityMetrics],
+        weakTopics: [KnowledgeHotspot],
+        reclassifyCandidates: [KnowledgeReclassifyCandidate],
+        consolidationCandidates: [KnowledgeConsolidationCandidate],
+        staleCandidates: [KnowledgeStaleCandidate]
+    ) -> [KnowledgeManualReviewItem] {
+        let reclassifyItems = reclassifyCandidates.map { candidate in
+            KnowledgeManualReviewItem(
+                kind: .reclassify,
+                title: candidate.entity.canonicalName,
+                markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] → consider moving to \(candidate.targetType.folderName.lowercased())",
+                score: candidate.score + 40
+            )
+        }
+
+        let consolidationItems = consolidationCandidates.map { candidate in
+            KnowledgeManualReviewItem(
+                kind: .consolidate,
+                title: candidate.source.canonicalName,
+                markdownLine: "[[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]] → [[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]",
+                score: candidate.score + 50
+            )
+        }
+
+        let weakTopicItems = actionableAutoDemotedTopics.map { metric in
+            KnowledgeManualReviewItem(
+                kind: .weakTopic,
+                title: metric.entity.canonicalName,
+                markdownLine: "`\(metric.entity.canonicalName)` — weak topic with \(metric.coOccurrenceEdgeCount) loose links and only \(metric.typedEdgeCount) strong relation\(metric.typedEdgeCount == 1 ? "" : "s")",
+                score: metric.coOccurrenceEdgeCount * 2 - metric.typedEdgeCount
+            )
+        }
+
+        let weakDurableItems = weakTopics.map { hotspot in
+            KnowledgeManualReviewItem(
+                kind: .weakTopic,
+                title: hotspot.entity.canonicalName,
+                markdownLine: "[[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]] — durable but thinly supported",
+                score: hotspot.relationStats.coOccurrenceEdges + hotspot.relationStats.projectRelations * 4
+            )
+        }
+
+        let staleItems = staleCandidates.map { candidate in
+            KnowledgeManualReviewItem(
+                kind: .stale,
+                title: candidate.entity.canonicalName,
+                markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] — stale for \(candidate.daysSinceSeen) day\(candidate.daysSinceSeen == 1 ? "" : "s")",
+                score: min(candidate.daysSinceSeen, 365) / 7
+            )
+        }
+
+        let kindPriority: [KnowledgeManualReviewItem.Kind: Int] = [
+            .consolidate: 0,
+            .reclassify: 1,
+            .weakTopic: 2,
+            .stale: 3
+        ]
+
+        var seenTitles = Set<String>()
+        return (consolidationItems + reclassifyItems + weakTopicItems + weakDurableItems + staleItems)
+            .sorted { lhs, rhs in
+                if lhs.score != rhs.score {
+                    return lhs.score > rhs.score
+                }
+                let lhsPriority = kindPriority[lhs.kind, default: 99]
+                let rhsPriority = kindPriority[rhs.kind, default: 99]
+                if lhsPriority != rhsPriority {
+                    return lhsPriority < rhsPriority
+                }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+            .filter { item in
+                let key = decisionKey(for: item.title)
+                guard seenTitles.insert(key).inserted else { return false }
+                return true
+            }
     }
 
     private func buildDraftArtifacts(from safeActions: [KnowledgeSafeAction]) throws -> [(key: String, value: KnowledgeDraftArtifact)] {
