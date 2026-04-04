@@ -362,6 +362,67 @@ struct ObsidianExporterTests {
         #expect(updated.contains("# Updated Draft"))
     }
 
+    @Test("Preserves review decisions across draft sync and discovers approved review decisions")
+    func preservesAndDiscoversReviewDecisions() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_kb_review_decisions_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        let artifact = KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: "Review/reclassify-prompt-engineering.md",
+            title: "Review Packet — Reclassify Prompt Engineering",
+            markdown: """
+            <!-- memograph-review-key: reclassify:topic-123 -->
+            <!-- memograph-review-kind: promote-to-lesson -->
+            # Review Packet — Reclassify Prompt Engineering
+
+            ## Decision
+            Decision: pending
+            """,
+            reviewPacketKey: "reclassify:topic-123",
+            reviewDecisionKind: .promoteToLesson
+        )
+
+        _ = try exporter.syncKnowledgeDraftArtifacts([artifact])
+        let reviewPath = (vaultDir as NSString).appendingPathComponent("Knowledge/_drafts/Review/reclassify-prompt-engineering.md")
+        let approved = try String(contentsOfFile: reviewPath, encoding: .utf8).replacingOccurrences(of: "Decision: pending", with: "Decision: apply")
+        try approved.write(toFile: reviewPath, atomically: true, encoding: .utf8)
+
+        let refreshedArtifact = KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: "Review/reclassify-prompt-engineering.md",
+            title: "Review Packet — Reclassify Prompt Engineering",
+            markdown: """
+            <!-- memograph-review-key: reclassify:topic-123 -->
+            <!-- memograph-review-kind: promote-to-lesson -->
+            # Review Packet — Reclassify Prompt Engineering
+
+            ## Decision
+            Decision: pending
+
+            ## Candidate
+            - Source note: [[Knowledge/Topics/prompt-engineering|Prompt Engineering]]
+            """,
+            reviewPacketKey: "reclassify:topic-123",
+            reviewDecisionKind: .promoteToLesson
+        )
+
+        _ = try exporter.syncKnowledgeDraftArtifacts([refreshedArtifact])
+        let preserved = try String(contentsOfFile: reviewPath, encoding: .utf8)
+        #expect(preserved.contains("Decision: apply"))
+        #expect(preserved.contains("## Candidate"))
+
+        let decisions = exporter.discoverApprovedKnowledgeReviewDecisions()
+        #expect(decisions.count == 1)
+        #expect(decisions.first?.key == "reclassify:topic-123")
+        #expect(decisions.first?.kind == .promoteToLesson)
+        #expect(decisions.first?.status == .apply)
+    }
+
     @Test("Applies safe knowledge draft artifacts into the main knowledge tree with backups")
     func appliesKnowledgeDraftArtifacts() throws {
         let (db, path) = try makeDB()

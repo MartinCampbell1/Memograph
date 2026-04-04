@@ -83,6 +83,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if shouldApplyKnowledgeReviewActions() {
+            logger.info("Running knowledge review-action apply")
+            initializeDatabase()
+            initializePhase3()
+            Task { @MainActor [weak self] in
+                await self?.runKnowledgeReviewActionApply()
+            }
+            return
+        }
+
         logger.info("MyMacAgent launched")
         registerObservers()
         initializeDatabase()
@@ -187,6 +197,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func shouldApplyKnowledgeSafeActions() -> Bool {
         CommandLine.arguments.contains("--apply-knowledge-safe-actions")
+    }
+
+    private func shouldApplyKnowledgeReviewActions() -> Bool {
+        CommandLine.arguments.contains("--apply-knowledge-review-actions")
     }
 
     private func initializeDatabase() {
@@ -795,6 +809,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } catch {
             logger.error("Knowledge safe-action apply failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func runKnowledgeReviewActionApply() async {
+        defer {
+            NSApp.terminate(nil)
+        }
+
+        guard let exporter = obsidianExporter,
+              let knowledgePipeline else {
+            logger.error("Knowledge review-action apply failed: phase 3 is not initialized")
+            return
+        }
+
+        do {
+            let approvedDecisions = exporter.discoverApprovedKnowledgeReviewDecisions()
+            guard !approvedDecisions.isEmpty else {
+                logger.info("Knowledge review-action apply skipped: no approved review decisions")
+                print("No approved knowledge review decisions found.")
+                return
+            }
+
+            let maintenanceArtifacts = try knowledgePipeline.buildMaintenanceArtifacts()
+            let decisionsByKey = Dictionary(uniqueKeysWithValues: approvedDecisions.map { ($0.key, $0) })
+            let selectedArtifacts = maintenanceArtifacts.draftArtifacts.filter { artifact in
+                guard let reviewPacketKey = artifact.reviewPacketKey,
+                      let reviewDecisionKind = artifact.reviewDecisionKind,
+                      let decision = decisionsByKey[reviewPacketKey],
+                      decision.kind == reviewDecisionKind else {
+                    return false
+                }
+                return artifact.applyTargetRelativePath != nil || artifact.mergeOverlayDraft != nil
+            }
+
+            guard !selectedArtifacts.isEmpty else {
+                logger.info("Knowledge review-action apply skipped: approved decisions had no actionable artifacts")
+                print("No actionable knowledge review decisions found.")
+                return
+            }
+
+            var settings = AppSettings()
+            let mergedSuppressedIds = Set(settings.knowledgeSuppressedEntityIds)
+                .union(selectedArtifacts.compactMap(\.suppressedEntityId))
+            settings.knowledgeSuppressedEntityIds = Array(mergedSuppressedIds).sorted()
+
+            let appliedAt = dateSupport.isoString(from: Date())
+            let mergeOverlayRecords = selectedArtifacts.compactMap {
+                buildKnowledgeMergeOverlayRecord(from: $0, appliedAt: appliedAt)
+            }
+            settings.knowledgeMergeOverlays = mergedKnowledgeMergeOverlays(
+                existing: settings.knowledgeMergeOverlays,
+                incoming: mergeOverlayRecords
+            )
+
+            _ = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
+            let applyResults = try exporter.applyKnowledgeDraftArtifacts(selectedArtifacts)
+            let appliedDraftRecords = applyResults.compactMap { buildAppliedActionRecord(from: $0, appliedAt: appliedAt) }
+            let mergeAppliedActions = mergeOverlayRecords.map(buildAppliedMergeActionRecord(from:))
+            settings.knowledgeAppliedActions = mergedKnowledgeAppliedActions(
+                existing: settings.knowledgeAppliedActions,
+                incoming: appliedDraftRecords + mergeAppliedActions
+            )
+            settings.knowledgeAliasOverrides = derivedKnowledgeAliasOverrides(from: settings)
+            rebuildKnowledgePipeline()
+            let activeKnowledgePipeline = self.knowledgePipeline ?? knowledgePipeline
+            _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
+
+            let materializedCount = try activeKnowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
+            logger.info("Knowledge review-action apply finished: \(approvedDecisions.count) approved decisions, \(applyResults.count) files applied, \(mergeOverlayRecords.count) merge overlays stored, \(materializedCount) notes materialized")
+            for result in applyResults {
+                print(result.appliedPath)
+            }
+        } catch {
+            logger.error("Knowledge review-action apply failed: \(error.localizedDescription)")
         }
     }
 

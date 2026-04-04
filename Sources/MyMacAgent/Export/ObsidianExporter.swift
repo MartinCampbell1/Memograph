@@ -236,7 +236,11 @@ final class ObsidianExporter {
             let filePath = (draftsRoot as NSString).appendingPathComponent(artifact.relativePath)
             let directory = (filePath as NSString).deletingLastPathComponent
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-            try artifact.markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
+            let markdownToWrite = mergedDraftMarkdownPreservingReviewDecision(
+                for: artifact,
+                existingPath: filePath
+            )
+            try markdownToWrite.write(toFile: filePath, atomically: true, encoding: .utf8)
             writtenPaths.append(filePath)
         }
 
@@ -282,6 +286,38 @@ final class ObsidianExporter {
         }
 
         return results
+    }
+
+    func discoverApprovedKnowledgeReviewDecisions() -> [KnowledgeReviewDecisionRecord] {
+        let reviewRoot = (knowledgeDraftsDirectory() as NSString).appendingPathComponent("Review")
+        guard FileManager.default.fileExists(atPath: reviewRoot),
+              let files = try? FileManager.default.contentsOfDirectory(atPath: reviewRoot) else {
+            return []
+        }
+
+        return files
+            .filter { $0.hasSuffix(".md") && $0 != "_index.md" }
+            .compactMap { file in
+                let path = (reviewRoot as NSString).appendingPathComponent(file)
+                guard let markdown = try? String(contentsOfFile: path, encoding: .utf8),
+                      let key = reviewMetadataValue(named: "memograph-review-key", in: markdown),
+                      let kindRaw = reviewMetadataValue(named: "memograph-review-kind", in: markdown),
+                      let kind = KnowledgeReviewDecisionKind(rawValue: kindRaw),
+                      let status = extractReviewDecisionStatus(from: markdown),
+                      status == .apply else {
+                    return nil
+                }
+                return KnowledgeReviewDecisionRecord(
+                    key: key,
+                    kind: kind,
+                    status: status,
+                    title: extractedTitle(from: markdown) ?? ((file as NSString).deletingPathExtension),
+                    path: path
+                )
+            }
+            .sorted { lhs, rhs in
+                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
     }
 
     func renderKnowledgeAppliedHistory(_ records: [KnowledgeAppliedActionRecord]) -> String {
@@ -1101,6 +1137,64 @@ final class ObsidianExporter {
             if FileManager.default.fileExists(atPath: path) {
                 return path
             }
+        }
+        return nil
+    }
+
+    private func mergedDraftMarkdownPreservingReviewDecision(
+        for artifact: KnowledgeDraftArtifact,
+        existingPath: String
+    ) -> String {
+        guard artifact.kind == .reviewDraft,
+              artifact.reviewDecisionKind != nil,
+              FileManager.default.fileExists(atPath: existingPath),
+              let existing = try? String(contentsOfFile: existingPath, encoding: .utf8),
+              let status = extractReviewDecisionStatus(from: existing) else {
+            return artifact.markdown
+        }
+
+        return applyReviewDecisionStatus(status, to: artifact.markdown)
+    }
+
+    private func extractReviewDecisionStatus(from markdown: String) -> KnowledgeReviewDecisionStatus? {
+        for line in markdown.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.lowercased().hasPrefix("decision:") else { continue }
+            let rawValue = trimmed.dropFirst("Decision:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            return KnowledgeReviewDecisionStatus(rawValue: rawValue.lowercased())
+        }
+        return nil
+    }
+
+    private func applyReviewDecisionStatus(
+        _ status: KnowledgeReviewDecisionStatus,
+        to markdown: String
+    ) -> String {
+        let replacement = "Decision: \(status.rawValue)"
+        let lines = markdown.components(separatedBy: .newlines)
+        var updated: [String] = []
+        var replaced = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !replaced, trimmed.lowercased().hasPrefix("decision:") {
+                updated.append(replacement)
+                replaced = true
+            } else {
+                updated.append(line)
+            }
+        }
+        if !replaced {
+            updated.append(replacement)
+        }
+        return updated.joined(separator: "\n")
+    }
+
+    private func reviewMetadataValue(named key: String, in markdown: String) -> String? {
+        let prefix = "<!-- \(key): "
+        for line in markdown.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix(prefix), trimmed.hasSuffix(" -->") else { continue }
+            return String(trimmed.dropFirst(prefix.count).dropLast(4))
         }
         return nil
     }

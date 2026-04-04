@@ -139,6 +139,8 @@ struct KnowledgeDraftArtifact {
     let applyTargetRelativePath: String?
     let suppressedEntityId: String?
     let mergeOverlayDraft: MergeOverlayDraft?
+    let reviewPacketKey: String?
+    let reviewDecisionKind: KnowledgeReviewDecisionKind?
 
     init(
         kind: KnowledgeDraftArtifactKind,
@@ -147,7 +149,9 @@ struct KnowledgeDraftArtifact {
         markdown: String,
         applyTargetRelativePath: String? = nil,
         suppressedEntityId: String? = nil,
-        mergeOverlayDraft: MergeOverlayDraft? = nil
+        mergeOverlayDraft: MergeOverlayDraft? = nil,
+        reviewPacketKey: String? = nil,
+        reviewDecisionKind: KnowledgeReviewDecisionKind? = nil
     ) {
         let normalizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.kind = kind
@@ -158,6 +162,8 @@ struct KnowledgeDraftArtifact {
         self.applyTargetRelativePath = applyTargetRelativePath?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.suppressedEntityId = suppressedEntityId
         self.mergeOverlayDraft = mergeOverlayDraft
+        self.reviewPacketKey = reviewPacketKey
+        self.reviewDecisionKind = reviewDecisionKind
     }
 
     init(fileName: String, title: String, markdown: String) {
@@ -1115,9 +1121,53 @@ final class KnowledgeMaintenance {
 
         for candidate in reclassifyCandidates {
             artifacts.append((manualReviewKey(for: candidate), try buildReclassifyReviewDraft(for: candidate)))
+            let reviewAction = manualReviewAction(for: candidate)
+            let lessonArtifact = try buildLessonPromotionApplyDraft(for: reviewAction)
+            artifacts.append((
+                manualReviewKey(for: candidate),
+                rehousedReviewApplyArtifact(
+                    lessonArtifact,
+                    relativePath: lessonArtifact.relativePath.replacingOccurrences(of: "Apply/", with: "ReviewApply/"),
+                    reviewPacketKey: manualReviewKey(for: candidate),
+                    reviewDecisionKind: .promoteToLesson
+                )
+            ))
+            let redirectArtifact = buildLessonPromotionRedirectDraft(for: reviewAction)
+            artifacts.append((
+                manualReviewKey(for: candidate),
+                rehousedReviewApplyArtifact(
+                    redirectArtifact,
+                    relativePath: redirectArtifact.relativePath.replacingOccurrences(of: "Apply/", with: "ReviewApply/"),
+                    reviewPacketKey: manualReviewKey(for: candidate),
+                    reviewDecisionKind: .promoteToLesson
+                )
+            ))
         }
         for candidate in consolidationCandidates {
             artifacts.append((manualReviewKey(for: candidate), try buildManualConsolidationReviewDraft(for: candidate)))
+            let reviewAction = manualReviewAction(for: candidate)
+            if let redirectArtifact = try buildConsolidationApplyDraft(for: reviewAction) {
+                artifacts.append((
+                    manualReviewKey(for: candidate),
+                    rehousedReviewApplyArtifact(
+                        redirectArtifact,
+                        relativePath: redirectArtifact.relativePath.replacingOccurrences(of: "Apply/", with: "ReviewApply/"),
+                        reviewPacketKey: manualReviewKey(for: candidate),
+                        reviewDecisionKind: .consolidate
+                    )
+                ))
+            }
+            if let mergeArtifact = try buildConsolidationMergeDraft(for: reviewAction) {
+                artifacts.append((
+                    manualReviewKey(for: candidate),
+                    rehousedReviewApplyArtifact(
+                        mergeArtifact,
+                        relativePath: mergeArtifact.relativePath.replacingOccurrences(of: "Apply/", with: "ReviewApply/"),
+                        reviewPacketKey: manualReviewKey(for: candidate),
+                        reviewDecisionKind: .consolidate
+                    )
+                ))
+            }
         }
         for candidate in staleCandidates {
             artifacts.append((manualReviewKey(for: candidate), buildStaleReviewDraft(for: candidate)))
@@ -1130,6 +1180,45 @@ final class KnowledgeMaintenance {
         }
 
         return artifacts
+    }
+
+    private func manualReviewAction(for candidate: KnowledgeReclassifyCandidate) -> KnowledgeSafeAction {
+        KnowledgeSafeAction(
+            kind: .promoteToLessonDraft,
+            source: candidate.entity,
+            target: nil,
+            reason: candidate.reason,
+            score: candidate.score
+        )
+    }
+
+    private func manualReviewAction(for candidate: KnowledgeConsolidationCandidate) -> KnowledgeSafeAction {
+        KnowledgeSafeAction(
+            kind: .consolidateIntoRoot,
+            source: candidate.source,
+            target: candidate.target,
+            reason: candidate.reason,
+            score: candidate.score
+        )
+    }
+
+    private func rehousedReviewApplyArtifact(
+        _ artifact: KnowledgeDraftArtifact,
+        relativePath: String,
+        reviewPacketKey: String,
+        reviewDecisionKind: KnowledgeReviewDecisionKind
+    ) -> KnowledgeDraftArtifact {
+        KnowledgeDraftArtifact(
+            kind: artifact.kind,
+            relativePath: relativePath,
+            title: artifact.title,
+            markdown: artifact.markdown,
+            applyTargetRelativePath: artifact.applyTargetRelativePath,
+            suppressedEntityId: artifact.suppressedEntityId,
+            mergeOverlayDraft: artifact.mergeOverlayDraft,
+            reviewPacketKey: reviewPacketKey,
+            reviewDecisionKind: reviewDecisionKind
+        )
     }
 
     private func buildDraftArtifacts(from safeActions: [KnowledgeSafeAction]) throws -> [(key: String, value: KnowledgeDraftArtifact)] {
@@ -1587,11 +1676,20 @@ final class KnowledgeMaintenance {
         let targetFolder = candidate.targetType.folderName
         let destinationLink = "[[Knowledge/\(targetFolder)/\(candidate.entity.slug)|\(candidate.entity.canonicalName)]]"
 
-        var markdown = "# Review Packet — Reclassify \(candidate.entity.canonicalName)\n\n"
+        var markdown = """
+        <!-- memograph-review-key: \(manualReviewKey(for: candidate)) -->
+        <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.promoteToLesson.rawValue) -->
+        # Review Packet — Reclassify \(candidate.entity.canonicalName)
+
+        """
         markdown += "## Candidate\n"
         markdown += "- Source note: \(sourceLink)\n"
         markdown += "- Proposed destination: \(destinationLink)\n"
         markdown += "- Reason: \(candidate.reason)\n\n"
+        markdown += "## Decision\n"
+        markdown += "- Change `Decision: pending` to `Decision: apply` once this review is approved.\n"
+        markdown += "- Use `Decision: dismiss` if this note should stay as-is.\n"
+        markdown += "Decision: pending\n\n"
         markdown += "## Current Read\n"
         if let overview {
             markdown += "- \(overview)\n"
@@ -1614,7 +1712,9 @@ final class KnowledgeMaintenance {
             kind: .reviewDraft,
             relativePath: relativePath,
             title: "Review Packet — Reclassify \(candidate.entity.canonicalName)",
-            markdown: markdown
+            markdown: markdown,
+            reviewPacketKey: manualReviewKey(for: candidate),
+            reviewDecisionKind: .promoteToLesson
         )
     }
 
@@ -1626,11 +1726,20 @@ final class KnowledgeMaintenance {
         let sourceLink = "[[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]]"
         let targetLink = "[[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]"
 
-        var markdown = "# Review Packet — Consolidate \(candidate.source.canonicalName)\n\n"
+        var markdown = """
+        <!-- memograph-review-key: \(manualReviewKey(for: candidate)) -->
+        <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.consolidate.rawValue) -->
+        # Review Packet — Consolidate \(candidate.source.canonicalName)
+
+        """
         markdown += "## Candidate\n"
         markdown += "- Source note: \(sourceLink)\n"
         markdown += "- Target note: \(targetLink)\n"
         markdown += "- Reason: \(candidate.reason)\n\n"
+        markdown += "## Decision\n"
+        markdown += "- Change `Decision: pending` to `Decision: apply` once this merge is approved.\n"
+        markdown += "- Use `Decision: dismiss` if the source note should remain standalone.\n"
+        markdown += "Decision: pending\n\n"
         markdown += "## Source Context\n"
         if let sourceOverview {
             markdown += "- \(sourceOverview)\n"
@@ -1652,7 +1761,9 @@ final class KnowledgeMaintenance {
             kind: .reviewDraft,
             relativePath: relativePath,
             title: "Review Packet — Consolidate \(candidate.source.canonicalName)",
-            markdown: markdown
+            markdown: markdown,
+            reviewPacketKey: manualReviewKey(for: candidate),
+            reviewDecisionKind: .consolidate
         )
     }
 
@@ -1678,7 +1789,8 @@ final class KnowledgeMaintenance {
             kind: .reviewDraft,
             relativePath: relativePath,
             title: "Review Packet — Stale Note \(candidate.entity.canonicalName)",
-            markdown: markdown
+            markdown: markdown,
+            reviewPacketKey: manualReviewKey(for: candidate)
         )
     }
 
@@ -1704,7 +1816,8 @@ final class KnowledgeMaintenance {
             kind: .reviewDraft,
             relativePath: relativePath,
             title: "Review Packet — Weak Topic \(metric.entity.canonicalName)",
-            markdown: markdown
+            markdown: markdown,
+            reviewPacketKey: manualReviewKey(forWeakTopic: metric.entity)
         )
     }
 
@@ -1731,7 +1844,8 @@ final class KnowledgeMaintenance {
             kind: .reviewDraft,
             relativePath: relativePath,
             title: "Review Packet — Thin Durable Topic \(hotspot.entity.canonicalName)",
-            markdown: markdown
+            markdown: markdown,
+            reviewPacketKey: manualReviewKey(forWeakTopic: hotspot.entity)
         )
     }
 
