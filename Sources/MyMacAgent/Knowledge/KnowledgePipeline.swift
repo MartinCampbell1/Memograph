@@ -26,7 +26,12 @@ final class KnowledgePipeline {
         self.settings = settings
         self.normalizer = EntityNormalizer()
         self.extractor = ClaimExtractor(normalizer: normalizer, timeZone: timeZone)
-        self.compiler = KnowledgeCompiler(db: db, timeZone: timeZone, normalizer: normalizer)
+        self.compiler = KnowledgeCompiler(
+            db: db,
+            timeZone: timeZone,
+            normalizer: normalizer,
+            settings: settings
+        )
         self.maintenance = KnowledgeMaintenance(db: db, timeZone: timeZone)
         self.graphShaper = GraphShaper()
     }

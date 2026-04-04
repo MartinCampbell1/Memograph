@@ -9,7 +9,10 @@ struct ObsidianExporterTests {
     private func makeDB() throws -> (DatabaseManager, String) {
         let path = NSTemporaryDirectory() + "test_\(UUID().uuidString).db"
         let db = try DatabaseManager(path: path)
-        let runner = MigrationRunner(db: db, migrations: [V001_InitialSchema.migration])
+        let runner = MigrationRunner(db: db, migrations: [
+            V001_InitialSchema.migration,
+            V005_KnowledgeGraph.migration
+        ])
         try runner.runPending()
         return (db, path)
     }
@@ -438,6 +441,16 @@ struct ObsidianExporterTests {
                 applyTargetRelativePath: "Lessons/codex-workflow-for-ai-founders.md",
                 appliedPath: "/Users/test/vault/Knowledge/Lessons/codex-workflow-for-ai-founders.md",
                 backupPath: "/Users/test/vault/Knowledge/_drafts/AppliedBackup/20260404-103351/Lessons/codex-workflow-for-ai-founders.md"
+            ),
+            KnowledgeAppliedActionRecord(
+                id: "merge|topic-ocr-accuracy|topic-ocr",
+                appliedAt: "2026-04-04T10:34:00Z",
+                kind: .mergeOverlay,
+                title: "OCR Accuracy in Memograph",
+                sourceEntityId: "topic-ocr-accuracy",
+                applyTargetRelativePath: "Topics/ocr.md",
+                appliedPath: "/Users/test/vault/Knowledge/Topics/ocr.md",
+                targetTitle: "OCR"
             )
         ]
 
@@ -447,6 +460,7 @@ struct ObsidianExporterTests {
         #expect(markdown.contains("# Memograph Applied Knowledge Actions"))
         #expect(markdown.contains("## Recently Applied"))
         #expect(markdown.contains("Codex Workflow for AI Founders"))
+        #expect(markdown.contains("merged context from `OCR Accuracy in Memograph` into [[Knowledge/Topics/ocr|OCR]]"))
         #expect(markdown.contains("Backup:"))
     }
 
@@ -493,5 +507,73 @@ struct ObsidianExporterTests {
         #expect(records.contains {
             $0.backupPath?.hasSuffix("Lessons/codex-workflow-for-ai-founders.md") == true
         })
+    }
+
+    @Test("Discovers applied merge overlays from merge packets and applied actions")
+    func discoversAppliedMergeOverlaysFromVault() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_kb_merge_overlay_discovery_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, aliases_json, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("topic-ocr-accuracy"), .text("OCR Accuracy in Memograph"), .text("ocr-accuracy-in-memograph"),
+            .text("topic"), .text("[\"OCR Accuracy in Memograph\"]"),
+            .text("2026-04-04T09:00:00Z"), .text("2026-04-04T10:00:00Z"),
+            .text("topic-ocr"), .text("OCR"), .text("ocr"),
+            .text("topic"), .null,
+            .text("2026-04-04T09:00:00Z"), .text("2026-04-04T10:00:00Z")
+        ])
+
+        let mergePath = (vaultDir as NSString).appendingPathComponent(
+            "Knowledge/_drafts/Apply/Merge/ocr-accuracy-in-memograph-into-ocr.md"
+        )
+        try FileManager.default.createDirectory(
+            atPath: (mergePath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try """
+        # Merge Patch — OCR Accuracy in Memograph → OCR
+
+        _Apply-ready merge packet generated from a safe consolidation action._
+
+        ## Merge Intent
+        Fold [[Knowledge/Topics/ocr-accuracy-in-memograph|OCR Accuracy in Memograph]] into [[Knowledge/Topics/ocr|OCR]] while preserving any unique context and aliases.
+
+        ## Source Summary
+        - This narrow note captured OCR tuning work inside Memograph.
+
+        ## Signals To Preserve
+        - Focused in 1 summary window; last seen 2026-04-04 09:00.
+        - Main projects: Memograph; last seen 2026-04-04 09:00.
+        """.write(toFile: mergePath, atomically: true, encoding: .utf8)
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        let overlays = exporter.discoverKnowledgeMergeOverlays(
+            existing: [],
+            appliedActions: [
+                KnowledgeAppliedActionRecord(
+                    appliedAt: "2026-04-04T10:33:00Z",
+                    kind: .redirect,
+                    title: "OCR Accuracy in Memograph",
+                    sourceEntityId: "topic-ocr-accuracy",
+                    applyTargetRelativePath: "Topics/ocr-accuracy-in-memograph.md",
+                    appliedPath: (vaultDir as NSString).appendingPathComponent("Knowledge/Topics/ocr-accuracy-in-memograph.md")
+                )
+            ]
+        )
+
+        #expect(overlays.count == 1)
+        #expect(overlays.first?.sourceTitle == "OCR Accuracy in Memograph")
+        #expect(overlays.first?.targetTitle == "OCR")
+        #expect(overlays.first?.targetRelativePath == "Topics/ocr.md")
+        #expect(overlays.first?.preservedSignals.count == 2)
     }
 }

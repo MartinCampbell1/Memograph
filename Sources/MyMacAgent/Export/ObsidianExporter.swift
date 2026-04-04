@@ -299,7 +299,11 @@ final class ObsidianExporter {
                 .map(dateSupport.localDateTimeString(from:))
                 ?? record.appliedAt
             let linkTarget = "Knowledge/\(record.applyTargetRelativePath.replacingOccurrences(of: ".md", with: ""))"
-            markdown += "- `\(appliedAt)` — \(actionVerb(for: record.kind)) [[\(linkTarget)|\(record.title)]]\n"
+            if record.kind == .mergeOverlay, let targetTitle = record.targetTitle {
+                markdown += "- `\(appliedAt)` — merged context from `\(record.title)` into [[\(linkTarget)|\(targetTitle)]]\n"
+            } else {
+                markdown += "- `\(appliedAt)` — \(actionVerb(for: record.kind)) [[\(linkTarget)|\(record.title)]]\n"
+            }
             if let backupPath = record.backupPath, !backupPath.isEmpty {
                 markdown += "  Backup: `\(backupPath)`\n"
             }
@@ -325,9 +329,10 @@ final class ObsidianExporter {
             (knowledgeRoot as NSString).appendingPathComponent("Topics")
         ]
 
-        var byKey = Dictionary(uniqueKeysWithValues: existing.map {
-            (appliedActionKey(kind: $0.kind, relativePath: $0.applyTargetRelativePath), $0)
-        })
+        var byKey: [String: KnowledgeAppliedActionRecord] = [:]
+        for record in existing {
+            byKey[appliedActionKey(for: record)] = record
+        }
 
         for directory in candidateDirectories where FileManager.default.fileExists(atPath: directory) {
             guard let files = try? FileManager.default.contentsOfDirectory(atPath: directory) else { continue }
@@ -381,6 +386,82 @@ final class ObsidianExporter {
         }
 
         return byKey.values.sorted(by: compareAppliedActions)
+    }
+
+    func discoverKnowledgeMergeOverlays(
+        existing: [KnowledgeMergeOverlayRecord],
+        appliedActions: [KnowledgeAppliedActionRecord]
+    ) -> [KnowledgeMergeOverlayRecord] {
+        var byId = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        for action in appliedActions where action.kind == .redirect {
+            guard FileManager.default.fileExists(atPath: action.appliedPath),
+                  let markdown = try? String(contentsOfFile: action.appliedPath, encoding: .utf8),
+                  let parsed = parseConsolidationRedirectStub(markdown, fallbackSourceTitle: action.title),
+                  let targetEntity = loadKnowledgeEntity(
+                    named: parsed.targetTitle,
+                    constrainedToRelativePath: parsed.targetRelativePath
+                  ) else {
+                continue
+            }
+
+            let sourceEntity = loadKnowledgeEntity(named: parsed.sourceTitle)
+            let overlay = discoveredMergeOverlayRecord(
+                appliedAt: action.appliedAt,
+                sourceTitle: parsed.sourceTitle,
+                sourceAliases: parsed.sourceAliases,
+                sourceOverview: parsed.sourceOverview,
+                preservedSignals: parsed.preservedSignals,
+                sourceEntity: sourceEntity,
+                targetEntity: targetEntity,
+                targetTitle: parsed.targetTitle,
+                targetRelativePath: parsed.targetRelativePath
+            )
+            byId[overlay.id] = overlay
+        }
+
+        let mergeDirectory = (knowledgeDraftsDirectory() as NSString).appendingPathComponent("Apply/Merge")
+        if FileManager.default.fileExists(atPath: mergeDirectory),
+           let files = try? FileManager.default.contentsOfDirectory(atPath: mergeDirectory) {
+            let appliedSourceTitles = Set(
+                appliedActions.compactMap { action -> String? in
+                    switch action.kind {
+                    case .redirect, .mergeOverlay:
+                        return action.title
+                    default:
+                        return nil
+                    }
+                }
+            )
+
+            for file in files where file.hasSuffix(".md") {
+                let path = (mergeDirectory as NSString).appendingPathComponent(file)
+                guard let markdown = try? String(contentsOfFile: path, encoding: .utf8),
+                      let parsed = parseMergeDraft(markdown),
+                      appliedSourceTitles.contains(parsed.sourceTitle),
+                      let targetEntity = loadKnowledgeEntity(
+                        named: parsed.targetTitle,
+                        constrainedToRelativePath: parsed.targetRelativePath
+                      ) else {
+                    continue
+                }
+
+                let sourceEntity = loadKnowledgeEntity(named: parsed.sourceTitle)
+                let overlay = discoveredMergeOverlayRecord(
+                    appliedAt: appliedTimestamp(for: parsed.sourceTitle, from: appliedActions) ?? fileTimestamp(at: path),
+                    sourceTitle: parsed.sourceTitle,
+                    sourceAliases: sourceEntity.map(aliases(for:)) ?? [parsed.sourceTitle],
+                    sourceOverview: parsed.sourceOverview,
+                    preservedSignals: parsed.preservedSignals,
+                    sourceEntity: sourceEntity,
+                    targetEntity: targetEntity,
+                    targetTitle: parsed.targetTitle,
+                    targetRelativePath: parsed.targetRelativePath
+                )
+                byId[overlay.id] = overlay
+            }
+        }
+
+        return deduplicatedMergeOverlays(Array(byId.values)).sorted(by: compareMergeOverlays)
     }
 
     func deleteKnowledgeNote(_ note: KnowledgeNoteRecord) throws {
@@ -664,7 +745,88 @@ final class ObsidianExporter {
             return "redirected"
         case .redirect:
             return "consolidated"
+        case .mergeOverlay:
+            return "merged"
         }
+    }
+
+    private func compareMergeOverlays(_ lhs: KnowledgeMergeOverlayRecord, _ rhs: KnowledgeMergeOverlayRecord) -> Bool {
+        if lhs.appliedAt != rhs.appliedAt {
+            return lhs.appliedAt > rhs.appliedAt
+        }
+        return lhs.sourceTitle.localizedCaseInsensitiveCompare(rhs.sourceTitle) == .orderedAscending
+    }
+
+    private func deduplicatedMergeOverlays(
+        _ overlays: [KnowledgeMergeOverlayRecord]
+    ) -> [KnowledgeMergeOverlayRecord] {
+        var bySemanticKey: [String: KnowledgeMergeOverlayRecord] = [:]
+        for overlay in overlays {
+            let key = "\(overlay.sourceTitle.lowercased())|\(overlay.targetRelativePath.lowercased())"
+            guard let existing = bySemanticKey[key] else {
+                bySemanticKey[key] = overlay
+                continue
+            }
+            bySemanticKey[key] = preferredMergeOverlay(existing, overlay)
+        }
+        return Array(bySemanticKey.values)
+    }
+
+    private func preferredMergeOverlay(
+        _ lhs: KnowledgeMergeOverlayRecord,
+        _ rhs: KnowledgeMergeOverlayRecord
+    ) -> KnowledgeMergeOverlayRecord {
+        let lhsScore = mergeOverlayQualityScore(lhs)
+        let rhsScore = mergeOverlayQualityScore(rhs)
+        if lhsScore != rhsScore {
+            return lhsScore > rhsScore ? lhs : rhs
+        }
+        if lhs.appliedAt != rhs.appliedAt {
+            return lhs.appliedAt > rhs.appliedAt ? lhs : rhs
+        }
+        return lhs.id < rhs.id ? lhs : rhs
+    }
+
+    private func mergeOverlayQualityScore(_ overlay: KnowledgeMergeOverlayRecord) -> Int {
+        var score = 0
+        if !overlay.sourceEntityId.hasPrefix("merge-source|") {
+            score += 10
+        }
+        score += overlay.sourceAliases.count * 2
+        score += overlay.preservedSignals.count
+        if let sourceOverview = overlay.sourceOverview,
+           !sourceOverview.isEmpty {
+            score += 3
+        }
+        return score
+    }
+
+    private func discoveredMergeOverlayRecord(
+        appliedAt: String,
+        sourceTitle: String,
+        sourceAliases: [String],
+        sourceOverview: String?,
+        preservedSignals: [String],
+        sourceEntity: KnowledgeEntityRecord?,
+        targetEntity: KnowledgeEntityRecord,
+        targetTitle: String,
+        targetRelativePath: String
+    ) -> KnowledgeMergeOverlayRecord {
+        let mergedAliases = Array(
+            Set((sourceEntity.map(aliases(for:)) ?? [sourceTitle]) + sourceAliases + [sourceTitle])
+        ).sorted()
+        let sourceEntityId = sourceEntity?.id ?? syntheticMergeSourceEntityID(for: sourceTitle)
+        return KnowledgeMergeOverlayRecord(
+            appliedAt: appliedAt,
+            sourceEntityId: sourceEntityId,
+            sourceTitle: sourceTitle,
+            sourceAliases: mergedAliases,
+            sourceOverview: sourceOverview,
+            preservedSignals: preservedSignals,
+            targetEntityId: targetEntity.id,
+            targetTitle: targetTitle,
+            targetRelativePath: targetRelativePath
+        )
     }
 
     private func detectedAppliedActionKind(from markdown: String) -> KnowledgeAppliedActionKind? {
@@ -680,6 +842,69 @@ final class ObsidianExporter {
         return nil
     }
 
+    private func parseMergeDraft(_ markdown: String) -> (
+        sourceTitle: String,
+        targetTitle: String,
+        targetRelativePath: String,
+        sourceOverview: String?,
+        preservedSignals: [String]
+    )? {
+        guard let titleLine = markdown.components(separatedBy: .newlines).first(where: { $0.hasPrefix("# Merge Patch — ") }) else {
+            return nil
+        }
+        let titlePayload = String(titleLine.dropFirst("# Merge Patch — ".count))
+        let titleParts = titlePayload.components(separatedBy: " → ")
+        guard titleParts.count == 2 else { return nil }
+
+        let sourceTitle = titleParts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetTitle = titleParts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let targetRelativePath = targetRelativePath(from: markdown) else {
+            return nil
+        }
+
+        let sourceOverview = extractFirstBullet(fromSection: "Source Summary", markdown: markdown)
+        let preservedSignals = extractBullets(fromSection: "Signals To Preserve", markdown: markdown)
+
+        return (
+            sourceTitle: sourceTitle,
+            targetTitle: targetTitle,
+            targetRelativePath: targetRelativePath,
+            sourceOverview: sourceOverview,
+            preservedSignals: preservedSignals
+        )
+    }
+
+    private func parseConsolidationRedirectStub(
+        _ markdown: String,
+        fallbackSourceTitle: String
+    ) -> (
+        sourceTitle: String,
+        targetTitle: String,
+        targetRelativePath: String,
+        sourceOverview: String?,
+        preservedSignals: [String],
+        sourceAliases: [String]
+    )? {
+        guard markdown.contains("_Redirect stub draft generated from a safe consolidation action._"),
+              let targetLink = firstKnowledgeLink(in: markdown),
+              let targetRelativePath = normalizedKnowledgeTarget(targetLink.target) else {
+            return nil
+        }
+        let sourceTitle = extractedTitle(from: markdown) ?? fallbackSourceTitle
+        let targetTitle = targetLink.label ?? ((targetRelativePath as NSString).deletingPathExtension as NSString).lastPathComponent
+        let preservedSignals = extractBullets(fromSection: "Unique Context To Preserve", markdown: markdown)
+        let aliases = extractBullets(fromSection: "Alias Trail", markdown: markdown)
+
+        return (
+            sourceTitle: sourceTitle,
+            targetTitle: targetTitle,
+            targetRelativePath: targetRelativePath,
+            sourceOverview: preservedSignals.first,
+            preservedSignals: preservedSignals,
+            sourceAliases: aliases
+        )
+    }
+
     private func extractedTitle(from markdown: String) -> String? {
         for line in markdown.components(separatedBy: .newlines) {
             if line.hasPrefix("# ") {
@@ -687,6 +912,158 @@ final class ObsidianExporter {
             }
         }
         return nil
+    }
+
+    private func targetRelativePath(from markdown: String) -> String? {
+        let lines = markdown.components(separatedBy: .newlines)
+        if let mergeIntentLine = lines.first(where: { $0.contains("Fold [[Knowledge/") && $0.contains(" into [[Knowledge/") }),
+           let target = knowledgeLinks(in: mergeIntentLine).last?.target {
+            return normalizedKnowledgeTarget(target)
+        }
+
+        let allTargets = lines.flatMap(knowledgeLinks(in:)).map(\.target)
+        if let target = allTargets.first,
+           let normalized = normalizedKnowledgeTarget(target) {
+            return normalized
+        }
+        return legacyTargetRelativePath(from: markdown)
+    }
+
+    private func firstKnowledgeLink(in markdown: String) -> (target: String, label: String?)? {
+        for line in markdown.components(separatedBy: .newlines) {
+            if let link = knowledgeLinks(in: line).first,
+               normalizedKnowledgeTarget(link.target) != nil {
+                return link
+            }
+        }
+        return nil
+    }
+
+    private func knowledgeLinks(in line: String) -> [(target: String, label: String?)] {
+        var targets: [(target: String, label: String?)] = []
+        var searchRange = line.startIndex..<line.endIndex
+        while let startRange = line.range(of: "[[Knowledge/", options: [], range: searchRange) {
+            let suffix = line[startRange.upperBound...]
+            guard let closing = suffix.firstIndex(of: "]") else { break }
+            let token = String(suffix[..<closing])
+            let parts = token.components(separatedBy: "|")
+            let linkTarget = parts.first ?? token
+            let label = parts.count > 1 ? parts[1] : nil
+            targets.append((linkTarget, label))
+            searchRange = closing..<line.endIndex
+        }
+        return targets
+    }
+
+    private func normalizedKnowledgeTarget(_ target: String) -> String? {
+        guard target.hasPrefix("Topics/") || target.hasPrefix("Lessons/") || target.hasPrefix("Projects/") ||
+                target.hasPrefix("Tools/") || target.hasPrefix("Models/") || target.hasPrefix("Issues/") else {
+            return nil
+        }
+        return target.hasSuffix(".md") ? target : "\(target).md"
+    }
+
+    private func legacyTargetRelativePath(from markdown: String) -> String? {
+        for line in markdown.components(separatedBy: .newlines) {
+            guard let range = line.range(of: "[[Knowledge/") else { continue }
+            let suffix = line[range.upperBound...]
+            guard let closing = suffix.firstIndex(of: "]") else { continue }
+            let token = String(suffix[..<closing])
+            let linkTarget = token.components(separatedBy: "|").first ?? token
+            guard linkTarget.hasPrefix("Topics/") || linkTarget.hasPrefix("Lessons/") || linkTarget.hasPrefix("Projects/") ||
+                    linkTarget.hasPrefix("Tools/") || linkTarget.hasPrefix("Models/") || linkTarget.hasPrefix("Issues/") else {
+                continue
+            }
+            return linkTarget.hasSuffix(".md") ? linkTarget : "\(linkTarget).md"
+        }
+        return nil
+    }
+
+    private func extractFirstBullet(fromSection title: String, markdown: String) -> String? {
+        extractBullets(fromSection: title, markdown: markdown).first
+    }
+
+    private func extractBullets(fromSection title: String, markdown: String) -> [String] {
+        let lines = markdown.components(separatedBy: .newlines)
+        guard let sectionIndex = lines.firstIndex(of: "## \(title)") else { return [] }
+        var bullets: [String] = []
+        for line in lines[(sectionIndex + 1)...] {
+            if line.hasPrefix("## ") {
+                break
+            }
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("- ") {
+                bullets.append(String(trimmed.dropFirst(2)))
+            }
+        }
+        return bullets
+    }
+
+    private func appliedTimestamp(
+        for sourceTitle: String,
+        from appliedActions: [KnowledgeAppliedActionRecord]
+    ) -> String? {
+        appliedActions
+            .filter { $0.title == sourceTitle || $0.targetTitle == sourceTitle }
+            .map(\.appliedAt)
+            .max()
+    }
+
+    private func syntheticMergeSourceEntityID(for sourceTitle: String) -> String {
+        "merge-source|\(knowledgeSlug(for: sourceTitle))"
+    }
+
+    private func loadKnowledgeEntity(named canonicalName: String) -> KnowledgeEntityRecord? {
+        let rows = try? db.query("""
+            SELECT *
+            FROM knowledge_entities
+            WHERE canonical_name = ?
+            LIMIT 1
+        """, params: [.text(canonicalName)])
+        return rows?.first.flatMap(KnowledgeEntityRecord.init(row:))
+    }
+
+    private func loadKnowledgeEntity(
+        named canonicalName: String,
+        constrainedToRelativePath relativePath: String
+    ) -> KnowledgeEntityRecord? {
+        let folder = (relativePath as NSString).pathComponents.first ?? ""
+        let entityType: KnowledgeEntityType? = {
+            switch folder {
+            case "Projects": return .project
+            case "Tools": return .tool
+            case "Models": return .model
+            case "Topics": return .topic
+            case "Issues": return .issue
+            case "Lessons": return .lesson
+            default: return nil
+            }
+        }()
+
+        let params: [SQLiteValue] = [
+            .text(canonicalName),
+            entityType.map { .text($0.rawValue) } ?? .null
+        ]
+        let rows = try? db.query("""
+            SELECT *
+            FROM knowledge_entities
+            WHERE canonical_name = ?
+              AND (? IS NULL OR entity_type = ?)
+            LIMIT 1
+        """, params: params + [entityType.map { .text($0.rawValue) } ?? .null])
+        return rows?.first.flatMap(KnowledgeEntityRecord.init(row:))
+    }
+
+    private func aliases(for entity: KnowledgeEntityRecord) -> [String] {
+        guard let aliasesJson = entity.aliasesJson,
+              let data = aliasesJson.data(using: .utf8),
+              let aliases = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+            return []
+        }
+        return aliases
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.caseInsensitiveCompare(entity.canonicalName) != .orderedSame }
+            .sorted()
     }
 
     private func loadAppliedKnowledgeTitle(at path: String) -> String? {
@@ -730,6 +1107,13 @@ final class ObsidianExporter {
 
     private func appliedActionKey(kind: KnowledgeAppliedActionKind, relativePath: String) -> String {
         "\(kind.rawValue)|\(relativePath)"
+    }
+
+    private func appliedActionKey(for record: KnowledgeAppliedActionRecord) -> String {
+        if record.kind == .mergeOverlay {
+            return record.id
+        }
+        return appliedActionKey(kind: record.kind, relativePath: record.applyTargetRelativePath)
     }
 
     private func pruneEmptyDraftDirectories(under root: String) {

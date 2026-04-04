@@ -263,6 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
         knowledgePipeline = KnowledgePipeline(db: db)
         refreshKnowledgeAppliedActionHistory()
+        refreshKnowledgeMergeOverlayHistory()
         logger.info("Phase 3 components initialized (fusion, summary, export)")
         performKnowledgeMaintenance(reason: "startup", force: true)
     }
@@ -726,7 +727,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let maintenanceArtifacts = try knowledgePipeline.buildMaintenanceArtifacts()
             let applyableArtifacts = maintenanceArtifacts.draftArtifacts.filter { $0.applyTargetRelativePath != nil }
+            let mergeOverlayRecords = maintenanceArtifacts.draftArtifacts.compactMap {
+                buildKnowledgeMergeOverlayRecord(from: $0, appliedAt: dateSupport.isoString(from: Date()))
+            }
             guard !applyableArtifacts.isEmpty else {
+                if !mergeOverlayRecords.isEmpty {
+                    var settings = AppSettings()
+                    let mergedSuppressedIds = Set(settings.knowledgeSuppressedEntityIds)
+                        .union(maintenanceArtifacts.draftArtifacts.compactMap(\.suppressedEntityId))
+                    settings.knowledgeSuppressedEntityIds = Array(mergedSuppressedIds).sorted()
+                    settings.knowledgeMergeOverlays = mergedKnowledgeMergeOverlays(
+                        existing: settings.knowledgeMergeOverlays,
+                        incoming: mergeOverlayRecords
+                    )
+                    let mergeAppliedActions = mergeOverlayRecords.map(buildAppliedMergeActionRecord(from:))
+                    settings.knowledgeAppliedActions = mergedKnowledgeAppliedActions(
+                        existing: settings.knowledgeAppliedActions,
+                        incoming: mergeAppliedActions
+                    )
+                    _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
+                    let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
+                    logger.info("Knowledge safe-action apply finished: \(mergeOverlayRecords.count) merge overlays applied, \(materializedCount) notes materialized")
+                    for overlay in mergeOverlayRecords {
+                        print(overlay.targetRelativePath)
+                    }
+                    return
+                }
+
                 logger.info("Knowledge safe-action apply skipped: no applyable drafts")
                 print("No safe knowledge actions to apply.")
                 return
@@ -734,19 +761,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             var settings = AppSettings()
             let mergedSuppressedIds = Set(settings.knowledgeSuppressedEntityIds)
-                .union(applyableArtifacts.compactMap(\.suppressedEntityId))
+                .union(maintenanceArtifacts.draftArtifacts.compactMap(\.suppressedEntityId))
             settings.knowledgeSuppressedEntityIds = Array(mergedSuppressedIds).sorted()
+            settings.knowledgeMergeOverlays = mergedKnowledgeMergeOverlays(
+                existing: settings.knowledgeMergeOverlays,
+                incoming: mergeOverlayRecords
+            )
 
             _ = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
             let applyResults = try exporter.applyKnowledgeDraftArtifacts(applyableArtifacts)
 
             let appliedAt = dateSupport.isoString(from: Date())
-            let newRecords = applyResults.compactMap { buildAppliedActionRecord(from: $0, appliedAt: appliedAt) }
-            settings.knowledgeAppliedActions.append(contentsOf: newRecords)
+            let appliedDraftRecords = applyResults.compactMap { buildAppliedActionRecord(from: $0, appliedAt: appliedAt) }
+            let mergeAppliedActions = mergeOverlayRecords.map(buildAppliedMergeActionRecord(from:))
+            let newRecords = appliedDraftRecords + mergeAppliedActions
+            settings.knowledgeAppliedActions = mergedKnowledgeAppliedActions(
+                existing: settings.knowledgeAppliedActions,
+                incoming: newRecords
+            )
             _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
 
             let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
-            logger.info("Knowledge safe-action apply finished: \(applyResults.count) files applied, \(materializedCount) notes materialized")
+            logger.info("Knowledge safe-action apply finished: \(applyResults.count) files applied, \(mergeOverlayRecords.count) merge overlays stored, \(materializedCount) notes materialized")
             for result in applyResults {
                 print(result.appliedPath)
             }
@@ -765,6 +801,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settings.knowledgeAppliedActions = discovered
         _ = try? exporter.exportKnowledgeAppliedHistory(discovered)
+    }
+
+    private func refreshKnowledgeMergeOverlayHistory() {
+        guard let exporter = obsidianExporter else { return }
+        var settings = AppSettings()
+        let discovered = exporter.discoverKnowledgeMergeOverlays(
+            existing: settings.knowledgeMergeOverlays,
+            appliedActions: settings.knowledgeAppliedActions
+        )
+        let mergeAppliedActions = discovered.map(buildAppliedMergeActionRecord(from:))
+        let nonMergeAppliedActions = settings.knowledgeAppliedActions.filter { $0.kind != .mergeOverlay }
+        let mergedAppliedActions = mergedKnowledgeAppliedActions(
+            existing: nonMergeAppliedActions,
+            incoming: mergeAppliedActions
+        )
+        let overlaysChanged = discovered != settings.knowledgeMergeOverlays
+        let appliedChanged = mergedAppliedActions != settings.knowledgeAppliedActions
+        guard overlaysChanged || appliedChanged else { return }
+        settings.knowledgeMergeOverlays = discovered
+        settings.knowledgeAppliedActions = mergedAppliedActions
+        _ = try? exporter.exportKnowledgeAppliedHistory(mergedAppliedActions)
     }
 
     private func buildAppliedActionRecord(
@@ -795,6 +852,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appliedPath: result.appliedPath,
             backupPath: result.backupPath
         )
+    }
+
+    private func buildKnowledgeMergeOverlayRecord(
+        from artifact: KnowledgeDraftArtifact,
+        appliedAt: String
+    ) -> KnowledgeMergeOverlayRecord? {
+        guard let draft = artifact.mergeOverlayDraft else { return nil }
+        return KnowledgeMergeOverlayRecord(
+            appliedAt: appliedAt,
+            sourceEntityId: draft.sourceEntityId,
+            sourceTitle: draft.sourceTitle,
+            sourceAliases: draft.sourceAliases,
+            sourceOverview: draft.sourceOverview,
+            preservedSignals: draft.preservedSignals,
+            targetEntityId: draft.targetEntityId,
+            targetTitle: draft.targetTitle,
+            targetRelativePath: draft.targetRelativePath
+        )
+    }
+
+    private func buildAppliedMergeActionRecord(from overlay: KnowledgeMergeOverlayRecord) -> KnowledgeAppliedActionRecord {
+        KnowledgeAppliedActionRecord(
+            id: KnowledgeMergeOverlayRecord.stableID(
+                sourceEntityId: overlay.sourceEntityId,
+                targetEntityId: overlay.targetEntityId
+            ),
+            appliedAt: overlay.appliedAt,
+            kind: .mergeOverlay,
+            title: overlay.sourceTitle,
+            sourceEntityId: overlay.sourceEntityId,
+            applyTargetRelativePath: overlay.targetRelativePath,
+            appliedPath: (AppSettings().obsidianVaultPath as NSString)
+                .appendingPathComponent("Knowledge/\(overlay.targetRelativePath)"),
+            targetTitle: overlay.targetTitle
+        )
+    }
+
+    private func mergedKnowledgeAppliedActions(
+        existing: [KnowledgeAppliedActionRecord],
+        incoming: [KnowledgeAppliedActionRecord]
+    ) -> [KnowledgeAppliedActionRecord] {
+        var byId = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        for record in incoming {
+            byId[record.id] = record
+        }
+        return byId.values.sorted { lhs, rhs in
+            if lhs.appliedAt != rhs.appliedAt {
+                return lhs.appliedAt < rhs.appliedAt
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private func mergedKnowledgeMergeOverlays(
+        existing: [KnowledgeMergeOverlayRecord],
+        incoming: [KnowledgeMergeOverlayRecord]
+    ) -> [KnowledgeMergeOverlayRecord] {
+        var byId = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        for overlay in incoming {
+            byId[overlay.id] = overlay
+        }
+        return byId.values.sorted { lhs, rhs in
+            if lhs.appliedAt != rhs.appliedAt {
+                return lhs.appliedAt < rhs.appliedAt
+            }
+            return lhs.id < rhs.id
+        }
     }
 
     private func summaryWindowDescriptor(from summary: DailySummaryRecord) -> SummaryWindowDescriptor? {

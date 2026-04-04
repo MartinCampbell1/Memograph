@@ -1783,6 +1783,66 @@ struct KnowledgePipelineTests {
         #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — topic this lesson helps explain") == true)
     }
 
+    @Test("Compiler preserves applied merge overlays on the target note")
+    func compilerPreservesAppliedMergeOverlays() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, aliases_json, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("topic-ocr"), .text("OCR"), .text("ocr"), .text("topic"),
+            .text("[\"Optical Character Recognition\"]"),
+            .text("2026-04-04T00:00:00Z"), .text("2026-04-04T10:00:00Z")
+        ])
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-ocr-focus"),
+            .text("2026-04-04T09:00:00Z"), .text("2026-04-04T10:00:00Z"),
+            .text("2026-04-04"), .text("2026-04-04T10:01:00Z"),
+            .text("topic-ocr"), .text("topic_in_focus"), .text("2026-04-04"), .real(0.9), .text("hourly_summary")
+        ])
+
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        var settings = AppSettings(
+            defaults: defaults,
+            credentialsStore: InMemoryCredentialsStore(),
+            legacyCredentialsStore: InMemoryCredentialsStore()
+        )
+        settings.knowledgeMergeOverlays = [
+            KnowledgeMergeOverlayRecord(
+                appliedAt: "2026-04-04T10:33:00Z",
+                sourceEntityId: "topic-ocr-accuracy",
+                sourceTitle: "OCR Accuracy in Memograph",
+                sourceAliases: ["OCR Accuracy in Memograph"],
+                sourceOverview: "This narrow note captured OCR tuning work inside Memograph.",
+                preservedSignals: [
+                    "Focused in 1 summary window; last seen 2026-04-04 09:00.",
+                    "Main projects: Memograph; last seen 2026-04-04 09:00."
+                ],
+                targetEntityId: "topic-ocr",
+                targetTitle: "OCR",
+                targetRelativePath: "Topics/ocr.md"
+            )
+        ]
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc, settings: settings)
+        let note = try compiler.compileNote(for: "topic-ocr", sourceDate: "2026-04-04")
+
+        #expect(note?.bodyMarkdown.contains("## Merged Context") == true)
+        #expect(note?.bodyMarkdown.contains("Merged from OCR Accuracy in Memograph") == true)
+        #expect(note?.bodyMarkdown.contains("This narrow note captured OCR tuning work inside Memograph.") == true)
+        #expect(note?.bodyMarkdown.contains("Preserved signals: Focused in 1 summary window; last seen 2026-04-04 09:00.") == true)
+        #expect(note?.bodyMarkdown.contains("## Aliases") == true)
+        #expect(note?.bodyMarkdown.contains("- OCR Accuracy in Memograph") == true)
+    }
+
     @Test("Tool relationship sections prioritize projects and cap noisy tool neighbors")
     func toolRelationshipSectionsPrioritizeProjectsAndCapNeighbors() throws {
         let (db, path) = try makeDB()

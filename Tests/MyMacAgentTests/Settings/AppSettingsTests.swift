@@ -18,6 +18,7 @@ struct AppSettingsTests {
         #expect(settings.lastKnowledgeMaintenanceAt == nil)
         #expect(settings.knowledgeSuppressedEntityIds.isEmpty)
         #expect(settings.knowledgeAppliedActions.isEmpty)
+        #expect(settings.knowledgeMergeOverlays.isEmpty)
         #expect(settings.maxCapturesPerSession == 500)
     }
 
@@ -42,6 +43,19 @@ struct AppSettingsTests {
                 appliedPath: "/Users/test/vault/Knowledge/Lessons/codex-workflow-for-ai-founders.md"
             )
         ]
+        settings.knowledgeMergeOverlays = [
+            KnowledgeMergeOverlayRecord(
+                appliedAt: "2026-04-04T10:33:00Z",
+                sourceEntityId: "topic-ocr-accuracy",
+                sourceTitle: "OCR Accuracy in Memograph",
+                sourceAliases: ["OCR Accuracy in Memograph"],
+                sourceOverview: "Narrow OCR tuning context.",
+                preservedSignals: ["Focused in 1 summary window."],
+                targetEntityId: "topic-ocr",
+                targetTitle: "OCR",
+                targetRelativePath: "Topics/ocr.md"
+            )
+        ]
 
         let settings2 = AppSettings(defaults: defaults, credentialsStore: store)
         #expect(settings2.obsidianVaultPath == "/Users/test/vault")
@@ -53,6 +67,8 @@ struct AppSettingsTests {
         #expect(settings2.knowledgeAppliedActions.count == 1)
         #expect(settings2.knowledgeAppliedActions.first?.kind == .lessonPromotion)
         #expect(settings2.knowledgeAppliedActions.first?.title == "Codex Workflow for AI Founders")
+        #expect(settings2.knowledgeMergeOverlays.count == 1)
+        #expect(settings2.knowledgeMergeOverlays.first?.targetTitle == "OCR")
     }
 
     @Test("Default credentials storage persists locally without Keychain")

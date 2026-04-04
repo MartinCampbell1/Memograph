@@ -4,6 +4,7 @@ enum KnowledgeAppliedActionKind: String, Codable {
     case lessonPromotion
     case lessonRedirect
     case redirect
+    case mergeOverlay
 }
 
 struct KnowledgeAppliedActionRecord: Codable, Equatable {
@@ -15,6 +16,7 @@ struct KnowledgeAppliedActionRecord: Codable, Equatable {
     let applyTargetRelativePath: String
     let appliedPath: String
     let backupPath: String?
+    let targetTitle: String?
 
     static func stableID(kind: KnowledgeAppliedActionKind, applyTargetRelativePath: String) -> String {
         "\(kind.rawValue)|\(applyTargetRelativePath)"
@@ -28,7 +30,8 @@ struct KnowledgeAppliedActionRecord: Codable, Equatable {
         sourceEntityId: String?,
         applyTargetRelativePath: String,
         appliedPath: String,
-        backupPath: String? = nil
+        backupPath: String? = nil,
+        targetTitle: String? = nil
     ) {
         self.id = id ?? Self.stableID(kind: kind, applyTargetRelativePath: applyTargetRelativePath)
         self.appliedAt = appliedAt
@@ -38,5 +41,6 @@ struct KnowledgeAppliedActionRecord: Codable, Equatable {
         self.applyTargetRelativePath = applyTargetRelativePath
         self.appliedPath = appliedPath
         self.backupPath = backupPath
+        self.targetTitle = targetTitle
     }
 }

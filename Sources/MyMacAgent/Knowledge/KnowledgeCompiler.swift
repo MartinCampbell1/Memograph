@@ -25,16 +25,19 @@ final class KnowledgeCompiler {
     private let db: DatabaseManager
     private let dateSupport: LocalDateSupport
     private let normalizer: EntityNormalizer
+    private let settings: AppSettings
     private let graphShaper = GraphShaper()
 
     init(
         db: DatabaseManager,
         timeZone: TimeZone = .autoupdatingCurrent,
-        normalizer: EntityNormalizer = EntityNormalizer()
+        normalizer: EntityNormalizer = EntityNormalizer(),
+        settings: AppSettings = AppSettings()
     ) {
         self.db = db
         self.dateSupport = LocalDateSupport(timeZone: timeZone)
         self.normalizer = normalizer
+        self.settings = settings
     }
 
     func compileNote(for entityId: String, sourceDate: String?) throws -> KnowledgeNoteRecord? {
@@ -70,7 +73,8 @@ final class KnowledgeCompiler {
 
         let relatedReferences = try fetchRelatedReferences(for: entityId, edges: edges)
             .filter { allowedEntityIds?.contains($0.entity.id) ?? true }
-        let aliases = aliases(for: entity)
+        let mergeOverlays = mergeOverlays(for: entity.id)
+        let aliases = aliases(for: entity, mergeOverlays: mergeOverlays)
         let windowContexts = try buildWindowContextSnippets(
             for: entity,
             aliases: aliases,
@@ -81,6 +85,7 @@ final class KnowledgeCompiler {
             claims: claims,
             relatedReferences: relatedReferences,
             aliases: aliases,
+            mergeOverlays: mergeOverlays,
             windowContexts: windowContexts
         )
         let links = relatedReferences.map { linkTarget(for: $0.entity) }
@@ -207,6 +212,7 @@ final class KnowledgeCompiler {
         claims: [KnowledgeClaimRecord],
         relatedReferences: [RelatedKnowledgeReference],
         aliases: [String],
+        mergeOverlays: [KnowledgeMergeOverlayRecord],
         windowContexts: [String: String]
     ) -> String {
         let visibleRelationObjects = Set(relatedReferences.map { $0.entity.canonicalName })
@@ -240,6 +246,15 @@ final class KnowledgeCompiler {
             markdown += "## Aliases\n"
             for alias in aliases {
                 markdown += "- \(alias)\n"
+            }
+            markdown += "\n"
+        }
+
+        let mergedContextLines = buildMergedContextLines(mergeOverlays)
+        if !mergedContextLines.isEmpty {
+            markdown += "## Merged Context\n"
+            for line in mergedContextLines {
+                markdown += "- \(line)\n"
             }
             markdown += "\n"
         }
@@ -438,17 +453,70 @@ final class KnowledgeCompiler {
         }
     }
 
-    private func aliases(for entity: KnowledgeEntityRecord) -> [String] {
+    private func aliases(
+        for entity: KnowledgeEntityRecord,
+        mergeOverlays: [KnowledgeMergeOverlayRecord]
+    ) -> [String] {
         guard let aliasesJson = entity.aliasesJson,
               let data = aliasesJson.data(using: .utf8),
               let aliases = try? JSONSerialization.jsonObject(with: data) as? [String] else {
-            return []
+            return mergedAliases(baseAliases: [], entity: entity, mergeOverlays: mergeOverlays)
         }
 
-        return aliases
+        let cleanedAliases = aliases
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.caseInsensitiveCompare(entity.canonicalName) != .orderedSame }
+
+        return mergedAliases(baseAliases: cleanedAliases, entity: entity, mergeOverlays: mergeOverlays)
+    }
+
+    private func mergedAliases(
+        baseAliases: [String],
+        entity: KnowledgeEntityRecord,
+        mergeOverlays: [KnowledgeMergeOverlayRecord]
+    ) -> [String] {
+        var values = Set(baseAliases)
+        for overlay in mergeOverlays {
+            values.insert(overlay.sourceTitle)
+            values.formUnion(overlay.sourceAliases)
+        }
+        return values
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0.caseInsensitiveCompare(entity.canonicalName) != .orderedSame }
             .sorted()
+    }
+
+    private func mergeOverlays(for entityId: String) -> [KnowledgeMergeOverlayRecord] {
+        settings.knowledgeMergeOverlays
+            .filter { $0.targetEntityId == entityId }
+            .sorted { lhs, rhs in
+                if lhs.appliedAt != rhs.appliedAt {
+                    return lhs.appliedAt > rhs.appliedAt
+                }
+                return lhs.sourceTitle.localizedCaseInsensitiveCompare(rhs.sourceTitle) == .orderedAscending
+            }
+    }
+
+    private func buildMergedContextLines(_ overlays: [KnowledgeMergeOverlayRecord]) -> [String] {
+        overlays.prefix(4).map { overlay in
+            let timestamp = dateSupport.parseDateTime(overlay.appliedAt)
+                .map(dateSupport.localDateTimeString(from:))
+                ?? overlay.appliedAt
+            var parts: [String] = ["Merged from \(overlay.sourceTitle) on \(timestamp)."]
+            if let overview = overlay.sourceOverview, !overview.isEmpty {
+                parts.append(overview)
+            }
+            if !overlay.preservedSignals.isEmpty {
+                let signalSummary = overlay.preservedSignals
+                    .prefix(2)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .joined(separator: " ")
+                if !signalSummary.isEmpty {
+                    parts.append("Preserved signals: \(signalSummary)")
+                }
+            }
+            return parts.joined(separator: " ")
+        }
     }
 
     private func keySignals(

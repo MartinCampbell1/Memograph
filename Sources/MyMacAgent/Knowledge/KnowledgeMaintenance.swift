@@ -98,6 +98,17 @@ enum KnowledgeDraftArtifactKind {
 }
 
 struct KnowledgeDraftArtifact {
+    struct MergeOverlayDraft {
+        let sourceEntityId: String
+        let sourceTitle: String
+        let sourceAliases: [String]
+        let sourceOverview: String?
+        let preservedSignals: [String]
+        let targetEntityId: String
+        let targetTitle: String
+        let targetRelativePath: String
+    }
+
     let kind: KnowledgeDraftArtifactKind
     let relativePath: String
     let fileName: String
@@ -105,6 +116,7 @@ struct KnowledgeDraftArtifact {
     let markdown: String
     let applyTargetRelativePath: String?
     let suppressedEntityId: String?
+    let mergeOverlayDraft: MergeOverlayDraft?
 
     init(
         kind: KnowledgeDraftArtifactKind,
@@ -112,7 +124,8 @@ struct KnowledgeDraftArtifact {
         title: String,
         markdown: String,
         applyTargetRelativePath: String? = nil,
-        suppressedEntityId: String? = nil
+        suppressedEntityId: String? = nil,
+        mergeOverlayDraft: MergeOverlayDraft? = nil
     ) {
         let normalizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.kind = kind
@@ -122,6 +135,7 @@ struct KnowledgeDraftArtifact {
         self.markdown = markdown
         self.applyTargetRelativePath = applyTargetRelativePath?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.suppressedEntityId = suppressedEntityId
+        self.mergeOverlayDraft = mergeOverlayDraft
     }
 
     init(fileName: String, title: String, markdown: String) {
@@ -577,6 +591,11 @@ final class KnowledgeMaintenance {
             return "`\(timestamp)` — applied a lesson redirect at [[\(linkTarget)|\(action.title)]]"
         case .redirect:
             return "`\(timestamp)` — applied a consolidation redirect at [[\(linkTarget)|\(action.title)]]"
+        case .mergeOverlay:
+            if let targetTitle = action.targetTitle {
+                return "`\(timestamp)` — merged context from `\(action.title)` into [[\(linkTarget)|\(targetTitle)]]"
+            }
+            return "`\(timestamp)` — merged context into [[\(linkTarget)|\(action.title)]]"
         }
     }
 
@@ -987,6 +1006,7 @@ final class KnowledgeMaintenance {
         let sourceSlug = slug(for: action.source.canonicalName)
         let targetSlug = slug(for: target.canonicalName)
         let relativePath = "Apply/Merge/\(sourceSlug)-into-\(targetSlug).md"
+        let targetRelativePath = "\(target.entityType.folderName)/\(targetSlug).md"
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
         let sourceNote = try loadKnowledgeNote(for: action.source)
@@ -1031,7 +1051,18 @@ final class KnowledgeMaintenance {
             kind: .applyReadyMergePatch,
             relativePath: relativePath,
             title: "Merge Patch — \(action.source.canonicalName) → \(target.canonicalName)",
-            markdown: draft
+            markdown: draft,
+            suppressedEntityId: action.source.id,
+            mergeOverlayDraft: KnowledgeDraftArtifact.MergeOverlayDraft(
+                sourceEntityId: action.source.id,
+                sourceTitle: action.source.canonicalName,
+                sourceAliases: aliases,
+                sourceOverview: overview,
+                preservedSignals: Array(signalLines),
+                targetEntityId: target.id,
+                targetTitle: target.canonicalName,
+                targetRelativePath: targetRelativePath
+            )
         )
     }
 
