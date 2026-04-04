@@ -217,6 +217,7 @@ final class ObsidianExporter {
         let enumerator = FileManager.default.enumerator(atPath: draftsRoot)
         while let relativePath = enumerator?.nextObject() as? String {
             guard relativePath.hasSuffix(".md"),
+                  !relativePath.hasPrefix("AppliedBackup/"),
                   !expectedRelativePaths.contains(relativePath) else {
                 continue
             }
@@ -234,6 +235,39 @@ final class ObsidianExporter {
         }
 
         pruneEmptyDraftDirectories(under: draftsRoot)
+        return writtenPaths
+    }
+
+    @discardableResult
+    func applyKnowledgeDraftArtifacts(_ artifacts: [KnowledgeDraftArtifact]) throws -> [String] {
+        let applyableArtifacts = artifacts.filter { $0.applyTargetRelativePath != nil }
+        guard !applyableArtifacts.isEmpty else { return [] }
+
+        let knowledgeRoot = knowledgeRootDirectory()
+        try FileManager.default.createDirectory(atPath: knowledgeRoot, withIntermediateDirectories: true)
+
+        let backupRoot = appliedBackupDirectory()
+        try FileManager.default.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
+
+        var writtenPaths: [String] = []
+        for artifact in applyableArtifacts {
+            guard let targetRelativePath = artifact.applyTargetRelativePath else { continue }
+            let targetPath = (knowledgeRoot as NSString).appendingPathComponent(targetRelativePath)
+            let targetDirectory = (targetPath as NSString).deletingLastPathComponent
+            try FileManager.default.createDirectory(atPath: targetDirectory, withIntermediateDirectories: true)
+
+            if FileManager.default.fileExists(atPath: targetPath) {
+                let backupPath = (backupRoot as NSString).appendingPathComponent(targetRelativePath)
+                let backupDirectory = (backupPath as NSString).deletingLastPathComponent
+                try FileManager.default.createDirectory(atPath: backupDirectory, withIntermediateDirectories: true)
+                let existingData = try Data(contentsOf: URL(fileURLWithPath: targetPath))
+                try existingData.write(to: URL(fileURLWithPath: backupPath), options: .atomic)
+            }
+
+            try artifact.markdown.write(toFile: targetPath, atomically: true, encoding: .utf8)
+            writtenPaths.append(targetPath)
+        }
+
         return writtenPaths
     }
 
@@ -487,8 +521,20 @@ final class ObsidianExporter {
     }
 
     private func knowledgeDraftsDirectory() -> String {
-        let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
+        let knowledgeRoot = knowledgeRootDirectory()
         return (knowledgeRoot as NSString).appendingPathComponent("_drafts")
+    }
+
+    private func knowledgeRootDirectory() -> String {
+        (vaultPath as NSString).appendingPathComponent("Knowledge")
+    }
+
+    private func appliedBackupDirectory() -> String {
+        let formatter = DateFormatter()
+        formatter.timeZone = dateSupport.timeZone
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: Date())
+        return (knowledgeDraftsDirectory() as NSString).appendingPathComponent("AppliedBackup/\(stamp)")
     }
 
     private func pruneEmptyDraftDirectories(under root: String) {

@@ -73,6 +73,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if shouldApplyKnowledgeSafeActions() {
+            logger.info("Running knowledge safe-action apply")
+            initializeDatabase()
+            initializePhase3()
+            Task { @MainActor [weak self] in
+                await self?.runKnowledgeSafeActionApply()
+            }
+            return
+        }
+
         logger.info("MyMacAgent launched")
         registerObservers()
         initializeDatabase()
@@ -173,6 +183,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func shouldRebuildKnowledgeGraph() -> Bool {
         CommandLine.arguments.contains("--rebuild-knowledge-graph")
+    }
+
+    private func shouldApplyKnowledgeSafeActions() -> Bool {
+        CommandLine.arguments.contains("--apply-knowledge-safe-actions")
     }
 
     private func initializeDatabase() {
@@ -694,6 +708,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             logger.info("Knowledge graph rebuild finished: \(rebuiltWindows) windows, \(materializedCount) notes")
         } catch {
             logger.error("Knowledge graph rebuild failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func runKnowledgeSafeActionApply() async {
+        defer {
+            NSApp.terminate(nil)
+        }
+
+        guard let exporter = obsidianExporter,
+              let knowledgePipeline else {
+            logger.error("Knowledge safe-action apply failed: phase 3 is not initialized")
+            return
+        }
+
+        do {
+            let maintenanceArtifacts = try knowledgePipeline.buildMaintenanceArtifacts()
+            let applyableArtifacts = maintenanceArtifacts.draftArtifacts.filter { $0.applyTargetRelativePath != nil }
+            guard !applyableArtifacts.isEmpty else {
+                logger.info("Knowledge safe-action apply skipped: no applyable drafts")
+                print("No safe knowledge actions to apply.")
+                return
+            }
+
+            var settings = AppSettings()
+            let mergedSuppressedIds = Set(settings.knowledgeSuppressedEntityIds)
+                .union(applyableArtifacts.compactMap(\.suppressedEntityId))
+            settings.knowledgeSuppressedEntityIds = Array(mergedSuppressedIds).sorted()
+
+            let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
+            let appliedPaths = try exporter.applyKnowledgeDraftArtifacts(applyableArtifacts)
+            logger.info("Knowledge safe-action apply finished: \(appliedPaths.count) files applied, \(materializedCount) notes materialized")
+            for path in appliedPaths {
+                print(path)
+            }
+        } catch {
+            logger.error("Knowledge safe-action apply failed: \(error.localizedDescription)")
         }
     }
 

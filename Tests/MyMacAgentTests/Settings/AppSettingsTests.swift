@@ -16,6 +16,7 @@ struct AppSettingsTests {
         #expect(settings.retentionDays == 30)
         #expect(settings.knowledgeMaintenanceIntervalHours == 24)
         #expect(settings.lastKnowledgeMaintenanceAt == nil)
+        #expect(settings.knowledgeSuppressedEntityIds.isEmpty)
         #expect(settings.maxCapturesPerSession == 500)
     }
 
@@ -29,6 +30,7 @@ struct AppSettingsTests {
         settings.retentionDays = 14
         settings.knowledgeMaintenanceIntervalHours = 12
         settings.lastKnowledgeMaintenanceAt = "2026-04-03T12:00:00Z"
+        settings.knowledgeSuppressedEntityIds = ["entity-2", "entity-1", "entity-1"]
 
         let settings2 = AppSettings(defaults: defaults, credentialsStore: store)
         #expect(settings2.obsidianVaultPath == "/Users/test/vault")
@@ -36,6 +38,7 @@ struct AppSettingsTests {
         #expect(settings2.retentionDays == 14)
         #expect(settings2.knowledgeMaintenanceIntervalHours == 12)
         #expect(settings2.lastKnowledgeMaintenanceAt == "2026-04-03T12:00:00Z")
+        #expect(settings2.knowledgeSuppressedEntityIds == ["entity-1", "entity-2"])
     }
 
     @Test("Default credentials storage persists locally without Keychain")

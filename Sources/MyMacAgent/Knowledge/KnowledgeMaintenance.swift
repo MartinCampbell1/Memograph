@@ -103,14 +103,25 @@ struct KnowledgeDraftArtifact {
     let fileName: String
     let title: String
     let markdown: String
+    let applyTargetRelativePath: String?
+    let suppressedEntityId: String?
 
-    init(kind: KnowledgeDraftArtifactKind, relativePath: String, title: String, markdown: String) {
+    init(
+        kind: KnowledgeDraftArtifactKind,
+        relativePath: String,
+        title: String,
+        markdown: String,
+        applyTargetRelativePath: String? = nil,
+        suppressedEntityId: String? = nil
+    ) {
         let normalizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         self.kind = kind
         self.relativePath = normalizedPath
         self.fileName = (normalizedPath as NSString).lastPathComponent
         self.title = title
         self.markdown = markdown
+        self.applyTargetRelativePath = applyTargetRelativePath?.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        self.suppressedEntityId = suppressedEntityId
     }
 
     init(fileName: String, title: String, markdown: String) {
@@ -750,6 +761,7 @@ final class KnowledgeMaintenance {
     private func buildLessonPromotionApplyDraft(for action: KnowledgeSafeAction) throws -> KnowledgeDraftArtifact {
         let destinationSlug = slug(for: action.source.canonicalName)
         let relativePath = "Apply/Lessons/\(destinationSlug).md"
+        let applyTargetRelativePath = "Lessons/\(destinationSlug).md"
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let destinationLink = "[[Knowledge/Lessons/\(destinationSlug)|\(action.source.canonicalName)]]"
         let sourceNote = try loadKnowledgeNote(for: action.source)
@@ -797,7 +809,9 @@ final class KnowledgeMaintenance {
             kind: .applyReadyLesson,
             relativePath: relativePath,
             title: action.source.canonicalName,
-            markdown: draft
+            markdown: draft,
+            applyTargetRelativePath: applyTargetRelativePath,
+            suppressedEntityId: action.source.id
         )
     }
 
@@ -805,6 +819,7 @@ final class KnowledgeMaintenance {
         let sourceSlug = slug(for: action.source.canonicalName)
         let destinationSlug = slug(for: action.source.canonicalName)
         let relativePath = "Apply/Redirects/\(sourceSlug)-to-lesson.md"
+        let applyTargetRelativePath = "\(action.source.entityType.folderName)/\(sourceSlug).md"
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let destinationLink = "[[Knowledge/Lessons/\(destinationSlug)|\(action.source.canonicalName)]]"
         let aliases = aliases(for: action.source)
@@ -828,7 +843,9 @@ final class KnowledgeMaintenance {
             kind: .applyReadyLessonRedirect,
             relativePath: relativePath,
             title: action.source.canonicalName,
-            markdown: draft
+            markdown: draft,
+            applyTargetRelativePath: applyTargetRelativePath,
+            suppressedEntityId: action.source.id
         )
     }
 
@@ -878,6 +895,7 @@ final class KnowledgeMaintenance {
         let sourceSlug = slug(for: action.source.canonicalName)
         let targetSlug = slug(for: target.canonicalName)
         let relativePath = "Apply/Redirects/\(sourceSlug)-to-\(targetSlug).md"
+        let applyTargetRelativePath = "\(action.source.entityType.folderName)/\(sourceSlug).md"
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
         let sourceNote = try loadKnowledgeNote(for: action.source)
@@ -914,7 +932,9 @@ final class KnowledgeMaintenance {
             kind: .applyReadyRedirect,
             relativePath: relativePath,
             title: action.source.canonicalName,
-            markdown: draft
+            markdown: draft,
+            applyTargetRelativePath: applyTargetRelativePath,
+            suppressedEntityId: action.source.id
         )
     }
 

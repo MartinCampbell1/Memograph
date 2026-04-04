@@ -358,4 +358,63 @@ struct ObsidianExporterTests {
         let updated = try String(contentsOfFile: firstFile, encoding: .utf8)
         #expect(updated.contains("# Updated Draft"))
     }
+
+    @Test("Applies safe knowledge draft artifacts into the main knowledge tree with backups")
+    func appliesKnowledgeDraftArtifacts() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_kb_apply_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        let knowledgeRoot = (vaultDir as NSString).appendingPathComponent("Knowledge")
+        let existingTopicPath = (knowledgeRoot as NSString).appendingPathComponent("Topics/sqlite.md")
+        try FileManager.default.createDirectory(
+            atPath: (existingTopicPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try "# Old SQLite Topic\n".write(toFile: existingTopicPath, atomically: true, encoding: .utf8)
+
+        let artifacts = [
+            KnowledgeDraftArtifact(
+                kind: .applyReadyLesson,
+                relativePath: "Apply/Lessons/sqlite-optimization.md",
+                title: "SQLite Optimization",
+                markdown: "# SQLite Optimization\n",
+                applyTargetRelativePath: "Lessons/sqlite-optimization.md",
+                suppressedEntityId: "topic-sqlite-opt"
+            ),
+            KnowledgeDraftArtifact(
+                kind: .applyReadyRedirect,
+                relativePath: "Apply/Redirects/sqlite-to-lesson.md",
+                title: "SQLite",
+                markdown: "# SQLite\n\nSee [[Knowledge/Lessons/sqlite-optimization|SQLite Optimization]].\n",
+                applyTargetRelativePath: "Topics/sqlite.md",
+                suppressedEntityId: "topic-sqlite"
+            ),
+            KnowledgeDraftArtifact(
+                kind: .applyReadyMergePatch,
+                relativePath: "Apply/Merge/sqlite-into-root.md",
+                title: "Merge Patch",
+                markdown: "# Merge Patch\n"
+            )
+        ]
+
+        let written = try exporter.applyKnowledgeDraftArtifacts(artifacts)
+        #expect(written.count == 2)
+
+        let lessonPath = (knowledgeRoot as NSString).appendingPathComponent("Lessons/sqlite-optimization.md")
+        #expect(FileManager.default.fileExists(atPath: lessonPath))
+        let rewrittenTopic = try String(contentsOfFile: existingTopicPath, encoding: .utf8)
+        #expect(rewrittenTopic.contains("SQLite Optimization"))
+
+        let draftsRoot = (knowledgeRoot as NSString).appendingPathComponent("_drafts/AppliedBackup")
+        let backupCandidates = try FileManager.default.subpathsOfDirectory(atPath: draftsRoot)
+        #expect(backupCandidates.contains { $0.hasSuffix("Topics/sqlite.md") })
+
+        _ = try exporter.syncKnowledgeDraftArtifacts([])
+        let backupCandidatesAfterSync = try FileManager.default.subpathsOfDirectory(atPath: draftsRoot)
+        #expect(backupCandidatesAfterSync.contains { $0.hasSuffix("Topics/sqlite.md") })
+    }
 }

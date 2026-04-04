@@ -17,11 +17,13 @@ final class KnowledgePipeline {
     private let maintenance: KnowledgeMaintenance
     private let normalizer: EntityNormalizer
     private let graphShaper: GraphShaper
+    private let settings: AppSettings
     private let logger = Logger.knowledge
 
-    init(db: DatabaseManager, timeZone: TimeZone = .autoupdatingCurrent) {
+    init(db: DatabaseManager, timeZone: TimeZone = .autoupdatingCurrent, settings: AppSettings = AppSettings()) {
         self.db = db
         self.dateSupport = LocalDateSupport(timeZone: timeZone)
+        self.settings = settings
         self.normalizer = EntityNormalizer()
         self.extractor = ClaimExtractor(normalizer: normalizer, timeZone: timeZone)
         self.compiler = KnowledgeCompiler(db: db, timeZone: timeZone, normalizer: normalizer)
@@ -97,7 +99,7 @@ final class KnowledgePipeline {
         sourceDateOverrideByEntityId: [String: String] = [:]
     ) throws -> Int {
         let metrics = try loadEntityMetrics()
-        let materializedIds = graphShaper.materializedEntityIds(from: metrics)
+        let materializedIds = resolvedMaterializedEntityIds(from: metrics)
 
         let existingNotes = try db.query("SELECT * FROM knowledge_notes").compactMap(KnowledgeNoteRecord.init(row:))
         let existingNoteByEntityId = Dictionary(uniqueKeysWithValues: existingNotes.compactMap { note in
@@ -135,16 +137,18 @@ final class KnowledgePipeline {
             let indexMarkdown = try compiler.buildIndexMarkdown()
             _ = try? exporter.exportKnowledgeIndex(indexMarkdown)
 
-            let maintenanceArtifacts = try maintenance.buildArtifacts(
-                metrics: metrics,
-                materializedEntityIds: materializedIds,
-                graphShaper: graphShaper
-            )
+            let maintenanceArtifacts = try buildMaintenanceArtifacts(metrics: metrics, materializedEntityIds: materializedIds)
             _ = try? exporter.exportKnowledgeMaintenance(maintenanceArtifacts.markdown)
             _ = try? exporter.syncKnowledgeDraftArtifacts(maintenanceArtifacts.draftArtifacts)
         }
 
         return noteCount
+    }
+
+    func buildMaintenanceArtifacts() throws -> KnowledgeMaintenanceArtifacts {
+        let metrics = try loadEntityMetrics()
+        let materializedIds = resolvedMaterializedEntityIds(from: metrics)
+        return try buildMaintenanceArtifacts(metrics: metrics, materializedEntityIds: materializedIds)
     }
 
     func resetKnowledgeStore(exporter: ObsidianExporter? = nil) throws {
@@ -350,6 +354,24 @@ final class KnowledgePipeline {
             values.formUnion(decoded)
         }
         return Array(values).sorted()
+    }
+
+    private func resolvedMaterializedEntityIds(from metrics: [KnowledgeEntityMetrics]) -> Set<String> {
+        let materializedIds = graphShaper.materializedEntityIds(from: metrics)
+        let suppressedEntityIds = Set(settings.knowledgeSuppressedEntityIds)
+        guard !suppressedEntityIds.isEmpty else { return materializedIds }
+        return materializedIds.subtracting(suppressedEntityIds)
+    }
+
+    private func buildMaintenanceArtifacts(
+        metrics: [KnowledgeEntityMetrics],
+        materializedEntityIds: Set<String>
+    ) throws -> KnowledgeMaintenanceArtifacts {
+        try maintenance.buildArtifacts(
+            metrics: metrics,
+            materializedEntityIds: materializedEntityIds,
+            graphShaper: graphShaper
+        )
     }
 
     private func loadEntityMetrics() throws -> [KnowledgeEntityMetrics] {

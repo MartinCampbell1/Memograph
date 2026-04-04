@@ -284,6 +284,11 @@ struct AppSettings {
         set { defaults.set(newValue, forKey: "lastKnowledgeMaintenanceAt") }
     }
 
+    var knowledgeSuppressedEntityIds: [String] {
+        get { readList(forKey: "knowledgeSuppressedEntityIds", defaultValue: []) }
+        set { writeList(Array(Set(newValue)).sorted(), forKey: "knowledgeSuppressedEntityIds") }
+    }
+
     var maxCapturesPerSession: Int {
         get {
             let val = defaults.integer(forKey: "maxCapturesPerSession")

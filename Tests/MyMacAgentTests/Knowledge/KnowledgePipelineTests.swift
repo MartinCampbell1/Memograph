@@ -226,6 +226,53 @@ struct KnowledgePipelineTests {
         #expect(maintenance.contains("macOS System Audio Capture Guide"))
     }
 
+    @Test("Knowledge sync excludes suppressed entities from materialized notes")
+    func syncExcludesSuppressedEntities() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z")
+        ])
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("project-1"), .text("advanced_during_window"), .text("2026-04-03"), .real(0.9), .text("hourly_summary")
+        ])
+
+        let vaultPath = NSTemporaryDirectory() + "kb_vault_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultPath) }
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultPath, timeZone: utc)
+
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        var settings = AppSettings(
+            defaults: defaults,
+            credentialsStore: InMemoryCredentialsStore(),
+            legacyCredentialsStore: InMemoryCredentialsStore()
+        )
+        settings.knowledgeSuppressedEntityIds = ["project-1"]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc, settings: settings)
+        let noteCount = try pipeline.syncMaterializedKnowledge(exporter: exporter)
+
+        #expect(noteCount == 0)
+        let noteRows = try db.query("SELECT COUNT(*) AS count FROM knowledge_notes")
+        #expect(noteRows.first?["count"]?.intValue == 0)
+        let projectPath = (vaultPath as NSString).appendingPathComponent("Knowledge/Projects/memograph.md")
+        #expect(!FileManager.default.fileExists(atPath: projectPath))
+    }
+
     @Test("Knowledge maintenance suppresses commodity weak topics and prioritizes project-connected hotspots")
     func maintenanceSuppressesCommodityNoiseAndRanksHotspots() throws {
         let (db, path) = try makeDB()
