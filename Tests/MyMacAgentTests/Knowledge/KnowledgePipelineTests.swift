@@ -219,6 +219,7 @@ struct KnowledgePipelineTests {
         #expect(maintenance.contains("## Snapshot"))
         #expect(maintenance.contains("## Dashboard"))
         #expect(maintenance.contains("## Review Queue"))
+        #expect(maintenance.contains("## Improvement Candidates"))
         #expect(maintenance.contains("## Hotspots"))
         #expect(maintenance.contains("Auto-demoted Broad Lessons"))
         #expect(maintenance.contains("macOS System Audio Capture Guide"))
@@ -319,6 +320,99 @@ struct KnowledgePipelineTests {
         #expect(systemAudioRange != nil)
         #expect(nvidiaRange == nil)
         #expect(systemAudioRange!.lowerBound > memographRange!.lowerBound)
+    }
+
+    @Test("Knowledge maintenance surfaces reclassify consolidation and stale review candidates")
+    func maintenanceSurfacesImprovementCandidates() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let maintenance = KnowledgeMaintenance(db: db, timeZone: utc)
+        let shaper = GraphShaper()
+
+        let rootTopic = KnowledgeEntityRecord(
+            id: "topic-1",
+            canonicalName: "TurboQuant",
+            slug: "turboquant",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: "2026-04-03T10:00:00Z",
+            lastSeenAt: "2026-04-03T11:00:00Z"
+        )
+        let expandedTopic = KnowledgeEntityRecord(
+            id: "topic-2",
+            canonicalName: "TurboQuant Algorithm",
+            slug: "turboquant-algorithm",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: "2026-04-03T10:00:00Z",
+            lastSeenAt: "2026-04-03T11:00:00Z"
+        )
+        let workflowTopic = KnowledgeEntityRecord(
+            id: "topic-3",
+            canonicalName: "Codex Workflow for AI Founders",
+            slug: "codex-workflow-for-ai-founders",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: "2026-04-03T10:00:00Z",
+            lastSeenAt: "2026-04-03T11:00:00Z"
+        )
+        let staleTool = KnowledgeEntityRecord(
+            id: "tool-1",
+            canonicalName: "Old Utility",
+            slug: "old-utility",
+            entityType: .tool,
+            aliasesJson: nil,
+            firstSeenAt: "2020-01-01T00:00:00Z",
+            lastSeenAt: "2020-01-02T00:00:00Z"
+        )
+
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: rootTopic,
+                claimCount: 5,
+                typedEdgeCount: 4,
+                coOccurrenceEdgeCount: 10,
+                projectRelationCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: expandedTopic,
+                claimCount: 2,
+                typedEdgeCount: 2,
+                coOccurrenceEdgeCount: 6,
+                projectRelationCount: 0
+            ),
+            KnowledgeEntityMetrics(
+                entity: workflowTopic,
+                claimCount: 4,
+                typedEdgeCount: 3,
+                coOccurrenceEdgeCount: 5,
+                projectRelationCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: staleTool,
+                claimCount: 2,
+                typedEdgeCount: 1,
+                coOccurrenceEdgeCount: 1,
+                projectRelationCount: 0
+            )
+        ]
+
+        let markdown = try maintenance.buildMarkdown(
+            metrics: metrics,
+            materializedEntityIds: Set(["topic-1", "topic-2", "topic-3", "tool-1"]),
+            graphShaper: shaper
+        )
+
+        #expect(markdown.contains("## Improvement Candidates"))
+        #expect(markdown.contains("### Reclassify Candidates"))
+        #expect(markdown.contains("Codex Workflow for AI Founders"))
+        #expect(markdown.contains("consider moving to Lessons"))
+        #expect(markdown.contains("### Consolidation Candidates"))
+        #expect(markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]]"))
+        #expect(markdown.contains("### Stale Review Candidates"))
+        #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]]"))
+        #expect(markdown.contains("low-touch note with no active project trail"))
     }
 
     @Test("Knowledge compiler renders readable signals aliases and grouped related entities")

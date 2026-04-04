@@ -14,9 +14,68 @@ private struct KnowledgeHotspot {
     let score: Int
 }
 
+private struct KnowledgeReclassifyCandidate {
+    let entity: KnowledgeEntityRecord
+    let targetType: KnowledgeEntityType
+    let reason: String
+    let score: Int
+}
+
+private struct KnowledgeConsolidationCandidate {
+    let source: KnowledgeEntityRecord
+    let target: KnowledgeEntityRecord
+    let reason: String
+    let score: Int
+}
+
+private struct KnowledgeStaleCandidate {
+    let entity: KnowledgeEntityRecord
+    let daysSinceSeen: Int
+    let reason: String
+}
+
 final class KnowledgeMaintenance {
     private let db: DatabaseManager
     private let dateSupport: LocalDateSupport
+    private let lessonLikeTopicSignals = [
+        "accuracy",
+        "algorithm",
+        "architecture",
+        "automation",
+        "background persistence",
+        "engineering",
+        "growth",
+        "guide",
+        "heartbeat",
+        "optimization",
+        "playbook",
+        "plugins",
+        "report",
+        "resource consumption",
+        "selection",
+        "setup",
+        "state management",
+        "strategy",
+        "tool",
+        "workflow"
+    ]
+    private let consolidationSuffixSignals = [
+        "accuracy",
+        "algorithm",
+        "architecture",
+        "automation",
+        "background persistence",
+        "growth",
+        "heartbeat",
+        "optimization",
+        "plugins",
+        "resource consumption",
+        "selection",
+        "state management"
+    ]
+    private let tokenStopWords: Set<String> = [
+        "a", "an", "and", "for", "in", "of", "on", "the", "to", "vs", "with"
+    ]
 
     init(db: DatabaseManager, timeZone: TimeZone = .autoupdatingCurrent) {
         self.db = db
@@ -95,6 +154,18 @@ final class KnowledgeMaintenance {
         let sortedHotspots = hotspots.sorted(by: compareHotspots)
         let topHotspotNames = sortedHotspots.prefix(3).map(\.entity.canonicalName)
         let reviewItemCount = autoDemotedLessons.count + actionableAutoDemotedTopics.count + weakTopics.count
+        let reclassifyCandidates = buildReclassifyCandidates(
+            metrics: metrics,
+            materializedEntityIds: materializedEntityIds
+        )
+        let consolidationCandidates = buildConsolidationCandidates(
+            metrics: metrics,
+            materializedEntityIds: materializedEntityIds
+        )
+        let staleCandidates = buildStaleCandidates(
+            metrics: metrics,
+            materializedEntityIds: materializedEntityIds
+        )
 
         markdown += "## Dashboard\n"
         if !topHotspotNames.isEmpty {
@@ -149,6 +220,41 @@ final class KnowledgeMaintenance {
                     markdown += ", only \(hotspot.relationStats.typedEdges) strong relation"
                     if hotspot.relationStats.typedEdges == 1 { markdown += "" } else { markdown += "s" }
                     markdown += "\n"
+                }
+                markdown += "\n"
+            }
+        }
+
+        markdown += "## Improvement Candidates\n"
+        if reclassifyCandidates.isEmpty && consolidationCandidates.isEmpty && staleCandidates.isEmpty {
+            markdown += "- No merge, reclassify, or stale review candidates right now.\n\n"
+        } else {
+            if !reclassifyCandidates.isEmpty {
+                markdown += "### Reclassify Candidates\n"
+                for candidate in reclassifyCandidates.prefix(6) {
+                    markdown += "- [[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
+                    markdown += " — consider moving to \(candidate.targetType.folderName): \(candidate.reason)\n"
+                }
+                markdown += "\n"
+            }
+
+            if !consolidationCandidates.isEmpty {
+                markdown += "### Consolidation Candidates\n"
+                for candidate in consolidationCandidates.prefix(6) {
+                    markdown += "- [[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]]"
+                    markdown += " → [[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]"
+                    markdown += " — \(candidate.reason)\n"
+                }
+                markdown += "\n"
+            }
+
+            if !staleCandidates.isEmpty {
+                markdown += "### Stale Review Candidates\n"
+                for candidate in staleCandidates.prefix(6) {
+                    markdown += "- [[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
+                    markdown += " — last seen \(candidate.daysSinceSeen) day"
+                    if candidate.daysSinceSeen == 1 { markdown += "" } else { markdown += "s" }
+                    markdown += " ago; \(candidate.reason)\n"
                 }
                 markdown += "\n"
             }
@@ -247,5 +353,138 @@ final class KnowledgeMaintenance {
             let head = parts.dropLast().joined(separator: ", ")
             return "\(head), and \(parts.last!)"
         }
+    }
+
+    private func buildReclassifyCandidates(
+        metrics: [KnowledgeEntityMetrics],
+        materializedEntityIds: Set<String>
+    ) -> [KnowledgeReclassifyCandidate] {
+        metrics
+            .filter { materializedEntityIds.contains($0.entity.id) }
+            .compactMap { metric in
+                guard metric.entity.entityType == .topic else { return nil }
+                guard let reason = reclassifyReason(for: metric.entity.canonicalName) else { return nil }
+                return KnowledgeReclassifyCandidate(
+                    entity: metric.entity,
+                    targetType: .lesson,
+                    reason: reason,
+                    score: metric.claimCount * 4 + metric.typedEdgeCount * 3 + metric.projectRelationCount * 5
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.score != rhs.score {
+                    return lhs.score > rhs.score
+                }
+                return lhs.entity.canonicalName.localizedCaseInsensitiveCompare(rhs.entity.canonicalName) == .orderedAscending
+            }
+    }
+
+    private func buildConsolidationCandidates(
+        metrics: [KnowledgeEntityMetrics],
+        materializedEntityIds: Set<String>
+    ) -> [KnowledgeConsolidationCandidate] {
+        let visibleMetrics = metrics.filter { materializedEntityIds.contains($0.entity.id) }
+        let topics = visibleMetrics.filter { $0.entity.entityType == .topic }
+        var candidates: [KnowledgeConsolidationCandidate] = []
+        var seenPairs = Set<String>()
+
+        for source in topics {
+            for target in topics {
+                guard source.entity.id != target.entity.id else { continue }
+                guard let reason = consolidationReason(source: source, target: target) else { continue }
+                let pairKey = "\(source.entity.id)->\(target.entity.id)"
+                guard seenPairs.insert(pairKey).inserted else { continue }
+                candidates.append(
+                    KnowledgeConsolidationCandidate(
+                        source: source.entity,
+                        target: target.entity,
+                        reason: reason,
+                        score: source.claimCount * 3 + source.typedEdgeCount * 2 + target.claimCount * 2
+                    )
+                )
+            }
+        }
+
+        return candidates.sorted { lhs, rhs in
+            if lhs.score != rhs.score {
+                return lhs.score > rhs.score
+            }
+            if lhs.target.canonicalName != rhs.target.canonicalName {
+                return lhs.target.canonicalName.localizedCaseInsensitiveCompare(rhs.target.canonicalName) == .orderedAscending
+            }
+            return lhs.source.canonicalName.localizedCaseInsensitiveCompare(rhs.source.canonicalName) == .orderedAscending
+        }
+    }
+
+    private func buildStaleCandidates(
+        metrics: [KnowledgeEntityMetrics],
+        materializedEntityIds: Set<String>,
+        now: Date = Date()
+    ) -> [KnowledgeStaleCandidate] {
+        metrics
+            .filter { materializedEntityIds.contains($0.entity.id) }
+            .compactMap { metric in
+                guard metric.entity.entityType != .project else { return nil }
+                guard metric.claimCount <= 4 else { return nil }
+                guard metric.projectRelationCount == 0 else { return nil }
+                guard let lastSeenAt = metric.entity.lastSeenAt,
+                      let lastSeenDate = dateSupport.parseDateTime(lastSeenAt) else {
+                    return nil
+                }
+                let days = Int(now.timeIntervalSince(lastSeenDate) / 86_400)
+                guard days >= 7 else { return nil }
+                return KnowledgeStaleCandidate(
+                    entity: metric.entity,
+                    daysSinceSeen: days,
+                    reason: "low-touch note with no active project trail"
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.daysSinceSeen != rhs.daysSinceSeen {
+                    return lhs.daysSinceSeen > rhs.daysSinceSeen
+                }
+                return lhs.entity.canonicalName.localizedCaseInsensitiveCompare(rhs.entity.canonicalName) == .orderedAscending
+            }
+    }
+
+    private func reclassifyReason(for name: String) -> String? {
+        let lowered = name.lowercased()
+        guard lessonLikeTopicSignals.contains(where: { lowered.contains($0) }) else {
+            return nil
+        }
+        return "topic reads more like a durable guide or workflow note"
+    }
+
+    private func consolidationReason(
+        source: KnowledgeEntityMetrics,
+        target: KnowledgeEntityMetrics
+    ) -> String? {
+        let sourceName = source.entity.canonicalName
+        let targetName = target.entity.canonicalName
+        let sourceLower = sourceName.lowercased()
+        let targetLower = targetName.lowercased()
+        guard sourceLower != targetLower else { return nil }
+        guard sourceName.count > targetName.count else { return nil }
+        guard sourceLower.hasPrefix(targetLower + " ") || sourceLower.contains(targetLower + " ") else {
+            return nil
+        }
+        guard consolidationSuffixSignals.contains(where: { sourceLower.contains($0) }) else {
+            return nil
+        }
+
+        let sourceTokens = significantTokens(in: sourceName)
+        let targetTokens = significantTokens(in: targetName)
+        guard !sourceTokens.isEmpty, !targetTokens.isEmpty else { return nil }
+        guard Set(targetTokens).isSubset(of: Set(sourceTokens)) else { return nil }
+        guard targetTokens.count <= 3 else { return nil }
+        guard target.claimCount >= source.claimCount else { return nil }
+
+        return "overlapping topic family; consider consolidating under the stronger root note"
+    }
+
+    private func significantTokens(in value: String) -> [String] {
+        value.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !tokenStopWords.contains($0) }
     }
 }
