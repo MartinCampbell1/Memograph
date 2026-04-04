@@ -840,7 +840,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       decision.kind == reviewDecisionKind else {
                     return false
                 }
-                return artifact.applyTargetRelativePath != nil || artifact.mergeOverlayDraft != nil
+                return artifact.applyTargetRelativePath != nil || artifact.mergeOverlayDraft != nil || artifact.suppressedEntityId != nil
             }
 
             guard !selectedArtifacts.isEmpty else {
@@ -864,12 +864,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
 
             _ = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
-            let applyResults = try exporter.applyKnowledgeDraftArtifacts(selectedArtifacts)
+            let applyableArtifacts = selectedArtifacts.filter { $0.applyTargetRelativePath != nil }
+            let applyResults = try exporter.applyKnowledgeDraftArtifacts(applyableArtifacts)
             let appliedDraftRecords = applyResults.compactMap { buildAppliedActionRecord(from: $0, appliedAt: appliedAt) }
             let mergeAppliedActions = mergeOverlayRecords.map(buildAppliedMergeActionRecord(from:))
+            let suppressionAppliedActions = selectedArtifacts.compactMap {
+                buildAppliedSuppressionActionRecord(from: $0, appliedAt: appliedAt)
+            }
             settings.knowledgeAppliedActions = mergedKnowledgeAppliedActions(
                 existing: settings.knowledgeAppliedActions,
-                incoming: appliedDraftRecords + mergeAppliedActions
+                incoming: appliedDraftRecords + mergeAppliedActions + suppressionAppliedActions
             )
             settings.knowledgeAliasOverrides = derivedKnowledgeAliasOverrides(from: settings)
             rebuildKnowledgePipeline()
@@ -877,7 +881,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
 
             let materializedCount = try activeKnowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
-            logger.info("Knowledge review-action apply finished: \(approvedDecisions.count) approved decisions, \(applyResults.count) files applied, \(mergeOverlayRecords.count) merge overlays stored, \(materializedCount) notes materialized")
+            logger.info("Knowledge review-action apply finished: \(approvedDecisions.count) approved decisions, \(applyResults.count) files applied, \(suppressionAppliedActions.count) suppressions recorded, \(mergeOverlayRecords.count) merge overlays stored, \(materializedCount) notes materialized")
             for result in applyResults {
                 print(result.appliedPath)
             }
@@ -954,6 +958,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             applyTargetRelativePath: applyTargetRelativePath,
             appliedPath: result.appliedPath,
             backupPath: result.backupPath
+        )
+    }
+
+    private func buildAppliedSuppressionActionRecord(
+        from artifact: KnowledgeDraftArtifact,
+        appliedAt: String
+    ) -> KnowledgeAppliedActionRecord? {
+        guard artifact.reviewDecisionKind == .suppress,
+              let sourceEntityId = artifact.suppressedEntityId,
+              let title = knowledgeEntityTitle(for: sourceEntityId, fallback: artifact.title),
+              let applyTargetRelativePath = knowledgeRelativePath(for: sourceEntityId) else {
+            return nil
+        }
+
+        let appliedPath = (AppSettings().obsidianVaultPath as NSString)
+            .appendingPathComponent("Knowledge/\(applyTargetRelativePath)")
+        return KnowledgeAppliedActionRecord(
+            id: KnowledgeAppliedActionRecord.stableID(kind: .suppression, applyTargetRelativePath: applyTargetRelativePath),
+            appliedAt: appliedAt,
+            kind: .suppression,
+            title: title,
+            sourceEntityId: sourceEntityId,
+            applyTargetRelativePath: applyTargetRelativePath,
+            appliedPath: appliedPath
         )
     }
 
@@ -1073,6 +1101,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "Lessons": return .lesson
         default: return nil
         }
+    }
+
+    private func knowledgeEntityTitle(for entityId: String, fallback: String) -> String? {
+        guard let db = databaseManager else { return fallback }
+        let rows = try? db.query(
+            "SELECT canonical_name FROM knowledge_entities WHERE id = ? LIMIT 1",
+            params: [.text(entityId)]
+        )
+        return rows?.first?["canonical_name"]?.textValue ?? fallback
+            .replacingOccurrences(of: "Review Packet — Stale Note ", with: "")
+            .replacingOccurrences(of: "Review Packet — Weak Topic ", with: "")
+            .replacingOccurrences(of: "Review Packet — Thin Durable Topic ", with: "")
+    }
+
+    private func knowledgeRelativePath(for entityId: String) -> String? {
+        guard let db = databaseManager else { return nil }
+        let rows = try? db.query(
+            "SELECT slug, entity_type FROM knowledge_entities WHERE id = ? LIMIT 1",
+            params: [.text(entityId)]
+        )
+        guard let row = rows?.first,
+              let slug = row["slug"]?.textValue,
+              let typeRaw = row["entity_type"]?.textValue,
+              let type = KnowledgeEntityType(rawValue: typeRaw) else {
+            return nil
+        }
+        return "\(type.folderName)/\(slug).md"
     }
 
     private func rebuildKnowledgePipeline() {

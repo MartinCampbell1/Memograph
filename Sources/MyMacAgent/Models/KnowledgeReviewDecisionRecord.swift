@@ -3,6 +3,7 @@ import Foundation
 enum KnowledgeReviewDecisionKind: String, Codable {
     case promoteToLesson = "promote-to-lesson"
     case consolidate = "consolidate"
+    case suppress = "suppress"
 }
 
 enum KnowledgeReviewDecisionStatus: String, Codable {

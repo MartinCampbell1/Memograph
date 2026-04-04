@@ -732,6 +732,8 @@ final class KnowledgeMaintenance {
                 return "`\(timestamp)` — merged context from `\(action.title)` into [[\(linkTarget)|\(targetTitle)]]"
             }
             return "`\(timestamp)` — merged context into [[\(linkTarget)|\(action.title)]]"
+        case .suppression:
+            return "`\(timestamp)` — suppressed [[\(linkTarget)|\(action.title)]] from the active knowledge graph"
         }
     }
 
@@ -879,6 +881,8 @@ final class KnowledgeMaintenance {
                         }
                     }
                 }
+            case .suppression:
+                continue
             }
         }
 
@@ -1772,12 +1776,19 @@ final class KnowledgeMaintenance {
         let sourceLink = "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
 
         let markdown = """
+        <!-- memograph-review-key: \(manualReviewKey(for: candidate)) -->
+        <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.suppress.rawValue) -->
         # Review Packet — Stale Note \(candidate.entity.canonicalName)
 
         ## Candidate
         - Note: \(sourceLink)
         - Last seen: \(candidate.daysSinceSeen) day\(candidate.daysSinceSeen == 1 ? "" : "s") ago
         - Reason: \(candidate.reason)
+
+        ## Decision
+        - Change `Decision: pending` to `Decision: apply` to suppress this note from the active knowledge graph.
+        - Use `Decision: dismiss` if the note should stay visible.
+        Decision: pending
 
         ## Review Checklist
         - Keep it if it still serves as durable reference material.
@@ -1790,7 +1801,9 @@ final class KnowledgeMaintenance {
             relativePath: relativePath,
             title: "Review Packet — Stale Note \(candidate.entity.canonicalName)",
             markdown: markdown,
-            reviewPacketKey: manualReviewKey(for: candidate)
+            suppressedEntityId: candidate.entity.id,
+            reviewPacketKey: manualReviewKey(for: candidate),
+            reviewDecisionKind: .suppress
         )
     }
 
@@ -1799,12 +1812,19 @@ final class KnowledgeMaintenance {
         let sourceLink = "[[\(linkTarget(for: metric.entity))|\(metric.entity.canonicalName)]]"
 
         let markdown = """
+        <!-- memograph-review-key: \(manualReviewKey(forWeakTopic: metric.entity)) -->
+        <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.suppress.rawValue) -->
         # Review Packet — Weak Topic \(metric.entity.canonicalName)
 
         ## Candidate
         - Topic: \(sourceLink)
         - Loose links: \(metric.coOccurrenceEdgeCount)
         - Strong relations: \(metric.typedEdgeCount)
+
+        ## Decision
+        - Change `Decision: pending` to `Decision: apply` to suppress this note from the active knowledge graph.
+        - Use `Decision: dismiss` if the topic should stay visible.
+        Decision: pending
 
         ## Review Checklist
         - Keep it only if it carries durable meaning beyond co-occurrence noise.
@@ -1817,7 +1837,9 @@ final class KnowledgeMaintenance {
             relativePath: relativePath,
             title: "Review Packet — Weak Topic \(metric.entity.canonicalName)",
             markdown: markdown,
-            reviewPacketKey: manualReviewKey(forWeakTopic: metric.entity)
+            suppressedEntityId: metric.entity.id,
+            reviewPacketKey: manualReviewKey(forWeakTopic: metric.entity),
+            reviewDecisionKind: .suppress
         )
     }
 
@@ -1826,6 +1848,8 @@ final class KnowledgeMaintenance {
         let sourceLink = "[[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
 
         let markdown = """
+        <!-- memograph-review-key: \(manualReviewKey(forWeakTopic: hotspot.entity)) -->
+        <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.suppress.rawValue) -->
         # Review Packet — Thin Durable Topic \(hotspot.entity.canonicalName)
 
         ## Candidate
@@ -1833,6 +1857,11 @@ final class KnowledgeMaintenance {
         - Strong relations: \(hotspot.relationStats.typedEdges)
         - Loose links: \(hotspot.relationStats.coOccurrenceEdges)
         - Project trail: \(hotspot.relationStats.projectRelations)
+
+        ## Decision
+        - Change `Decision: pending` to `Decision: apply` to suppress this note from the active knowledge graph.
+        - Use `Decision: dismiss` if the topic should stay visible.
+        Decision: pending
 
         ## Review Checklist
         - Keep it visible if it represents a real durable topic the graph should expose.
@@ -1845,7 +1874,9 @@ final class KnowledgeMaintenance {
             relativePath: relativePath,
             title: "Review Packet — Thin Durable Topic \(hotspot.entity.canonicalName)",
             markdown: markdown,
-            reviewPacketKey: manualReviewKey(forWeakTopic: hotspot.entity)
+            suppressedEntityId: hotspot.entity.id,
+            reviewPacketKey: manualReviewKey(forWeakTopic: hotspot.entity),
+            reviewDecisionKind: .suppress
         )
     }
 

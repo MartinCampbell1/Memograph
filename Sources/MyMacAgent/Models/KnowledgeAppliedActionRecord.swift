@@ -5,6 +5,7 @@ enum KnowledgeAppliedActionKind: String, Codable {
     case lessonRedirect
     case redirect
     case mergeOverlay
+    case suppression
 }
 
 struct KnowledgeAppliedActionRecord: Codable, Equatable {

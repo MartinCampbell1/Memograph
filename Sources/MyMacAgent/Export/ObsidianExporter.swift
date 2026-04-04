@@ -783,6 +783,8 @@ final class ObsidianExporter {
             return "consolidated"
         case .mergeOverlay:
             return "merged"
+        case .suppression:
+            return "suppressed"
         }
     }
 
