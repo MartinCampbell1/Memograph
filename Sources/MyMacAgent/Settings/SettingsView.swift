@@ -33,6 +33,11 @@ struct SettingsPreviewState {
     let blacklistedWindowPatterns: String
     let microphoneCaptureEnabled: Bool
     let systemAudioCaptureEnabled: Bool
+    let audioTranscriptionProvider: AudioTranscriptionProvider
+    let audioTranscriptionBaseURL: String
+    let audioTranscriptionAPIKey: String
+    let audioMicrophoneModel: String
+    let audioSystemModel: String
     let audioPythonCommand: String
     let audioModelName: String
     let audioRuntimeStatus: String
@@ -74,9 +79,14 @@ struct SettingsPreviewState {
         blacklistedWindowPatterns: "password\nincognito\nseed phrase\nwallet",
         microphoneCaptureEnabled: false,
         systemAudioCaptureEnabled: false,
+        audioTranscriptionProvider: .openAI,
+        audioTranscriptionBaseURL: "https://api.openai.com/v1",
+        audioTranscriptionAPIKey: "sk-proj-demo****************",
+        audioMicrophoneModel: "gpt-4o-transcribe",
+        audioSystemModel: "gpt-4o-mini-transcribe",
         audioPythonCommand: ".venv/bin/python",
         audioModelName: "mlx-community/whisper-large-v3-turbo",
-        audioRuntimeStatus: "ready (demo)",
+        audioRuntimeStatus: "Готово (облако: mic gpt-4o-transcribe, system gpt-4o-mini-transcribe)",
         systemPrompt: AppSettings.defaultSystemPrompt,
         userPromptSuffix: AppSettings.defaultUserPromptSuffix,
         screenRecordingGranted: true,
@@ -128,6 +138,12 @@ struct SettingsView: View {
 
     @State private var microphoneCaptureEnabled = false
     @State private var systemAudioCaptureEnabled = false
+    @State private var audioTranscriptionProvider: AudioTranscriptionProvider = .openAI
+    @State private var audioTranscriptionBaseURL = ""
+    @State private var audioTranscriptionAPIKey = ""
+    @State private var showAudioTranscriptionAPIKey = false
+    @State private var audioMicrophoneModel = ""
+    @State private var audioSystemModel = ""
     @State private var audioPythonCommand = ""
     @State private var audioModelName = ""
     @State private var audioRuntimeStatus = ""
@@ -427,20 +443,66 @@ struct SettingsView: View {
 
     private var audioTab: some View {
         settingsScroll {
-            settingsCard("Experimental Capture", subtitle: "Audio stays off by default. Turn it on only if you explicitly want transcripts.") {
+            settingsCard("Audio Capture", subtitle: "Микрофон и системный звук можно транскрибировать либо в облаке, либо локально.") {
                 toggleRow("Microphone transcription", help: "Starts recording only when another app is actively using the microphone.", isOn: $microphoneCaptureEnabled)
                 toggleRow("System audio transcription", help: "Starts only while another app is actively sending audio to the default output device.", isOn: $systemAudioCaptureEnabled)
             }
 
-            settingsCard("Runtime") {
-                settingRow("Python command", help: "Absolute path or command name for the Whisper runtime.") {
-                    TextField("python3", text: $audioPythonCommand)
-                        .textFieldStyle(.roundedBorder)
+            settingsCard("Transcription Provider", subtitle: "Для тебя основной путь можно держать облачным, а локальный Whisper оставить как privacy-first опцию.") {
+                settingRow("Provider") {
+                    Picker("Audio transcription provider", selection: $audioTranscriptionProvider) {
+                        ForEach(AudioTranscriptionProvider.allCases) { provider in
+                            Text(provider.label).tag(provider)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
                 }
 
-                settingRow("Whisper model") {
-                    TextField("mlx-community/whisper-large-v3-turbo", text: $audioModelName)
-                        .textFieldStyle(.roundedBorder)
+                if audioTranscriptionProvider == .openAI {
+                    settingRow("Base URL", help: "По умолчанию это OpenAI audio transcription endpoint.") {
+                        TextField("https://api.openai.com/v1", text: $audioTranscriptionBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    settingRow("API key", help: "Отдельный ключ для аудио. Если Base URL совпадает с внешним провайдером, можно переиспользовать внешний ключ.") {
+                        HStack(spacing: 8) {
+                            Group {
+                                if showAudioTranscriptionAPIKey {
+                                    TextField("Audio API key", text: $audioTranscriptionAPIKey)
+                                } else {
+                                    SecureField("Audio API key", text: $audioTranscriptionAPIKey)
+                                }
+                            }
+                            .textFieldStyle(.roundedBorder)
+
+                            Button(showAudioTranscriptionAPIKey ? "Hide" : "Reveal") {
+                                showAudioTranscriptionAPIKey.toggle()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+
+                    settingRow("Microphone model", help: "Лучшее качество для твоей речи.") {
+                        TextField("gpt-4o-transcribe", text: $audioMicrophoneModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    settingRow("System audio model", help: "Более дешёвый путь для видео и всего, что играет из колонок.") {
+                        TextField("gpt-4o-mini-transcribe", text: $audioSystemModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                } else {
+                    settingRow("Python command", help: "Absolute path or command name for the Whisper runtime.") {
+                        TextField("python3", text: $audioPythonCommand)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    settingRow("Whisper model") {
+                        TextField("mlx-community/whisper-large-v3-turbo", text: $audioModelName)
+                            .textFieldStyle(.roundedBorder)
+                    }
                 }
 
                 settingRow("Runtime status") {
@@ -451,7 +513,9 @@ struct SettingsView: View {
             }
 
             settingsCard("How It Works") {
-                Text("Audio support is still experimental. Microphone capture wakes up only while another app is using the mic. System audio wakes up only while another app is actively playing through your default output device, and macOS may briefly show its screen-sharing indicator during that window.")
+                Text(audioTranscriptionProvider == .openAI
+                     ? "Микрофон уходит в более качественную модель, а системный звук можно отправлять в более дешёвую. Это снимает нагрузку с твоего Mac, но требует сетевого API-ключа."
+                     : "Локальный Whisper остаётся доступным как privacy-first режим. Он полезен для пользователей, которые не хотят отправлять аудио наружу, но сильнее грузит машину.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -555,6 +619,12 @@ struct SettingsView: View {
 
         microphoneCaptureEnabled = settings.microphoneCaptureEnabled
         systemAudioCaptureEnabled = settings.resolvedSystemAudioCaptureEnabled
+        audioTranscriptionProvider = settings.audioTranscriptionProvider
+        audioTranscriptionBaseURL = settings.audioTranscriptionBaseURL
+        audioTranscriptionAPIKey = settings.audioTranscriptionAPIKey
+        showAudioTranscriptionAPIKey = false
+        audioMicrophoneModel = settings.audioMicrophoneModel
+        audioSystemModel = settings.audioSystemModel
         audioPythonCommand = settings.audioPythonCommand
         audioModelName = settings.audioModelName
         audioRuntimeStatus = AudioRuntimeResolver.resolve(settings: settings).description
@@ -596,6 +666,12 @@ struct SettingsView: View {
         blacklistedWindowPatterns = preview.blacklistedWindowPatterns
         microphoneCaptureEnabled = preview.microphoneCaptureEnabled
         systemAudioCaptureEnabled = AppSettings.persistentSystemAudioCaptureAvailable && preview.systemAudioCaptureEnabled
+        audioTranscriptionProvider = preview.audioTranscriptionProvider
+        audioTranscriptionBaseURL = preview.audioTranscriptionBaseURL
+        audioTranscriptionAPIKey = preview.audioTranscriptionAPIKey
+        showAudioTranscriptionAPIKey = false
+        audioMicrophoneModel = preview.audioMicrophoneModel
+        audioSystemModel = preview.audioSystemModel
         audioPythonCommand = preview.audioPythonCommand
         audioModelName = preview.audioModelName
         audioRuntimeStatus = preview.audioRuntimeStatus
@@ -647,6 +723,11 @@ struct SettingsView: View {
         settings.systemAudioCaptureEnabled = AppSettings.persistentSystemAudioCaptureAvailable && systemAudioCaptureEnabled
         settings.experimentalAudioOptInConfirmed =
             microphoneCaptureEnabled || (AppSettings.persistentSystemAudioCaptureAvailable && systemAudioCaptureEnabled)
+        settings.audioTranscriptionProvider = audioTranscriptionProvider
+        settings.audioTranscriptionBaseURL = audioTranscriptionBaseURL
+        settings.audioTranscriptionAPIKey = audioTranscriptionAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.audioMicrophoneModel = audioMicrophoneModel
+        settings.audioSystemModel = audioSystemModel
         settings.audioPythonCommand = audioPythonCommand
         settings.audioModelName = audioModelName
 

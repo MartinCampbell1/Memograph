@@ -1328,6 +1328,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let runtimeStatus = AudioRuntimeResolver.resolve(settings: settings)
         logger.info("Audio runtime: \(runtimeStatus.description)")
 
+        guard runtimeStatus.canTranscribe else {
+            logger.info("Audio engines stay idle until transcription runtime becomes available")
+            return
+        }
+
         if settings.microphoneCaptureEnabled && audioCaptureEngine == nil {
             let audioEngine = AudioCaptureEngine(
                 transcriber: transcriber,

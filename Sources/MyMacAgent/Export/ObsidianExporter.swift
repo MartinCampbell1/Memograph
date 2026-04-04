@@ -58,26 +58,26 @@ final class ObsidianExporter {
         }
 
         // Summary
-        md += "## Summary\n"
-        md += "\(summary.summaryText ?? "No summary available.")\n\n"
+        md += "## Сводка\n"
+        md += "\(summary.summaryText ?? "Сводка недоступна.")\n\n"
 
         // Main apps
-        md += "## Main apps\n"
+        md += "## Основные приложения\n"
         if let appsJson = summary.topAppsJson,
            let appsData = appsJson.data(using: .utf8),
            let apps = try? JSONSerialization.jsonObject(with: appsData) as? [[String: Any]] {
             for app in apps {
-                let name = app["name"] as? String ?? "Unknown"
+                let name = app["name"] as? String ?? "Неизвестно"
                 let minutes = app["duration_min"] as? Int ?? 0
                 md += "- \(name) — \(Self.formatDuration(minutes: minutes))\n"
             }
         } else {
-            md += "- No app data available\n"
+            md += "- Нет данных по приложениям\n"
         }
         md += "\n"
 
         // Main topics
-        md += "## Main topics\n"
+        md += "## Основные темы\n"
         if let topicsJson = summary.topTopicsJson,
            let topicsData = topicsJson.data(using: .utf8),
            let topics = try? JSONSerialization.jsonObject(with: topicsData) as? [String] {
@@ -85,12 +85,12 @@ final class ObsidianExporter {
                 md += "- [[\(topic)]]\n"
             }
         } else {
-            md += "- No topics extracted\n"
+            md += "- Темы не извлечены\n"
         }
         md += "\n"
 
         // Timeline
-        md += "## Timeline\n"
+        md += "## Таймлайн\n"
         let timeline: String
         if let metadata, metadata.isHourly,
            let windowStart = metadata.windowStart,
@@ -100,11 +100,11 @@ final class ObsidianExporter {
         } else {
             timeline = try buildTimeline(for: summary.date)
         }
-        md += timeline.isEmpty ? "- No sessions recorded\n" : timeline
+        md += timeline.isEmpty ? "- Сессии не записаны\n" : timeline
         md += "\n"
 
         // Suggested notes
-        md += "## Suggested notes\n"
+        md += "## Предлагаемые заметки\n"
         if let notesJson = summary.suggestedNotesJson,
            let notesData = notesJson.data(using: .utf8),
            let notes = try? JSONSerialization.jsonObject(with: notesData) as? [String] {
@@ -112,7 +112,7 @@ final class ObsidianExporter {
                 md += "- [[\(note)]]\n"
             }
         } else {
-            md += "- No suggestions\n"
+            md += "- Предложений нет\n"
         }
         md += "\n"
 
@@ -367,29 +367,29 @@ final class ObsidianExporter {
     }
 
     func renderKnowledgeReviewHistory(_ records: [KnowledgeReviewDecisionRecord]) -> String {
-        var markdown = "# Memograph Reviewed Knowledge Decisions\n\n"
-        markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
-        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n"
-        markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|Resolved review board]]\n\n"
+        var markdown = "# Memograph Решения ревью по слою знаний\n\n"
+        markdown += "_Обновлено: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|центр управления]]\n"
+        markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|доска завершенных ревью]]\n\n"
 
         guard !records.isEmpty else {
-            markdown += "- No non-pending review decisions tracked yet.\n"
+            markdown += "- Пока нет решений ревью со статусом не-pending.\n"
             return markdown
         }
 
-        markdown += "## Recently Reviewed\n"
+        markdown += "## Недавно отревьюено\n"
         for record in records.sorted(by: compareReviewDecisions).prefix(30) {
             let recordedAt = record.recordedAt
                 .flatMap(dateSupport.parseDateTime)
                 .map(dateSupport.localDateTimeString(from:))
                 ?? record.recordedAt
-                ?? "unknown time"
+                ?? "неизвестное время"
             let linkTarget = reviewDecisionLinkTarget(for: record)
             switch record.status {
             case .apply:
-                markdown += "- `\(recordedAt)` — approved [[\(linkTarget)|\(record.title)]]\n"
+                markdown += "- `\(recordedAt)` — одобрено [[\(linkTarget)|\(record.title)]]\n"
             case .dismiss:
-                markdown += "- `\(recordedAt)` — dismissed [[\(linkTarget)|\(record.title)]]\n"
+                markdown += "- `\(recordedAt)` — отклонено [[\(linkTarget)|\(record.title)]]\n"
             case .pending:
                 continue
             }
@@ -409,12 +409,12 @@ final class ObsidianExporter {
     }
 
     func renderKnowledgeResolvedReviewBoard(_ records: [KnowledgeReviewDecisionRecord]) -> String {
-        var markdown = "# Resolved Knowledge Review Board\n\n"
-        markdown += "_Archived review packets that already received a decision._\n\n"
-        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
+        var markdown = "# Доска завершенных ревью слоя знаний\n\n"
+        markdown += "_Архив пакетов ревью, по которым уже принято решение._\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|центр управления]]\n\n"
 
         guard !records.isEmpty else {
-            markdown += "- No resolved review packets yet.\n"
+            markdown += "- Пока нет завершенных пакетов ревью.\n"
             return markdown
         }
 
@@ -422,35 +422,35 @@ final class ObsidianExporter {
         let dismissed = records.filter { $0.status == .dismiss }
 
         if !approved.isEmpty {
-            markdown += "## Approved\n"
+            markdown += "## Одобрено\n"
             for record in approved.sorted(by: compareReviewDecisions).prefix(30) {
                 let recordedAt = record.recordedAt
                     .flatMap(dateSupport.parseDateTime)
                     .map(dateSupport.localDateTimeString(from:))
                     ?? record.recordedAt
-                    ?? "unknown time"
+                    ?? "неизвестное время"
                 markdown += "- `\(recordedAt)` — [[\(reviewDecisionLinkTarget(for: record))|\(record.title)]]\n"
             }
             markdown += "\n"
         }
 
         if !dismissed.isEmpty {
-            markdown += "## Dismissed\n"
+            markdown += "## Отклонено\n"
             for record in dismissed.sorted(by: compareReviewDecisions).prefix(30) {
                 let recordedAt = record.recordedAt
                     .flatMap(dateSupport.parseDateTime)
                     .map(dateSupport.localDateTimeString(from:))
                     ?? record.recordedAt
-                    ?? "unknown time"
+                    ?? "неизвестное время"
                 markdown += "- `\(recordedAt)` — [[\(reviewDecisionLinkTarget(for: record))|\(record.title)]]\n"
             }
             markdown += "\n"
         }
 
-        markdown += "## Usage\n"
-        markdown += "- Use this board to revisit previously resolved review packets.\n"
-        markdown += "- Approved packets should already be reflected in `Recently Applied` or persistent overrides.\n"
-        markdown += "- Dismissed packets stay archived here so they do not re-enter the active review queue.\n"
+        markdown += "## Как использовать\n"
+        markdown += "- Используй эту доску, чтобы возвращаться к уже завершенным пакетам ревью.\n"
+        markdown += "- Одобренные пакеты уже должны отражаться в `Недавно применено` или в persistent overrides.\n"
+        markdown += "- Отклоненные пакеты остаются здесь в архиве, чтобы не возвращаться в активную очередь ревью.\n"
         return markdown
     }
 
@@ -465,28 +465,28 @@ final class ObsidianExporter {
     }
 
     func renderKnowledgeAppliedHistory(_ records: [KnowledgeAppliedActionRecord]) -> String {
-        var markdown = "# Memograph Applied Knowledge Actions\n\n"
-        markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
-        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
+        var markdown = "# Memograph Примененные действия слоя знаний\n\n"
+        markdown += "_Обновлено: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|центр управления]]\n\n"
 
         guard !records.isEmpty else {
-            markdown += "- No knowledge actions have been applied yet.\n"
+            markdown += "- Пока не было применено ни одного действия слоя знаний.\n"
             return markdown
         }
 
-        markdown += "## Recently Applied\n"
+        markdown += "## Недавно применено\n"
         for record in records.sorted(by: compareAppliedActions).prefix(20) {
             let appliedAt = dateSupport.parseDateTime(record.appliedAt)
                 .map(dateSupport.localDateTimeString(from:))
                 ?? record.appliedAt
             let linkTarget = "Knowledge/\(record.applyTargetRelativePath.replacingOccurrences(of: ".md", with: ""))"
             if record.kind == .mergeOverlay, let targetTitle = record.targetTitle {
-                markdown += "- `\(appliedAt)` — merged context from `\(record.title)` into [[\(linkTarget)|\(targetTitle)]]\n"
+                markdown += "- `\(appliedAt)` — объединен контекст из `\(record.title)` в [[\(linkTarget)|\(targetTitle)]]\n"
             } else {
                 markdown += "- `\(appliedAt)` — \(actionVerb(for: record.kind)) [[\(linkTarget)|\(record.title)]]\n"
             }
             if let backupPath = record.backupPath, !backupPath.isEmpty {
-                markdown += "  Backup: `\(backupPath)`\n"
+                markdown += "  Бэкап: `\(backupPath)`\n"
             }
         }
         markdown += "\n"
@@ -837,10 +837,10 @@ final class ObsidianExporter {
         guard let metadata, metadata.isHourly,
               let windowStart = metadata.windowStart,
               let windowEnd = metadata.windowEnd else {
-            return "Daily Log — \(summary.date)"
+            return "Дневной лог — \(summary.date)"
         }
 
-        return "Hourly Log — \(dateSupport.localDateString(from: windowStart)) "
+        return "Почасовой лог — \(dateSupport.localDateString(from: windowStart)) "
             + "\(dateSupport.localTimeString(from: windowStart))–\(dateSupport.localTimeString(from: windowEnd))"
     }
 
@@ -928,15 +928,15 @@ final class ObsidianExporter {
     private func actionVerb(for kind: KnowledgeAppliedActionKind) -> String {
         switch kind {
         case .lessonPromotion:
-            return "promoted"
+            return "повышено"
         case .lessonRedirect:
-            return "redirected"
+            return "перенаправлено"
         case .redirect:
-            return "consolidated"
+            return "перенаправлено после консолидации"
         case .mergeOverlay:
-            return "merged"
+            return "объединено"
         case .suppression:
-            return "suppressed"
+            return "подавлено"
         }
     }
 
@@ -1020,13 +1020,22 @@ final class ObsidianExporter {
     }
 
     private func detectedAppliedActionKind(from markdown: String) -> KnowledgeAppliedActionKind? {
-        if markdown.contains("_Apply-ready lesson draft generated from a safe maintenance action._") {
+        if markdown.contains("_Apply-ready lesson draft generated from a safe maintenance action._")
+            || markdown.contains("_Готовый lesson draft, сгенерированный из safe maintenance action._")
+            || markdown.contains("_Готовый черновик lesson, сгенерированный из safe maintenance action._")
+            || markdown.contains("_Готовый черновик вывода, сгенерированный из безопасного maintenance-действия._") {
             return .lessonPromotion
         }
-        if markdown.contains("_Redirect stub generated from a safe lesson-promotion action._") {
+        if markdown.contains("_Redirect stub generated from a safe lesson-promotion action._")
+            || markdown.contains("_Redirect stub, сгенерированный из safe lesson-promotion action._")
+            || markdown.contains("_Редирект, сгенерированный из safe lesson-promotion action._")
+            || markdown.contains("_Редирект, сгенерированный из безопасного действия повышения в вывод._") {
             return .lessonRedirect
         }
-        if markdown.contains("_Redirect stub draft generated from a safe consolidation action._") {
+        if markdown.contains("_Redirect stub draft generated from a safe consolidation action._")
+            || markdown.contains("_Redirect stub, сгенерированный из safe consolidation action._")
+            || markdown.contains("_Редирект, сгенерированный из safe consolidation action._")
+            || markdown.contains("_Редирект, сгенерированный из безопасного действия консолидации._") {
             return .redirect
         }
         return nil
@@ -1039,10 +1048,21 @@ final class ObsidianExporter {
         sourceOverview: String?,
         preservedSignals: [String]
     )? {
-        guard let titleLine = markdown.components(separatedBy: .newlines).first(where: { $0.hasPrefix("# Merge Patch — ") }) else {
+        guard let titleLine = markdown.components(separatedBy: .newlines).first(where: {
+            $0.hasPrefix("# Merge Patch — ")
+                || $0.hasPrefix("# Merge-патч — ")
+                || $0.hasPrefix("# Патч слияния — ")
+        }) else {
             return nil
         }
-        let titlePayload = String(titleLine.dropFirst("# Merge Patch — ".count))
+        let titlePayload: String
+        if titleLine.hasPrefix("# Патч слияния — ") {
+            titlePayload = String(titleLine.dropFirst("# Патч слияния — ".count))
+        } else if titleLine.hasPrefix("# Merge-патч — ") {
+            titlePayload = String(titleLine.dropFirst("# Merge-патч — ".count))
+        } else {
+            titlePayload = String(titleLine.dropFirst("# Merge Patch — ".count))
+        }
         let titleParts = titlePayload.components(separatedBy: " → ")
         guard titleParts.count == 2 else { return nil }
 
@@ -1052,8 +1072,8 @@ final class ObsidianExporter {
             return nil
         }
 
-        let sourceOverview = extractFirstBullet(fromSection: "Source Summary", markdown: markdown)
-        let preservedSignals = extractBullets(fromSection: "Signals To Preserve", markdown: markdown)
+        let sourceOverview = extractFirstBullet(fromSection: "Сводка источника", markdown: markdown)
+        let preservedSignals = extractBullets(fromSection: "Сигналы, которые нужно сохранить", markdown: markdown)
 
         return (
             sourceTitle: sourceTitle,
@@ -1075,15 +1095,18 @@ final class ObsidianExporter {
         preservedSignals: [String],
         sourceAliases: [String]
     )? {
-        guard markdown.contains("_Redirect stub draft generated from a safe consolidation action._"),
+        guard markdown.contains("_Redirect stub draft generated from a safe consolidation action._")
+                || markdown.contains("_Redirect stub, сгенерированный из safe consolidation action._")
+                || markdown.contains("_Редирект, сгенерированный из safe consolidation action._")
+                || markdown.contains("_Редирект, сгенерированный из безопасного действия консолидации._"),
               let targetLink = firstKnowledgeLink(in: markdown),
               let targetRelativePath = normalizedKnowledgeTarget(targetLink.target) else {
             return nil
         }
         let sourceTitle = extractedTitle(from: markdown) ?? fallbackSourceTitle
         let targetTitle = targetLink.label ?? ((targetRelativePath as NSString).deletingPathExtension as NSString).lastPathComponent
-        let preservedSignals = extractBullets(fromSection: "Unique Context To Preserve", markdown: markdown)
-        let aliases = extractBullets(fromSection: "Alias Trail", markdown: markdown)
+        let preservedSignals = extractBullets(fromSection: "Уникальный контекст, который надо сохранить", markdown: markdown)
+        let aliases = extractBullets(fromSection: "След алиасов", markdown: markdown)
 
         return (
             sourceTitle: sourceTitle,
@@ -1106,7 +1129,10 @@ final class ObsidianExporter {
 
     private func targetRelativePath(from markdown: String) -> String? {
         let lines = markdown.components(separatedBy: .newlines)
-        if let mergeIntentLine = lines.first(where: { $0.contains("Fold [[Knowledge/") && $0.contains(" into [[Knowledge/") }),
+        if let mergeIntentLine = lines.first(where: {
+            ($0.contains("Fold [[Knowledge/") && $0.contains(" into [[Knowledge/"))
+                || ($0.contains("Сложить [[Knowledge/") && $0.contains("]] в [[Knowledge/"))
+        }),
            let target = knowledgeLinks(in: mergeIntentLine).last?.target {
             return normalizedKnowledgeTarget(target)
         }
@@ -1175,7 +1201,8 @@ final class ObsidianExporter {
 
     private func extractBullets(fromSection title: String, markdown: String) -> [String] {
         let lines = markdown.components(separatedBy: .newlines)
-        guard let sectionIndex = lines.firstIndex(of: "## \(title)") else { return [] }
+        let variants = localizedSectionHeadingVariants(for: title)
+        guard let sectionIndex = lines.firstIndex(where: { variants.contains($0) }) else { return [] }
         var bullets: [String] = []
         for line in lines[(sectionIndex + 1)...] {
             if line.hasPrefix("## ") {
@@ -1187,6 +1214,21 @@ final class ObsidianExporter {
             }
         }
         return bullets
+    }
+
+    private func localizedSectionHeadingVariants(for title: String) -> Set<String> {
+        switch title {
+        case "Сводка источника":
+            return ["## Сводка источника", "## Source Summary"]
+        case "Сигналы, которые нужно сохранить":
+            return ["## Сигналы, которые нужно сохранить", "## Signals To Preserve"]
+        case "Уникальный контекст, который надо сохранить":
+            return ["## Уникальный контекст, который надо сохранить", "## Unique Context To Preserve"]
+        case "След алиасов":
+            return ["## След алиасов", "## Alias Trail"]
+        default:
+            return ["## \(title)"]
+        }
     }
 
     private func appliedTimestamp(
@@ -1463,7 +1505,10 @@ final class ObsidianExporter {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if trimmed.hasPrefix("# Daily Log —") || trimmed.hasPrefix("# Hourly Log —") {
+        if trimmed.hasPrefix("# Daily Log —")
+            || trimmed.hasPrefix("# Hourly Log —")
+            || trimmed.hasPrefix("# Дневной лог —")
+            || trimmed.hasPrefix("# Почасовой лог —") {
             return trimmed
         }
 

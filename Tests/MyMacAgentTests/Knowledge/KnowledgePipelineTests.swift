@@ -303,17 +303,17 @@ struct KnowledgePipelineTests {
         let maintenancePath = (vaultPath as NSString).appendingPathComponent("Knowledge/_maintenance.md")
         let maintenance = try String(contentsOfFile: maintenancePath, encoding: .utf8)
 
-        #expect(maintenance.contains("# Memograph Knowledge Maintenance"))
-        #expect(maintenance.contains("## Snapshot"))
-        #expect(maintenance.contains("## Dashboard"))
-        #expect(maintenance.contains("[[Knowledge/_drafts/_index|workflow center]]"))
-        #expect(maintenance.contains("## Next Actions"))
-        #expect(maintenance.contains("## Review Queue"))
+        #expect(maintenance.contains("# Memograph Обслуживание слоя знаний"))
+        #expect(maintenance.contains("## Снимок"))
+        #expect(maintenance.contains("## Дашборд"))
+        #expect(maintenance.contains("[[Knowledge/_drafts/_index|центр управления]]"))
+        #expect(maintenance.contains("## Следующие действия"))
+        #expect(maintenance.contains("## Очередь ревью"))
         #expect(maintenance.contains("## Safe Auto-Actions"))
-        #expect(maintenance.contains("## Improvement Candidates"))
-        #expect(maintenance.contains("## Recently Applied"))
-        #expect(maintenance.contains("## Hotspots"))
-        #expect(maintenance.contains("Auto-demoted Broad Lessons"))
+        #expect(maintenance.contains("## Кандидаты на улучшение"))
+        #expect(maintenance.contains("## Недавно применено"))
+        #expect(maintenance.contains("## Горячие точки"))
+        #expect(maintenance.contains("Автоматически пониженные широкие выводы"))
         #expect(maintenance.contains("macOS System Audio Capture Guide"))
         #expect(maintenance.contains("Codex Workflow for AI Founders"))
     }
@@ -447,8 +447,8 @@ struct KnowledgePipelineTests {
             graphShaper: shaper
         )
 
-        #expect(markdown.contains("Commodity weak topics already suppressed: 1"))
-        #expect(markdown.contains("Suppressed commodity weak topics: 1"))
+        #expect(markdown.contains("Подавлено слабых товарных тем: 1"))
+        #expect(markdown.contains("Подавленные слабые товарные темы: 1"))
         #expect(markdown.contains("GPU"))
         #expect(!markdown.contains("NVIDIA Tesla"))
 
@@ -545,56 +545,56 @@ struct KnowledgePipelineTests {
         )
         let markdown = artifacts.markdown
 
-        #expect(markdown.contains("## Improvement Candidates"))
+        #expect(markdown.contains("## Кандидаты на улучшение"))
         #expect(markdown.contains("## Safe Auto-Actions"))
-        #expect(markdown.contains("## Next Actions"))
-        #expect(markdown.contains("[[Knowledge/_drafts/_index|workflow center]]"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Apply/_index|apply board]]"))
-        #expect(markdown.contains("High-priority review items:"))
-        #expect(markdown.contains("Standard review items:"))
-        #expect(markdown.contains("Low-signal review items:"))
-        #expect(markdown.contains("### Safe to Apply"))
-        #expect(markdown.contains("Promote [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] into `Lessons`."))
-        #expect(markdown.contains("Consolidate [[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] into [[Knowledge/Topics/turboquant|TurboQuant]]."))
-        #expect(markdown.contains("### Needs Review"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Review/_index|review board]]"))
-        #expect(markdown.contains("[Medium] [[Knowledge/Tools/old-utility|Old Utility]]"))
+        #expect(markdown.contains("## Следующие действия"))
+        #expect(markdown.contains("[[Knowledge/_drafts/_index|центр управления]]"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Apply/_index|доска применения]]"))
+        #expect(markdown.contains("Высокоприоритетных элементов ревью:"))
+        #expect(markdown.contains("Обычных элементов ревью:"))
+        #expect(markdown.contains("Низкосигнальных элементов ревью:"))
+        #expect(markdown.contains("### Безопасно применить"))
+        #expect(markdown.contains("Перенести [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] в `Lessons`."))
+        #expect(markdown.contains("Сконсолидировать [[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] в [[Knowledge/Topics/turboquant|TurboQuant]]."))
+        #expect(markdown.contains("### Требует ревью"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Review/_index|доска ревью]]"))
+        #expect(markdown.contains("[Средний] [[Knowledge/Tools/old-utility|Old Utility]]"))
         #expect(!markdown.contains("[Low]"))
-        #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]] — stale for"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Review/stale-old-utility|review]]"))
-        #expect(markdown.contains("### Draft Lesson Promotions"))
+        #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]] — не обновлялась уже"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Review/stale-old-utility|ревью]]"))
+        #expect(markdown.contains("### Черновики повышения в Lessons"))
         #expect(markdown.contains("[[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]]"))
-        #expect(markdown.contains("high-confidence lesson-like note with stable repeated evidence"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Maintenance/lesson-promotion-codex-workflow-for-ai-founders|review draft]]"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Apply/Lessons/codex-workflow-for-ai-founders|apply-ready lesson]]"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Apply/Redirects/codex-workflow-for-ai-founders-to-lesson|redirect stub]]"))
-        #expect(markdown.contains("### Safe Consolidations"))
+        #expect(markdown.contains("высокоуверенная заметка, которая уже ведет себя как устойчивый вывод"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Maintenance/lesson-promotion-codex-workflow-for-ai-founders|черновик ревью]]"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Apply/Lessons/codex-workflow-for-ai-founders|готовый черновик вывода]]"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Apply/Redirects/codex-workflow-for-ai-founders-to-lesson|редирект]]"))
+        #expect(markdown.contains("### Безопасные консолидации"))
         #expect(markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]]"))
-        #expect(markdown.contains("strong root note already dominates this topic family"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Maintenance/consolidate-turboquant-algorithm-into-turboquant|review draft]]"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Apply/Redirects/turboquant-algorithm-to-turboquant|redirect stub]]"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Apply/Merge/turboquant-algorithm-into-turboquant|merge patch]]"))
-        #expect(!markdown.contains("### Reclassify Candidates"))
+        #expect(markdown.contains("сильная корневая заметка уже доминирует в этом семействе тем"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Maintenance/consolidate-turboquant-algorithm-into-turboquant|черновик ревью]]"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Apply/Redirects/turboquant-algorithm-to-turboquant|редирект]]"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Apply/Merge/turboquant-algorithm-into-turboquant|патч слияния]]"))
+        #expect(!markdown.contains("### Кандидаты на переклассификацию"))
         #expect(!markdown.contains("Codex Workflow for AI Founders]] — consider moving to Lessons"))
-        #expect(!markdown.contains("### Consolidation Candidates"))
+        #expect(!markdown.contains("### Кандидаты на консолидацию"))
         #expect(!markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]] — overlapping topic family; consider consolidating under the stronger root note"))
-        #expect(markdown.contains("### Stale Review Candidates"))
+        #expect(markdown.contains("### Кандидаты на ревью устаревания"))
         #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]]"))
-        #expect(markdown.contains("low-touch note with no active project trail"))
-        #expect(markdown.contains("Review: [[Knowledge/_drafts/Review/stale-old-utility|review draft]]"))
+        #expect(markdown.contains("заметка почти не поддерживается и уже не имеет активного следа по проектам"))
+        #expect(markdown.contains("Ревью: [[Knowledge/_drafts/Review/stale-old-utility|черновик ревью]]"))
         #expect(artifacts.draftArtifacts.count == 10)
         #expect(artifacts.draftArtifacts.contains { $0.relativePath == "_index.md" && $0.kind == .workflowIndex })
         let reviewBoard = artifacts.draftArtifacts.first { $0.relativePath == "Review/_index.md" }?.markdown ?? ""
-        #expect(reviewBoard.contains("## Priority Overview"))
-        #expect(reviewBoard.contains("High priority: 0"))
-        #expect(reviewBoard.contains("Standard review: 1"))
-        #expect(reviewBoard.contains("Low-signal review: 0"))
-        #expect(reviewBoard.contains("## Standard Review"))
-        #expect(reviewBoard.contains("Stale: [[Knowledge/Tools/old-utility|Old Utility]]"))
+        #expect(reviewBoard.contains("## Сводка по приоритетам"))
+        #expect(reviewBoard.contains("Высокий приоритет: 0"))
+        #expect(reviewBoard.contains("Обычное ревью: 1"))
+        #expect(reviewBoard.contains("Низкосигнальное ревью: 0"))
+        #expect(reviewBoard.contains("## Обычное ревью"))
+        #expect(reviewBoard.contains("Устаревшее: [[Knowledge/Tools/old-utility|Old Utility]]"))
         let workflowBoard = artifacts.draftArtifacts.first { $0.relativePath == "_index.md" }?.markdown ?? ""
-        #expect(workflowBoard.contains("## Recommended Next Moves"))
-        #expect(workflowBoard.contains("Apply: promote [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] into `Lessons`."))
-        #expect(workflowBoard.contains("Review [Medium]: [[Knowledge/Tools/old-utility|Old Utility]] — stale for 2284 days"))
+        #expect(workflowBoard.contains("## Рекомендуемые следующие шаги"))
+        #expect(workflowBoard.contains("Применить: перенести [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] в `Lessons`."))
+        #expect(workflowBoard.contains("Ревью [Средний]: [[Knowledge/Tools/old-utility|Old Utility]] — не обновлялась уже 2284"))
     }
 
     @Test("Knowledge maintenance suppresses already applied promotions and consolidations")
@@ -719,20 +719,20 @@ struct KnowledgePipelineTests {
         let markdown = artifacts.markdown
 
         #expect(markdown.contains("## Safe Auto-Actions"))
-        #expect(markdown.contains("- No high-confidence auto-actions right now."))
-        #expect(markdown.contains("## Improvement Candidates"))
-        #expect(markdown.contains("[[Knowledge/_drafts/_index|workflow center]]"))
-        #expect(markdown.contains("Standard review items: 1"))
-        #expect(markdown.contains("Low-signal review items: 0"))
+        #expect(markdown.contains("- Сейчас нет auto-action с высоким уровнем уверенности."))
+        #expect(markdown.contains("## Кандидаты на улучшение"))
+        #expect(markdown.contains("[[Knowledge/_drafts/_index|центр управления]]"))
+        #expect(markdown.contains("Обычных элементов ревью: 1"))
+        #expect(markdown.contains("Низкосигнальных элементов ревью: 0"))
         #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]]"))
-        #expect(markdown.contains("## Recently Applied"))
+        #expect(markdown.contains("## Недавно применено"))
         #expect(markdown.contains("Codex Workflow for AI Founders"))
         #expect(markdown.contains("TurboQuant Algorithm"))
         #expect(!markdown.contains("consider moving to Lessons"))
         #expect(!markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]]"))
-        #expect(markdown.contains("## Next Actions"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Review/_index|review board]]"))
-        #expect(markdown.contains("[[Knowledge/_drafts/Review/stale-old-utility|review]]"))
+        #expect(markdown.contains("## Следующие действия"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Review/_index|доска ревью]]"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Review/stale-old-utility|ревью]]"))
         #expect(artifacts.draftArtifacts.count == 3)
         #expect(artifacts.draftArtifacts.contains { $0.relativePath == "_index.md" && $0.kind == .workflowIndex })
     }
@@ -824,12 +824,13 @@ struct KnowledgePipelineTests {
         )
         let markdown = artifacts.markdown
 
-        #expect(markdown.contains("## Recently Reviewed"))
-        #expect(markdown.contains("dismissed [[Knowledge/_drafts/Review/stale-old-utility|Review Packet — Stale Note Old Utility]]"))
-        #expect(markdown.contains("dismissed [[Knowledge/_drafts/Review/consolidate-turboquant-algorithm-into-turboquant|Review Packet — Consolidate TurboQuant Algorithm]]"))
-        #expect(!markdown.contains("### Stale Review Candidates"))
-        #expect(!markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]] — stale"))
-        #expect(!markdown.contains("### Consolidation Candidates"))
+        #expect(markdown.contains("## Недавно отревьюено"))
+        #expect(markdown.contains("отклонено"))
+        #expect(markdown.contains("stale-old-utility"))
+        #expect(markdown.contains("consolidate-turboquant-algorithm-into-turboquant"))
+        #expect(!markdown.contains("### Кандидаты на ревью устаревания"))
+        #expect(!markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]] — не обновлялась"))
+        #expect(!markdown.contains("### Кандидаты на консолидацию"))
         #expect(!markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]]"))
         #expect(!artifacts.draftArtifacts.contains { $0.relativePath.contains("stale-old-utility") })
         #expect(!artifacts.draftArtifacts.contains { $0.relativePath.contains("consolidate-turboquant-algorithm-into-turboquant") })
@@ -886,15 +887,15 @@ struct KnowledgePipelineTests {
         let note = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-03")
 
         #expect(note != nil)
-        #expect(note?.bodyMarkdown.contains("## Overview") == true)
-        #expect(note?.bodyMarkdown.contains("Recent activity places this tool across 1 recent work window and 1 project.") == true)
-        #expect(note?.bodyMarkdown.contains("## Aliases") == true)
+        #expect(note?.bodyMarkdown.contains("## Обзор") == true)
+        #expect(note?.bodyMarkdown.contains("Недавняя активность помещает этот инструмент") == true)
+        #expect(note?.bodyMarkdown.contains("## Алиасы") == true)
         #expect(note?.bodyMarkdown.contains("Claude.app") == true)
-        #expect(note?.bodyMarkdown.contains("## Key Signals") == true)
-        #expect(note?.bodyMarkdown.contains("Seen in 1 captured work window;") == true)
-        #expect(note?.bodyMarkdown.contains("## Recent Windows") == true)
-        #expect(note?.bodyMarkdown.contains("Active during 2026-04-03 10:00-11:00.") == true)
-        #expect(note?.bodyMarkdown.contains("### Projects") == true)
+        #expect(note?.bodyMarkdown.contains("## Ключевые сигналы") == true)
+        #expect(note?.bodyMarkdown.contains("Зафиксирован:") == true)
+        #expect(note?.bodyMarkdown.contains("## Недавние окна") == true)
+        #expect(note?.bodyMarkdown.contains("Активно в 2026-04-03 10:00-11:00.") == true)
+        #expect(note?.bodyMarkdown.contains("### Проекты") == true)
         #expect(note?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]]") == true)
     }
 
@@ -1045,12 +1046,12 @@ struct KnowledgePipelineTests {
         let note = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
         let windowMarkerCount = note?.bodyMarkdown.components(separatedBy: "[2026-04-03 20:02]").count ?? 0
 
-        #expect(note?.bodyMarkdown.contains("Active during 2026-04-03 20:02-21:02") == true)
-        #expect(note?.bodyMarkdown.contains("advanced in the summary") == true)
-        #expect(note?.bodyMarkdown.contains("with ChatGPT") == true)
-        #expect(note?.bodyMarkdown.contains("with Codex") == true)
-        #expect(note?.bodyMarkdown.contains("focused on System Audio Capture") == true)
-        #expect(note?.bodyMarkdown.contains("with Telegram") == false)
+        #expect(note?.bodyMarkdown.contains("Активно в 2026-04-03 20:02-21:02") == true)
+        #expect(note?.bodyMarkdown.contains("развивалось в сводке") == true)
+        #expect(note?.bodyMarkdown.contains("с ChatGPT") == true)
+        #expect(note?.bodyMarkdown.contains("с Codex") == true)
+        #expect(note?.bodyMarkdown.contains("сфокусировано на System Audio Capture") == true)
+        #expect(note?.bodyMarkdown.contains("с Telegram") == false)
         #expect(windowMarkerCount == 2)
     }
 
@@ -1144,7 +1145,7 @@ struct KnowledgePipelineTests {
         if let richWindowRange, let sparseWindowRange {
             #expect(richWindowRange.lowerBound < sparseWindowRange.lowerBound)
         }
-        #expect(body.contains("Context: Проверка hourly summary и экспорта в Obsidian.") == true)
+        #expect(body.contains("Контекст: Проверка hourly summary и экспорта в Obsidian.") == true)
     }
 
     @Test("Project recent windows include compact summary context when available")
@@ -1203,8 +1204,8 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
 
-        #expect(note?.bodyMarkdown.contains("Active during 2026-04-03 20:02-21:02") == true)
-        #expect(note?.bodyMarkdown.contains("Context: Stabilize the background runtime. Notifications through UserNotificationCenter indicated active capture work.") == true)
+        #expect(note?.bodyMarkdown.contains("Активно в 2026-04-03 20:02-21:02") == true)
+        #expect(note?.bodyMarkdown.contains("Контекст: Stabilize the background runtime. Notifications through UserNotificationCenter indicated active capture work.") == true)
     }
 
     @Test("Topic recent windows include compact summary context when available")
@@ -1250,8 +1251,8 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "topic-1", sourceDate: "2026-04-03")
 
-        #expect(note?.bodyMarkdown.contains("In focus during the summary.") == true)
-        #expect(note?.bodyMarkdown.contains("Context: Work on Memograph included planning System Audio Capture through ScreenCaptureKit to reduce background blinking.") == true)
+        #expect(note?.bodyMarkdown.contains("В фокусе этой сводки.") == true || note?.bodyMarkdown.contains("В фокусе сводки.") == true)
+        #expect(note?.bodyMarkdown.contains("Контекст: Work on Memograph included planning System Audio Capture through ScreenCaptureKit to reduce background blinking.") == true)
     }
 
     @Test("Tool notes prioritize project and topic evidence in signals and recent windows")
@@ -1330,11 +1331,11 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-04")
 
-        #expect(note?.bodyMarkdown.contains("Main projects: Memograph and geminicode;") == true)
+        #expect(note?.bodyMarkdown.contains("Главные проекты: Memograph и geminicode;") == true)
         #expect(note?.bodyMarkdown.contains("and 1 more") == false)
-        #expect(note?.bodyMarkdown.contains("Commonly used for: OCR;") == true)
-        #expect(note?.bodyMarkdown.contains("used while working on Memograph") == true)
-        #expect(note?.bodyMarkdown.contains("exploring OCR") == true)
+        #expect(note?.bodyMarkdown.contains("Чаще всего использовался для: OCR;") == true)
+        #expect(note?.bodyMarkdown.contains("использовался при работе над Memograph") == true)
+        #expect(note?.bodyMarkdown.contains("исследуя OCR") == true)
     }
 
     @Test("Lesson recent windows include proposed note context when available")
@@ -1383,8 +1384,8 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
 
-        #expect(note?.bodyMarkdown.contains("Captured as a durable note candidate.") == true)
-        #expect(note?.bodyMarkdown.contains("Context: how to use ScreenCaptureKit without noisy false-positive probes.") == true)
+        #expect(note?.bodyMarkdown.contains("Зафиксировано как кандидат в устойчивые заметки.") == true)
+        #expect(note?.bodyMarkdown.contains("Контекст: how to use ScreenCaptureKit without noisy false-positive probes.") == true)
     }
 
     @Test("Knowledge edge weights stay stable when the same window is reprocessed")
@@ -1999,13 +2000,13 @@ struct KnowledgePipelineTests {
         let projectNote = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
         let toolNote = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-03")
 
-        #expect(projectNote?.bodyMarkdown.contains("With Codex") == true)
-        #expect(projectNote?.bodyMarkdown.contains("focused on System Audio Capture") == true)
-        #expect(projectNote?.bodyMarkdown.contains("## Overview") == true)
-        #expect(projectNote?.bodyMarkdown.contains("Recent work around this project connects it to 1 tool and 1 focus topic.") == true)
-        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — used while working on this project") == true)
-        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — topic that became central in this project") == true)
-        #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — project where this tool showed up") == true)
+        #expect(projectNote?.bodyMarkdown.contains("С Codex") == true)
+        #expect(projectNote?.bodyMarkdown.contains("сфокусировано на System Audio Capture") == true)
+        #expect(projectNote?.bodyMarkdown.contains("## Обзор") == true)
+        #expect(projectNote?.bodyMarkdown.contains("Недавняя работа вокруг этого проекта связала его с 1 инструментом и 1 ключевой темой.") == true)
+        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — использовался при работе над этим проектом") == true)
+        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — тема, ставшая центральной в этом проекте") == true)
+        #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — проект, где этот инструмент использовался") == true)
     }
 
     @Test("Topic and lesson notes render cluster-aware semantic summaries")
@@ -2105,18 +2106,18 @@ struct KnowledgePipelineTests {
         let topicNote = try compiler.compileNote(for: "topic-1", sourceDate: "2026-04-03")
         let lessonNote = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
 
-        #expect(topicNote?.bodyMarkdown.contains("This topic stays active across 2 projects, especially around Memograph and geminicode.") == true)
-        #expect(topicNote?.bodyMarkdown.contains("Its closest cluster includes Screen Recording and Accessibility Permissions.") == true)
-        #expect(topicNote?.bodyMarkdown.contains("Main projects: Memograph and geminicode;") == true)
-        #expect(topicNote?.bodyMarkdown.contains("Closest cluster: Screen Recording and Accessibility Permissions;") == true)
-        #expect(topicNote?.bodyMarkdown.contains("[[Knowledge/Lessons/macos-system-audio-capture-guide|macOS System Audio Capture Guide]] — lesson that captures this topic") == true)
+        #expect(topicNote?.bodyMarkdown.contains("Эта тема остается активной в 2 проектах, особенно вокруг Memograph и geminicode.") == true)
+        #expect(topicNote?.bodyMarkdown.contains("Ближайший кластер темы включает Screen Recording и Accessibility Permissions.") == true)
+        #expect(topicNote?.bodyMarkdown.contains("Главные проекты: Memograph и geminicode;") == true)
+        #expect(topicNote?.bodyMarkdown.contains("Ближайший кластер: Screen Recording и Accessibility Permissions;") == true)
+        #expect(topicNote?.bodyMarkdown.contains("[[Knowledge/Lessons/macos-system-audio-capture-guide|macOS System Audio Capture Guide]] — вывод, который фиксирует эту тему") == true)
 
-        #expect(lessonNote?.bodyMarkdown.contains("This lesson crystallizes work from Memograph into guidance on System Audio Capture.") == true)
-        #expect(lessonNote?.bodyMarkdown.contains("Source projects: Memograph;") == true)
-        #expect(lessonNote?.bodyMarkdown.contains("Core topic: System Audio Capture;") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("Этот вывод кристаллизует работу из Memograph в практическое знание о System Audio Capture.") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("Исходные проекты: Memograph;") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("Ключевая тема: System Audio Capture;") == true)
         #expect(lessonNote?.bodyMarkdown.contains("Captured as a durable note candidate") == false)
-        #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — source project behind this lesson") == true)
-        #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — topic this lesson helps explain") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — исходный проект за этим выводом") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — тема, которую помогает объяснить этот вывод") == true)
     }
 
     @Test("Compiler preserves applied merge overlays on the target note")
@@ -2157,10 +2158,10 @@ struct KnowledgePipelineTests {
                 sourceEntityId: "topic-ocr-accuracy",
                 sourceTitle: "OCR Accuracy in Memograph",
                 sourceAliases: ["OCR Accuracy in Memograph"],
-                sourceOverview: "This narrow note captured OCR tuning work inside Memograph.",
+                sourceOverview: "Эта узкая заметка зафиксировала работу по настройке OCR внутри Memograph.",
                 preservedSignals: [
-                    "Focused in 1 summary window; last seen 2026-04-04 09:00.",
-                    "Main projects: Memograph; last seen 2026-04-04 09:00."
+                    "В фокусе в 1 окне сводки; последний раз 2026-04-04 09:00.",
+                    "Главные проекты: Memograph; последний раз 2026-04-04 09:00."
                 ],
                 targetEntityId: "topic-ocr",
                 targetTitle: "OCR",
@@ -2171,11 +2172,11 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc, settings: settings)
         let note = try compiler.compileNote(for: "topic-ocr", sourceDate: "2026-04-04")
 
-        #expect(note?.bodyMarkdown.contains("## Merged Context") == true)
-        #expect(note?.bodyMarkdown.contains("Merged from OCR Accuracy in Memograph") == true)
-        #expect(note?.bodyMarkdown.contains("This narrow note captured OCR tuning work inside Memograph.") == true)
-        #expect(note?.bodyMarkdown.contains("Preserved signals: Focused in 1 summary window; last seen 2026-04-04 09:00.") == true)
-        #expect(note?.bodyMarkdown.contains("## Aliases") == true)
+        #expect(note?.bodyMarkdown.contains("## Объединенный контекст") == true)
+        #expect(note?.bodyMarkdown.contains("Объединено из OCR Accuracy in Memograph") == true)
+        #expect(note?.bodyMarkdown.contains("Эта узкая заметка зафиксировала работу по настройке OCR внутри Memograph.") == true)
+        #expect(note?.bodyMarkdown.contains("Сохраненные сигналы: В фокусе в 1 окне сводки; последний раз 2026-04-04 09:00.") == true)
+        #expect(note?.bodyMarkdown.contains("## Алиасы") == true)
         #expect(note?.bodyMarkdown.contains("- OCR Accuracy in Memograph") == true)
     }
 
@@ -2256,9 +2257,9 @@ struct KnowledgePipelineTests {
         let note = try compiler.compileNote(for: "tool-main", sourceDate: "2026-04-04")
         let body = note?.bodyMarkdown ?? ""
 
-        let projectsRange = body.range(of: "### Projects")
-        let topicsRange = body.range(of: "### Topics")
-        let toolsRange = body.range(of: "### Tools")
+        let projectsRange = body.range(of: "### Проекты")
+        let topicsRange = body.range(of: "### Темы")
+        let toolsRange = body.range(of: "### Инструменты")
         #expect(projectsRange != nil)
         #expect(topicsRange != nil)
         #expect(toolsRange != nil)
@@ -2267,8 +2268,8 @@ struct KnowledgePipelineTests {
             #expect(topicsRange.lowerBound < toolsRange.lowerBound)
         }
 
-        #expect(body.contains("[[Knowledge/Projects/memograph|Memograph]] — project where this tool showed up"))
-        #expect(body.contains("[[Knowledge/Topics/ocr|OCR]] — topic this tool was used to explore"))
+        #expect(body.contains("[[Knowledge/Projects/memograph|Memograph]] — проект, где этот инструмент использовался"))
+        #expect(body.contains("[[Knowledge/Topics/ocr|OCR]] — тема, для исследования которой использовался этот инструмент"))
         #expect(body.contains("Neighbor Tool 1"))
         #expect(body.contains("Neighbor Tool 5"))
         #expect(body.contains("Neighbor Tool 6") == false)
@@ -2335,11 +2336,11 @@ struct KnowledgePipelineTests {
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
 
-        #expect(note?.bodyMarkdown.contains("## Overview") == true)
-        #expect(note?.bodyMarkdown.contains("This lesson crystallizes work from Memograph into guidance on System Audio Capture.") == true)
-        #expect(note?.bodyMarkdown.contains("### Projects") == true)
-        #expect(note?.bodyMarkdown.contains("### Topics") == true)
-        #expect(note?.bodyMarkdown.contains("### Lessons") == false)
+        #expect(note?.bodyMarkdown.contains("## Обзор") == true)
+        #expect(note?.bodyMarkdown.contains("Этот вывод кристаллизует работу из Memograph в практическое знание о System Audio Capture.") == true)
+        #expect(note?.bodyMarkdown.contains("### Проекты") == true)
+        #expect(note?.bodyMarkdown.contains("### Темы") == true)
+        #expect(note?.bodyMarkdown.contains("### Выводы") == false)
         #expect(note?.bodyMarkdown.contains("Local-first AI Privacy Strategy") == false)
     }
 

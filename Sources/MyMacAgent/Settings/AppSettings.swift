@@ -64,6 +64,20 @@ enum OCRProviderKind: String, CaseIterable, Identifiable {
     }
 }
 
+enum AudioTranscriptionProvider: String, CaseIterable, Identifiable {
+    case openAI = "openai"
+    case localWhisper = "local_whisper"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .openAI: return "Cloud (OpenAI)"
+        case .localWhisper: return "Local (Whisper)"
+        }
+    }
+}
+
 enum StorageProfile: String, CaseIterable, Identifiable {
     case raw
     case balanced
@@ -93,6 +107,7 @@ struct AppSettings {
     private let credentialsStore: any CredentialsStore
     private let legacyCredentialsStore: any CredentialsStore
     private static let hasExternalAPIKeyKey = "hasExternalAPIKey"
+    private static let hasAudioTranscriptionAPIKeyKey = "hasAudioTranscriptionAPIKey"
     private static let experimentalAudioOptInConfirmedKey = "experimentalAudioOptInConfirmed"
     private static let migratedOffKeychainKey = "migratedOffKeychain"
 
@@ -414,6 +429,74 @@ struct AppSettings {
 
     var resolvedSystemAudioCaptureEnabled: Bool {
         Self.persistentSystemAudioCaptureAvailable && systemAudioCaptureEnabled
+    }
+
+    var audioTranscriptionProvider: AudioTranscriptionProvider {
+        get {
+            AudioTranscriptionProvider(
+                rawValue: defaults.string(forKey: "audioTranscriptionProvider") ?? ""
+            ) ?? .localWhisper
+        }
+        set { defaults.set(newValue.rawValue, forKey: "audioTranscriptionProvider") }
+    }
+
+    var audioTranscriptionBaseURL: String {
+        get { defaults.string(forKey: "audioTranscriptionBaseURL") ?? "https://api.openai.com/v1" }
+        set { defaults.set(newValue, forKey: "audioTranscriptionBaseURL") }
+    }
+
+    var audioTranscriptionAPIKey: String {
+        get {
+            (credentialsStore.string(for: "audioTranscriptionAPIKey") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                credentialsStore.removeValue(for: "audioTranscriptionAPIKey")
+                defaults.set(false, forKey: Self.hasAudioTranscriptionAPIKeyKey)
+            } else {
+                credentialsStore.set(trimmed, for: "audioTranscriptionAPIKey")
+                defaults.set(true, forKey: Self.hasAudioTranscriptionAPIKeyKey)
+            }
+        }
+    }
+
+    var resolvedAudioTranscriptionAPIKey: String {
+        let directKey = audioTranscriptionAPIKey
+        if !directKey.isEmpty {
+            return directKey
+        }
+
+        let trimmedExternalKey = externalAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAudioBase = audioTranscriptionBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedExternalBase = externalBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !trimmedExternalKey.isEmpty, normalizedAudioBase == normalizedExternalBase {
+            return trimmedExternalKey
+        }
+
+        return ""
+    }
+
+    var hasAudioTranscriptionApiKey: Bool {
+        if defaults.object(forKey: Self.hasAudioTranscriptionAPIKeyKey) != nil {
+            return defaults.bool(forKey: Self.hasAudioTranscriptionAPIKeyKey)
+                || (!resolvedAudioTranscriptionAPIKey.isEmpty && !audioTranscriptionAPIKey.isEmpty)
+        }
+
+        let exists = credentialsStore.hasValue(for: "audioTranscriptionAPIKey")
+        defaults.set(exists, forKey: Self.hasAudioTranscriptionAPIKeyKey)
+        return exists
+    }
+
+    var audioMicrophoneModel: String {
+        get { defaults.string(forKey: "audioMicrophoneModel") ?? "gpt-4o-transcribe" }
+        set { defaults.set(newValue, forKey: "audioMicrophoneModel") }
+    }
+
+    var audioSystemModel: String {
+        get { defaults.string(forKey: "audioSystemModel") ?? "gpt-4o-mini-transcribe" }
+        set { defaults.set(newValue, forKey: "audioSystemModel") }
     }
 
     var audioPythonCommand: String {

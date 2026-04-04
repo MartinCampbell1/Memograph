@@ -57,17 +57,17 @@ private struct KnowledgeManualReviewItem {
 
         var badge: String {
             switch self {
-            case .high: return "High"
-            case .medium: return "Medium"
-            case .low: return "Low"
+            case .high: return "Высокий"
+            case .medium: return "Средний"
+            case .low: return "Низкий"
             }
         }
 
         var sectionTitle: String {
             switch self {
-            case .high: return "High Priority"
-            case .medium: return "Standard Review"
-            case .low: return "Low-Signal Review"
+            case .high: return "Высокий приоритет"
+            case .medium: return "Обычное ревью"
+            case .low: return "Низкосигнальное ревью"
             }
         }
     }
@@ -121,38 +121,38 @@ enum KnowledgeDraftArtifactKind {
     var lineLabel: String {
         switch self {
         case .workflowIndex:
-            return "Board"
+            return "Доска"
         case .reviewDraft:
-            return "Review"
+            return "Ревью"
         case .reviewIndex:
-            return "Board"
+            return "Доска"
         case .applyReadyLesson:
-            return "Apply"
+            return "Применить"
         case .applyReadyLessonRedirect, .applyReadyRedirect:
-            return "Redirect"
+            return "Редирект"
         case .applyReadyMergePatch:
-            return "Merge"
+            return "Слияние"
         case .applyIndex:
-            return "Board"
+            return "Доска"
         }
     }
 
     var linkLabel: String {
         switch self {
         case .workflowIndex:
-            return "workflow center"
+            return "центр управления"
         case .reviewDraft:
-            return "review draft"
+            return "черновик ревью"
         case .reviewIndex:
-            return "review board"
+            return "доска ревью"
         case .applyReadyLesson:
-            return "apply-ready lesson"
+            return "готовый черновик вывода"
         case .applyReadyLessonRedirect, .applyReadyRedirect:
-            return "redirect stub"
+            return "редирект"
         case .applyReadyMergePatch:
-            return "merge patch"
+            return "патч слияния"
         case .applyIndex:
-            return "apply board"
+            return "доска применения"
         }
     }
 }
@@ -315,17 +315,17 @@ final class KnowledgeMaintenance {
             graphShaper: graphShaper
         )
 
-        var markdown = "# Memograph Knowledge Maintenance\n\n"
-        markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
+        var markdown = "# Memograph Обслуживание слоя знаний\n\n"
+        markdown += "_Обновлено: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
 
-        markdown += "## Snapshot\n"
-        markdown += "- Materialized entities: \(entities.count)\n"
-        markdown += "- Materialized notes: \(entities.count)\n"
-        markdown += "- Relationship edges scanned: \(edgeRows.count)\n"
-        markdown += "- Time zone: \(dateSupport.timeZone.identifier)\n\n"
+        markdown += "## Снимок\n"
+        markdown += "- Материализованных сущностей: \(entities.count)\n"
+        markdown += "- Материализованных заметок: \(entities.count)\n"
+        markdown += "- Просканировано ребер связей: \(edgeRows.count)\n"
+        markdown += "- Часовой пояс: \(dateSupport.timeZone.identifier)\n\n"
 
         let typeCounts = Dictionary(grouping: entities, by: \.entityType)
-        markdown += "## Type Counts\n"
+        markdown += "## Распределение по типам\n"
         for type in KnowledgeEntityType.allCases {
             let count = typeCounts[type, default: []].count
             guard count > 0 else { continue }
@@ -464,38 +464,38 @@ final class KnowledgeMaintenance {
             draftArtifacts.append(reviewIndexArtifact)
         }
 
-        markdown += "## Dashboard\n"
+        markdown += "## Дашборд\n"
         if !topHotspotNames.isEmpty {
-            markdown += "- Strongest clusters right now: \(joinNaturalLanguage(topHotspotNames))\n"
+            markdown += "- Самые сильные кластеры сейчас: \(joinNaturalLanguage(topHotspotNames))\n"
         }
-        markdown += "- [[\(workflowIndexArtifact.linkTarget)|workflow center]]\n"
-        markdown += "- Safe actions ready: \(safeActions.count)\n"
-        markdown += "- Manual review candidates: \(manualReviewItems.count)\n"
-        markdown += "- Review items waiting: \(reviewItemCount)\n"
-        markdown += "- High-priority review items: \(highPriorityReviewCount)\n"
-        markdown += "- Standard review items: \(standardPriorityReviewCount)\n"
-        markdown += "- Low-signal review items: \(lowSignalReviewCount)\n"
-        markdown += "- Commodity weak topics already suppressed: \(commodityWeakTopics.count)\n\n"
+        markdown += "- [[\(workflowIndexArtifact.linkTarget)|центр управления]]\n"
+        markdown += "- Готовых безопасных действий: \(safeActions.count)\n"
+        markdown += "- Кандидатов на ручное ревью: \(manualReviewItems.count)\n"
+        markdown += "- Элементов в очереди ревью: \(reviewItemCount)\n"
+        markdown += "- Высокоприоритетных элементов ревью: \(highPriorityReviewCount)\n"
+        markdown += "- Обычных элементов ревью: \(standardPriorityReviewCount)\n"
+        markdown += "- Низкосигнальных элементов ревью: \(lowSignalReviewCount)\n"
+        markdown += "- Подавлено слабых товарных тем: \(commodityWeakTopics.count)\n\n"
         if !appliedActions.isEmpty {
-            markdown += "- Recently applied actions tracked: \(appliedActions.count)\n\n"
+            markdown += "- Отслеживаемых примененных действий: \(appliedActions.count)\n\n"
         }
         if !reviewDecisions.isEmpty {
-            markdown += "- Review decisions tracked: \(reviewDecisions.count)\n\n"
+            markdown += "- Отслеживаемых решений ревью: \(reviewDecisions.count)\n\n"
         }
 
-        markdown += "## Next Actions\n"
+        markdown += "## Следующие действия\n"
         if safeActions.isEmpty && manualReviewItems.isEmpty {
-            markdown += "- No immediate action queue right now.\n\n"
+            markdown += "- Сейчас нет немедленной очереди действий.\n\n"
         } else {
             if !safeActions.isEmpty {
-                markdown += "### Safe to Apply\n"
+                markdown += "### Безопасно применить\n"
                 for action in safeActions.prefix(3) {
                     switch action.kind {
                     case .promoteToLessonDraft:
-                        markdown += "- Promote [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into `Lessons`.\n"
+                        markdown += "- Перенести [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] в `Lessons`.\n"
                     case .consolidateIntoRoot:
                         guard let target = action.target else { continue }
-                        markdown += "- Consolidate [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into [[\(linkTarget(for: target))|\(target.canonicalName)]].\n"
+                        markdown += "- Сконсолидировать [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] в [[\(linkTarget(for: target))|\(target.canonicalName)]].\n"
                     }
                 }
                 markdown += "\n"
@@ -503,50 +503,45 @@ final class KnowledgeMaintenance {
 
             if !manualReviewItems.isEmpty {
                 let actionableReviewItems = manualReviewItems.filter { $0.priority != .low }
-                markdown += "### Needs Review\n"
+                markdown += "### Требует ревью\n"
                 if let reviewIndexArtifact {
-                    markdown += "- [[\(reviewIndexArtifact.linkTarget)|\(reviewIndexArtifact.kind.linkLabel)]]\n"
+                    markdown += "- [[\(reviewIndexArtifact.linkTarget)|доска ревью]]\n"
                 }
                 for item in actionableReviewItems.prefix(5) {
                     let reviewLink = manualReviewArtifactsByKey[item.artifactKey]?
                         .first(where: { $0.kind == .reviewDraft })
-                        .map { " • [[\($0.linkTarget)|review]]" }
+                        .map { " • [[\($0.linkTarget)|ревью]]" }
                         ?? ""
                     markdown += "- [\(item.priority.badge)] \(item.markdownLine)\(reviewLink)\n"
                 }
                 if lowSignalReviewCount > 0 {
-                    markdown += "- Deferred low-signal review: \(lowSignalReviewCount) item"
-                    if lowSignalReviewCount == 1 { markdown += "" } else { markdown += "s" }
-                    markdown += " remain in the review board.\n"
+                    markdown += "- В низкосигнальное ревью отложено \(counted(lowSignalReviewCount, one: "пакет", few: "пакета", many: "пакетов")). Они остаются на доске ревью.\n"
                 }
                 markdown += "\n"
             }
         }
 
-        markdown += "## Review Queue\n"
+        markdown += "## Очередь ревью\n"
         if autoDemotedLessons.isEmpty && filteredWeakTopics.isEmpty && filteredActionableAutoDemotedTopics.isEmpty && commodityWeakTopics.isEmpty {
-            markdown += "- No immediate KB maintenance flags.\n\n"
+            markdown += "- Сейчас нет срочных флагов обслуживания слоя знаний.\n\n"
         } else {
             if !autoDemotedLessons.isEmpty {
-                markdown += "### Auto-demoted Broad Lessons\n"
+                markdown += "### Автоматически пониженные широкие выводы\n"
                 for metric in autoDemotedLessons.prefix(8) {
                     markdown += "- `\(metric.entity.canonicalName)`"
-                    markdown += " — broad lesson: linked to \(metric.projectRelationCount) project"
-                    if metric.projectRelationCount == 1 { markdown += "" } else { markdown += "s" }
-                    markdown += " across \(metric.claimCount) claim"
-                    if metric.claimCount == 1 { markdown += "" } else { markdown += "s" }
+                    markdown += " — слишком широкий вывод: связан с \(counted(metric.projectRelationCount, one: "проектом", few: "проектами", many: "проектами"))"
+                    markdown += " через \(counted(metric.claimCount, one: "утверждение", few: "утверждения", many: "утверждений"))"
                     markdown += "\n"
                 }
                 markdown += "\n"
             }
 
             if !filteredActionableAutoDemotedTopics.isEmpty {
-                markdown += "### Auto-demoted Weak Topics\n"
+                markdown += "### Автоматически пониженные слабые темы\n"
                 for metric in filteredActionableAutoDemotedTopics.prefix(8) {
                     markdown += "- `\(metric.entity.canonicalName)`"
-                    markdown += " — weak topic: \(metric.coOccurrenceEdgeCount) loose links"
-                    markdown += ", only \(metric.typedEdgeCount) strong relation"
-                    if metric.typedEdgeCount == 1 { markdown += "" } else { markdown += "s" }
+                    markdown += " — слабая тема: \(counted(metric.coOccurrenceEdgeCount, one: "слабой связью", few: "слабыми связями", many: "слабыми связями"))"
+                    markdown += ", только \(counted(metric.typedEdgeCount, one: "сильная связь", few: "сильные связи", many: "сильных связей"))"
                     markdown += "\n"
                 }
                 markdown += "\n"
@@ -554,7 +549,7 @@ final class KnowledgeMaintenance {
 
             if !commodityWeakTopics.isEmpty {
                 let examples = commodityWeakTopics.prefix(4).map(\.entity.canonicalName).joined(separator: ", ")
-                markdown += "- Suppressed commodity weak topics: \(commodityWeakTopics.count)"
+                markdown += "- Подавленные слабые товарные темы: \(commodityWeakTopics.count)"
                 if !examples.isEmpty {
                     markdown += " (\(examples))"
                 }
@@ -562,12 +557,11 @@ final class KnowledgeMaintenance {
             }
 
             if !filteredWeakTopics.isEmpty {
-                markdown += "### Weak Durable Topics\n"
+                markdown += "### Слабые, но устойчивые темы\n"
                 for hotspot in filteredWeakTopics.prefix(8) {
                     markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
-                    markdown += " — durable but thinly supported: \(hotspot.relationStats.coOccurrenceEdges) loose links"
-                    markdown += ", only \(hotspot.relationStats.typedEdges) strong relation"
-                    if hotspot.relationStats.typedEdges == 1 { markdown += "" } else { markdown += "s" }
+                    markdown += " — устойчивая, но пока с тонкой поддержкой: \(counted(hotspot.relationStats.coOccurrenceEdges, one: "слабая связь", few: "слабые связи", many: "слабых связей"))"
+                    markdown += ", только \(counted(hotspot.relationStats.typedEdges, one: "сильная связь", few: "сильные связи", many: "сильных связей"))"
                     markdown += "\n"
                 }
                 markdown += "\n"
@@ -576,7 +570,7 @@ final class KnowledgeMaintenance {
 
         markdown += "## Safe Auto-Actions\n"
         if safeActions.isEmpty {
-            markdown += "- No high-confidence auto-actions right now.\n\n"
+            markdown += "- Сейчас нет auto-action с высоким уровнем уверенности.\n\n"
         } else {
             let lessonPromotions = safeActions.filter { $0.kind == .promoteToLessonDraft }
             let consolidations = safeActions.filter { $0.kind == .consolidateIntoRoot }
@@ -585,10 +579,10 @@ final class KnowledgeMaintenance {
             }
 
             if !lessonPromotions.isEmpty {
-                markdown += "### Draft Lesson Promotions\n"
+                markdown += "### Черновики повышения в Lessons\n"
                 for action in lessonPromotions.prefix(6) {
                     markdown += "- [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
-                    markdown += " — promote into \(KnowledgeEntityType.lesson.folderName): \(action.reason)\n"
+                    markdown += " — повысить в раздел `\(KnowledgeEntityType.lesson.folderName)`: \(action.reason)\n"
                     for artifact in draftArtifactsByKey[safeActionKey(action)] ?? [] {
                         markdown += "  \(artifact.kind.lineLabel): [[\(artifact.linkTarget)|\(artifact.kind.linkLabel)]]\n"
                     }
@@ -597,7 +591,7 @@ final class KnowledgeMaintenance {
             }
 
             if !consolidations.isEmpty {
-                markdown += "### Safe Consolidations\n"
+                markdown += "### Безопасные консолидации\n"
                 for action in consolidations.prefix(6) {
                     guard let target = action.target else { continue }
                     markdown += "- [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
@@ -611,93 +605,91 @@ final class KnowledgeMaintenance {
             }
         }
 
-        markdown += "## Improvement Candidates\n"
+        markdown += "## Кандидаты на улучшение\n"
         if filteredReclassifyCandidates.isEmpty && filteredConsolidationCandidates.isEmpty && filteredStaleCandidates.isEmpty {
-            markdown += "- No merge, reclassify, or stale review candidates right now.\n\n"
+            markdown += "- Сейчас нет кандидатов на слияние, переклассификацию или устаревание для ревью.\n\n"
         } else {
             if !filteredReclassifyCandidates.isEmpty {
-                markdown += "### Reclassify Candidates\n"
+                markdown += "### Кандидаты на переклассификацию\n"
                 for candidate in filteredReclassifyCandidates.prefix(6) {
                     markdown += "- [[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
-                    markdown += " — consider moving to \(candidate.targetType.folderName): \(candidate.reason)\n"
+                    markdown += " — стоит перенести в \(candidate.targetType.folderName): \(candidate.reason)\n"
                     if let reviewArtifact = manualReviewArtifactsByKey[manualReviewKey(for: candidate)]?
                         .first(where: { $0.kind == .reviewDraft }) {
-                        markdown += "  Review: [[\(reviewArtifact.linkTarget)|review draft]]\n"
+                        markdown += "  Ревью: [[\(reviewArtifact.linkTarget)|черновик ревью]]\n"
                     }
                 }
                 markdown += "\n"
             }
 
             if !filteredConsolidationCandidates.isEmpty {
-                markdown += "### Consolidation Candidates\n"
+                markdown += "### Кандидаты на консолидацию\n"
                 for candidate in filteredConsolidationCandidates.prefix(6) {
                     markdown += "- [[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]]"
                     markdown += " → [[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]"
                     markdown += " — \(candidate.reason)\n"
                     if let reviewArtifact = manualReviewArtifactsByKey[manualReviewKey(for: candidate)]?
                         .first(where: { $0.kind == .reviewDraft }) {
-                        markdown += "  Review: [[\(reviewArtifact.linkTarget)|review draft]]\n"
+                        markdown += "  Ревью: [[\(reviewArtifact.linkTarget)|черновик ревью]]\n"
                     }
                 }
                 markdown += "\n"
             }
 
             if !filteredStaleCandidates.isEmpty {
-                markdown += "### Stale Review Candidates\n"
+                markdown += "### Кандидаты на ревью устаревания\n"
                 for candidate in filteredStaleCandidates.prefix(6) {
                     markdown += "- [[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
-                    markdown += " — last seen \(candidate.daysSinceSeen) day"
-                    if candidate.daysSinceSeen == 1 { markdown += "" } else { markdown += "s" }
-                    markdown += " ago; \(candidate.reason)\n"
+                    markdown += " — последний раз замечено \(counted(candidate.daysSinceSeen, one: "день", few: "дня", many: "дней")) назад; \(candidate.reason)\n"
                     if let reviewArtifact = manualReviewArtifactsByKey[manualReviewKey(for: candidate)]?
                         .first(where: { $0.kind == .reviewDraft }) {
-                        markdown += "  Review: [[\(reviewArtifact.linkTarget)|review draft]]\n"
+                        markdown += "  Ревью: [[\(reviewArtifact.linkTarget)|черновик ревью]]\n"
                     }
                 }
                 markdown += "\n"
             }
         }
 
-        markdown += "## Recently Applied\n"
+        markdown += "## Недавно применено\n"
         if appliedActions.isEmpty {
-            markdown += "- No applied KB actions tracked yet.\n\n"
+            markdown += "- Пока нет примененных KB-action в истории.\n\n"
         } else {
             for action in appliedActions
                 .sorted(by: compareAppliedActions)
                 .prefix(8) {
                 markdown += "- \(formattedAppliedAction(action))\n"
                 if let backupPath = action.backupPath, !backupPath.isEmpty {
-                    markdown += "  Backup: `\(backupPath)`\n"
+                    markdown += "  Бэкап: `\(backupPath)`\n"
                 }
             }
             markdown += "\n"
         }
 
-        markdown += "## Recently Reviewed\n"
+        markdown += "## Недавно отревьюено\n"
         let sortedReviewDecisions = reviewDecisions.sorted(by: compareReviewDecisions)
         if sortedReviewDecisions.isEmpty {
-            markdown += "- No non-pending review decisions tracked yet.\n\n"
+            markdown += "- Пока нет решений ревью со статусом не-pending.\n\n"
         } else {
-            markdown += "- [[Knowledge/_reviewed|review history]]\n"
-            markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|resolved review board]]\n"
+            markdown += "- [[Knowledge/_reviewed|история ревью]]\n"
+            markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|доска завершенных ревью]]\n"
             for decision in sortedReviewDecisions.prefix(8) {
                 markdown += "- \(formattedReviewDecision(decision))\n"
             }
             markdown += "\n"
         }
 
-        markdown += "## Hotspots\n"
+        markdown += "## Горячие точки\n"
         for hotspot in sortedHotspots.prefix(10) {
             markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
-            markdown += " — strongest cluster right now: \(hotspot.claimCount) claims, \(hotspot.relationStats.typedEdges) strong links, \(hotspot.relationStats.coOccurrenceEdges) loose links\n"
+            markdown += " — сейчас это самый сильный кластер: \(counted(hotspot.claimCount, one: "утверждение", few: "утверждения", many: "утверждений")), \(counted(hotspot.relationStats.typedEdges, one: "сильная связь", few: "сильные связи", many: "сильных связей")), \(counted(hotspot.relationStats.coOccurrenceEdges, one: "слабая связь", few: "слабые связи", many: "слабых связей"))\n"
         }
         markdown += "\n"
 
-        markdown += "## Maintenance Rules\n"
-        markdown += "- Auto-demoted broad lessons: generic lessons linked to 3+ projects with weak direct evidence are removed from the materialized graph.\n"
-        markdown += "- Auto-demoted weak topics: non-durable topics with heavy co-occurrence and weak typed relations are removed from the materialized graph.\n"
-        markdown += "- Weak durable topics: durable topics stay visible, but low typed-relation coverage means relation extraction still needs improvement.\n"
-        markdown += "- Hotspots: entities with the highest combined claim and relation pressure.\n"
+        markdown += "## Правила обслуживания\n"
+        markdown += "- Автоматически пониженные широкие выводы: слишком общие выводы, связанные с 3+ проектами при слабом прямом подтверждении, убираются из материализованного графа.\n"
+        markdown += "- Автоматически пониженные слабые темы: неустойчивые темы с тяжелым шумом совместной встречаемости и слабыми типизированными связями убираются из материализованного графа.\n"
+        markdown += "- Слабые устойчивые темы: такие темы остаются видимыми, но низкое покрытие типизированных связей означает, что извлечение связей еще нужно улучшать.\n"
+        markdown += "- Горячие точки: сущности с самым высоким совокупным давлением утверждений и связей.\n"
 
         return KnowledgeMaintenanceArtifacts(
             markdown: markdown,
@@ -795,10 +787,30 @@ final class KnowledgeMaintenance {
         case 1:
             return parts[0]
         case 2:
-            return "\(parts[0]) and \(parts[1])"
+            return "\(parts[0]) и \(parts[1])"
         default:
             let head = parts.dropLast().joined(separator: ", ")
-            return "\(head), and \(parts.last!)"
+            return "\(head) и \(parts.last!)"
+        }
+    }
+
+    private func counted(_ count: Int, one: String, few: String, many: String) -> String {
+        "\(count) \(pluralized(count, one: one, few: few, many: many))"
+    }
+
+    private func pluralized(_ count: Int, one: String, few: String, many: String) -> String {
+        let remainder100 = count % 100
+        let remainder10 = count % 10
+        if remainder100 >= 11 && remainder100 <= 14 {
+            return many
+        }
+        switch remainder10 {
+        case 1:
+            return one
+        case 2...4:
+            return few
+        default:
+            return many
         }
     }
 
@@ -824,18 +836,18 @@ final class KnowledgeMaintenance {
         let linkTarget = "Knowledge/\(action.applyTargetRelativePath.replacingOccurrences(of: ".md", with: ""))"
         switch action.kind {
         case .lessonPromotion:
-            return "`\(timestamp)` — promoted [[\(linkTarget)|\(action.title)]] into the main knowledge tree"
+            return "`\(timestamp)` — [[\(linkTarget)|\(action.title)]] повышено в основное дерево знаний"
         case .lessonRedirect:
-            return "`\(timestamp)` — applied a lesson redirect at [[\(linkTarget)|\(action.title)]]"
+            return "`\(timestamp)` — применен редирект на вывод для [[\(linkTarget)|\(action.title)]]"
         case .redirect:
-            return "`\(timestamp)` — applied a consolidation redirect at [[\(linkTarget)|\(action.title)]]"
+            return "`\(timestamp)` — применен редирект консолидации для [[\(linkTarget)|\(action.title)]]"
         case .mergeOverlay:
             if let targetTitle = action.targetTitle {
-                return "`\(timestamp)` — merged context from `\(action.title)` into [[\(linkTarget)|\(targetTitle)]]"
+                return "`\(timestamp)` — объединен контекст из `\(action.title)` в [[\(linkTarget)|\(targetTitle)]]"
             }
-            return "`\(timestamp)` — merged context into [[\(linkTarget)|\(action.title)]]"
+            return "`\(timestamp)` — объединен контекст в [[\(linkTarget)|\(action.title)]]"
         case .suppression:
-            return "`\(timestamp)` — suppressed [[\(linkTarget)|\(action.title)]] from the active knowledge graph"
+            return "`\(timestamp)` — [[\(linkTarget)|\(action.title)]] подавлено в активном графе знаний"
         }
     }
 
@@ -843,15 +855,15 @@ final class KnowledgeMaintenance {
         let timestamp = decision.recordedAt.flatMap(dateSupport.parseDateTime)
             .map(dateSupport.localDateTimeString(from:))
             ?? decision.recordedAt
-            ?? "unknown time"
+            ?? "неизвестное время"
         let draftLink = reviewDecisionLinkTarget(for: decision)
         switch decision.status {
         case .apply:
-            return "`\(timestamp)` — approved [[\(draftLink)|\(decision.title)]]"
+            return "`\(timestamp)` — одобрено [[\(draftLink)|\(decision.title)]]"
         case .dismiss:
-            return "`\(timestamp)` — dismissed [[\(draftLink)|\(decision.title)]]"
+            return "`\(timestamp)` — отклонено [[\(draftLink)|\(decision.title)]]"
         case .pending:
-            return "`\(timestamp)` — pending [[\(draftLink)|\(decision.title)]]"
+            return "`\(timestamp)` — ожидает решения [[\(draftLink)|\(decision.title)]]"
         }
     }
 
@@ -960,7 +972,7 @@ final class KnowledgeMaintenance {
                 return KnowledgeStaleCandidate(
                     entity: metric.entity,
                     daysSinceSeen: days,
-                    reason: "low-touch note with no active project trail"
+                    reason: "заметка почти не поддерживается и уже не имеет активного следа по проектам"
                 )
             }
             .sorted { lhs, rhs in
@@ -1100,7 +1112,7 @@ final class KnowledgeMaintenance {
                 kind: .promoteToLessonDraft,
                 source: candidate.entity,
                 target: nil,
-                reason: "high-confidence lesson-like note with stable repeated evidence",
+                reason: "высокоуверенная заметка, которая уже ведет себя как устойчивый вывод",
                 score: candidate.score + metric.typedEdgeCount * 4
             )
         }
@@ -1118,7 +1130,7 @@ final class KnowledgeMaintenance {
                 kind: .consolidateIntoRoot,
                 source: candidate.source,
                 target: candidate.target,
-                reason: "strong root note already dominates this topic family",
+                reason: "сильная корневая заметка уже доминирует в этом семействе тем",
                 score: candidate.score + targetMetric.claimCount * 3 + targetMetric.typedEdgeCount * 2
             )
         }
@@ -1152,7 +1164,7 @@ final class KnowledgeMaintenance {
             KnowledgeManualReviewItem(
                 kind: .reclassify,
                 title: candidate.entity.canonicalName,
-                markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] → consider moving to \(candidate.targetType.folderName.lowercased())",
+                markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] → стоит перенести в \(candidate.targetType.folderName.lowercased())",
                 score: candidate.score + 40,
                 priority: reviewPriority(for: candidate),
                 artifactKey: manualReviewKey(for: candidate)
@@ -1174,7 +1186,7 @@ final class KnowledgeMaintenance {
             KnowledgeManualReviewItem(
                 kind: .weakTopic,
                 title: metric.entity.canonicalName,
-                markdownLine: "`\(metric.entity.canonicalName)` — weak topic with \(metric.coOccurrenceEdgeCount) loose links and only \(metric.typedEdgeCount) strong relation\(metric.typedEdgeCount == 1 ? "" : "s")",
+                markdownLine: "`\(metric.entity.canonicalName)` — слабая тема: \(metric.coOccurrenceEdgeCount) рыхлых связей и только \(metric.typedEdgeCount) сильн\(metric.typedEdgeCount == 1 ? "ая связь" : metric.typedEdgeCount < 5 ? "ые связи" : "ых связей")",
                 score: metric.coOccurrenceEdgeCount * 2 - metric.typedEdgeCount,
                 priority: .low,
                 artifactKey: manualReviewKey(forWeakTopic: metric.entity)
@@ -1185,7 +1197,7 @@ final class KnowledgeMaintenance {
             KnowledgeManualReviewItem(
                 kind: .weakTopic,
                 title: hotspot.entity.canonicalName,
-                markdownLine: "[[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]] — durable but thinly supported",
+                markdownLine: "[[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]] — устойчивая, но пока тонко поддержанная тема",
                 score: hotspot.relationStats.coOccurrenceEdges + hotspot.relationStats.projectRelations * 4,
                 priority: hotspot.relationStats.projectRelations > 0 ? .medium : .low,
                 artifactKey: manualReviewKey(forWeakTopic: hotspot.entity)
@@ -1196,7 +1208,7 @@ final class KnowledgeMaintenance {
             KnowledgeManualReviewItem(
                 kind: .stale,
                 title: candidate.entity.canonicalName,
-                markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] — stale for \(candidate.daysSinceSeen) day\(candidate.daysSinceSeen == 1 ? "" : "s")",
+                markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] — не обновлялась уже \(counted(candidate.daysSinceSeen, one: "день", few: "дня", many: "дней"))",
                 score: min(candidate.daysSinceSeen, 365) / 7,
                 priority: candidate.daysSinceSeen >= 120 ? .medium : .low,
                 artifactKey: manualReviewKey(for: candidate)
@@ -1411,35 +1423,35 @@ final class KnowledgeMaintenance {
         let relativePath = "Maintenance/lesson-promotion-\(destinationSlug).md"
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let draft = """
-        # Draft Lesson Promotion — \(action.source.canonicalName)
+        # Черновик повышения в Lesson — \(action.source.canonicalName)
 
-        ## Candidate
-        - Source note: \(sourceLink)
-        - Proposed destination: [[Knowledge/Lessons/\(destinationSlug)|\(action.source.canonicalName)]]
-        - Reason: \(action.reason)
+        ## Кандидат
+        - Исходная заметка: \(sourceLink)
+        - Предлагаемое место назначения: [[Knowledge/Lessons/\(destinationSlug)|\(action.source.canonicalName)]]
+        - Причина: \(action.reason)
 
-        ## Proposed Lesson Stub
+        ## Предлагаемый Lesson Stub
         ```md
         # \(action.source.canonicalName)
 
-        _Type: lesson_
+        _Тип: вывод_
 
-        ## Draft Summary
-        - Promoted from \(sourceLink) because this note behaves like durable guidance rather than a standalone topic.
+        ## Черновая сводка
+        - Повышено из \(sourceLink), потому что эта заметка ведет себя как устойчивое руководство, а не как отдельная узкая тема.
 
-        ## Source Material
+        ## Исходный материал
         - \(sourceLink)
         ```
 
-        ## Review Checklist
-        - Keep the original topic note as an alias or short redirect if existing links already point to it.
-        - Fold reusable guidance into the lesson note before deleting or downgrading the topic note.
+        ## Чеклист ревью
+        - Оставь исходную заметку темы как алиас или короткий редирект, если на нее уже смотрят существующие ссылки.
+        - Перенеси переиспользуемое знание в заметку вывода до удаления или понижения исходной заметки темы.
         """
 
         return KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: relativePath,
-            title: "Draft Lesson Promotion — \(action.source.canonicalName)",
+            title: "Черновик повышения в Lesson — \(action.source.canonicalName)",
             markdown: draft
         )
     }
@@ -1452,44 +1464,44 @@ final class KnowledgeMaintenance {
         let destinationLink = "[[Knowledge/Lessons/\(destinationSlug)|\(action.source.canonicalName)]]"
         let sourceNote = try loadKnowledgeNote(for: action.source)
         let overview = extractOverview(from: sourceNote?.bodyMarkdown)
-            ?? "Promoted from \(sourceLink) because this note now behaves like durable guidance instead of a loose standalone topic."
-        let signalLines = extractBulletSection("Key Signals", from: sourceNote?.bodyMarkdown).prefix(4)
-        let relationshipLines = extractBulletSection("Relationships", from: sourceNote?.bodyMarkdown).prefix(4)
+            ?? "Повышено из \(sourceLink), потому что эта заметка теперь ведет себя как устойчивое руководство, а не как рыхлая отдельная тема."
+        let signalLines = extractBulletSection("Ключевые сигналы", from: sourceNote?.bodyMarkdown).prefix(4)
+        let relationshipLines = extractBulletSection("Связи", from: sourceNote?.bodyMarkdown).prefix(4)
         let aliases = aliases(for: action.source)
 
         var draft = "# \(action.source.canonicalName)\n\n"
-        draft += "_Apply-ready lesson draft generated from a safe maintenance action._\n\n"
-        draft += "## Draft Summary\n"
+        draft += "_Готовый черновик вывода, сгенерированный из безопасного действия обслуживания._\n\n"
+        draft += "## Черновая сводка\n"
         draft += "\(overview)\n\n"
-        draft += "## Distilled Guidance\n"
+        draft += "## Сконденсированное руководство\n"
         if signalLines.isEmpty {
-            draft += "- Reframe this note as reusable guidance rather than a narrow topic fragment.\n"
-            draft += "- Keep the explanation concise enough to survive outside the original hourly window.\n"
+            draft += "- Переформулируй эту заметку как переиспользуемое руководство, а не как узкий фрагмент темы.\n"
+            draft += "- Оставь объяснение достаточно компактным, чтобы оно жило и вне исходного hourly window.\n"
         } else {
             for line in signalLines {
                 draft += "\(line)\n"
             }
         }
-        draft += "\n## Related Context\n"
+        draft += "\n## Связанный контекст\n"
         if relationshipLines.isEmpty {
-            draft += "- Source note: \(sourceLink)\n"
-            draft += "- Proposed final location: \(destinationLink)\n"
+            draft += "- Исходная заметка: \(sourceLink)\n"
+            draft += "- Предлагаемое финальное место: \(destinationLink)\n"
         } else {
             for line in relationshipLines {
                 draft += "\(line)\n"
             }
         }
-        draft += "\n## Source Trail\n"
-        draft += "- Promoted from: \(sourceLink)\n"
-        draft += "- Proposed final location: \(destinationLink)\n"
-        draft += "- Promotion reason: \(action.reason)\n"
+        draft += "\n## Источник\n"
+        draft += "- Повышено из: \(sourceLink)\n"
+        draft += "- Предлагаемое финальное место: \(destinationLink)\n"
+        draft += "- Причина повышения: \(action.reason)\n"
         if !aliases.isEmpty {
-            draft += "- Preserve aliases: \(joinNaturalLanguage(aliases))\n"
+            draft += "- Сохранить алиасы: \(joinNaturalLanguage(aliases))\n"
         }
-        draft += "\n## Review Checklist\n"
-        draft += "- Tighten the summary into durable guidance before moving this note into `Knowledge/Lessons`.\n"
-        draft += "- Keep a short redirect or alias note if existing links already point to the topic note.\n"
-        draft += "- Pull over any unique relationships that are missing from the target lesson.\n"
+        draft += "\n## Чеклист ревью\n"
+        draft += "- Сожми сводку в устойчивое руководство до переноса этой заметки в `Knowledge/Lessons`.\n"
+        draft += "- Оставь короткий редирект или алиас-заметку, если существующие ссылки уже смотрят в заметку темы.\n"
+        draft += "- Перетащи уникальные связи, которых еще нет в целевом выводе.\n"
 
         return KnowledgeDraftArtifact(
             kind: .applyReadyLesson,
@@ -1511,19 +1523,19 @@ final class KnowledgeMaintenance {
         let aliases = aliases(for: action.source)
 
         var draft = "# \(action.source.canonicalName)\n\n"
-        draft += "_Redirect stub generated from a safe lesson-promotion action._\n\n"
-        draft += "This topic now points to \(destinationLink).\n\n"
-        draft += "## Proposed Redirect Copy\n"
-        draft += "For durable guidance, use \(destinationLink).\n\n"
-        draft += "## Alias Trail\n"
+        draft += "_Редирект, сгенерированный из безопасного действия повышения в вывод._\n\n"
+        draft += "Эта тема теперь указывает на \(destinationLink).\n\n"
+        draft += "## Предлагаемый текст редиректа\n"
+        draft += "Для устойчивого знания используй \(destinationLink).\n\n"
+        draft += "## След алиасов\n"
         draft += "- \(action.source.canonicalName)\n"
         for alias in aliases.prefix(6) {
             draft += "- \(alias)\n"
         }
-        draft += "\n## Review Checklist\n"
-        draft += "- Keep this redirect in place until backlinks stop depending on \(sourceLink).\n"
-        draft += "- Preserve old aliases on the destination lesson note.\n"
-        draft += "- Remove the standalone topic only after the lesson note fully captures the reusable guidance.\n"
+        draft += "\n## Чеклист ревью\n"
+        draft += "- Держи этот редирект, пока обратные ссылки не перестанут зависеть от \(sourceLink).\n"
+        draft += "- Сохрани старые алиасы в целевой заметке вывода.\n"
+        draft += "- Удаляй отдельную тему только после того, как заметка вывода полностью заберет переиспользуемое знание.\n"
 
         return KnowledgeDraftArtifact(
             kind: .applyReadyLessonRedirect,
@@ -1543,35 +1555,35 @@ final class KnowledgeMaintenance {
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
         let draft = """
-        # Draft Consolidation — \(action.source.canonicalName) → \(target.canonicalName)
+        # Черновик консолидации — \(action.source.canonicalName) → \(target.canonicalName)
 
-        ## Candidate
-        - Source note: \(sourceLink)
-        - Target note: \(targetLink)
-        - Reason: \(action.reason)
+        ## Кандидат
+        - Исходная заметка: \(sourceLink)
+        - Целевая заметка: \(targetLink)
+        - Причина: \(action.reason)
 
-        ## Suggested Redirect / Alias Stub
+        ## Предлагаемый редирект / алиас-заметка
         ```md
         # \(action.source.canonicalName)
 
-        _Redirect candidate_
+        _Кандидат на редирект_
 
-        This note likely belongs under \(targetLink).
+        Эта заметка, скорее всего, должна жить внутри \(targetLink).
 
-        ## Alias Trail
+        ## След алиасов
         - \(action.source.canonicalName)
         ```
 
-        ## Merge Checklist
-        - Move any unique claims from \(sourceLink) into \(targetLink).
-        - Preserve \(action.source.canonicalName) as an alias if existing links still reference it.
-        - Replace or redirect weak standalone notes after the root note captures the missing context.
+        ## Чеклист слияния
+        - Перенеси любые уникальные утверждения из \(sourceLink) в \(targetLink).
+        - Сохрани \(action.source.canonicalName) как алиас, если на нее еще смотрят существующие ссылки.
+        - Заменяй или редиректь слабую отдельную заметку только после того, как корневая заметка заберет недостающий контекст.
         """
 
         return KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: relativePath,
-            title: "Draft Consolidation — \(action.source.canonicalName) → \(target.canonicalName)",
+            title: "Черновик консолидации — \(action.source.canonicalName) → \(target.canonicalName)",
             markdown: draft
         )
     }
@@ -1586,15 +1598,15 @@ final class KnowledgeMaintenance {
         let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
         let sourceNote = try loadKnowledgeNote(for: action.source)
         let overview = extractOverview(from: sourceNote?.bodyMarkdown)
-        let signalLines = extractBulletSection("Key Signals", from: sourceNote?.bodyMarkdown).prefix(4)
+        let signalLines = extractBulletSection("Ключевые сигналы", from: sourceNote?.bodyMarkdown).prefix(4)
         let aliases = aliases(for: action.source)
 
         var draft = "# \(action.source.canonicalName)\n\n"
-        draft += "_Redirect stub draft generated from a safe consolidation action._\n\n"
-        draft += "This note likely folds into \(targetLink).\n\n"
-        draft += "## Proposed Redirect Copy\n"
-        draft += "This slice of work is better treated as part of \(targetLink). Review the unique context below before replacing the standalone note.\n\n"
-        draft += "## Unique Context To Preserve\n"
+        draft += "_Редирект, сгенерированный из безопасного действия консолидации._\n\n"
+        draft += "Эта заметка, скорее всего, должна сложиться в \(targetLink).\n\n"
+        draft += "## Предлагаемый текст редиректа\n"
+        draft += "Этот кусок работы лучше считать частью \(targetLink). Перед заменой отдельной заметки просмотри уникальный контекст ниже.\n\n"
+        draft += "## Уникальный контекст, который надо сохранить\n"
         if !signalLines.isEmpty {
             for line in signalLines {
                 draft += "\(line)\n"
@@ -1602,17 +1614,17 @@ final class KnowledgeMaintenance {
         } else if let overview {
             draft += "- \(overview)\n"
         } else {
-            draft += "- Source note: \(sourceLink)\n"
+            draft += "- Исходная заметка: \(sourceLink)\n"
         }
-        draft += "\n## Alias Trail\n"
+        draft += "\n## След алиасов\n"
         draft += "- \(action.source.canonicalName)\n"
         for alias in aliases.prefix(6) {
             draft += "- \(alias)\n"
         }
-        draft += "\n## Merge Checklist\n"
-        draft += "- Move any unique signals from \(sourceLink) into \(targetLink).\n"
-        draft += "- Preserve \(action.source.canonicalName) as an alias on the stronger root note if links still point here.\n"
-        draft += "- Replace the standalone note only after the root note captures the missing context.\n"
+        draft += "\n## Чеклист слияния\n"
+        draft += "- Перенеси любые уникальные сигналы из \(sourceLink) в \(targetLink).\n"
+        draft += "- Сохрани \(action.source.canonicalName) как алиас в более сильной корневой заметке, если ссылки все еще ведут сюда.\n"
+        draft += "- Заменяй отдельную заметку только после того, как корневая заметка заберет недостающий контекст.\n"
 
         return KnowledgeDraftArtifact(
             kind: .applyReadyRedirect,
@@ -1634,23 +1646,23 @@ final class KnowledgeMaintenance {
         let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
         let sourceNote = try loadKnowledgeNote(for: action.source)
         let overview = extractOverview(from: sourceNote?.bodyMarkdown)
-        let signalLines = extractBulletSection("Key Signals", from: sourceNote?.bodyMarkdown).prefix(5)
-        let relationshipLines = extractBulletSection("Relationships", from: sourceNote?.bodyMarkdown).prefix(5)
+        let signalLines = extractBulletSection("Ключевые сигналы", from: sourceNote?.bodyMarkdown).prefix(5)
+        let relationshipLines = extractBulletSection("Связи", from: sourceNote?.bodyMarkdown).prefix(5)
         let aliases = aliases(for: action.source)
 
-        var draft = "# Merge Patch — \(action.source.canonicalName) → \(target.canonicalName)\n\n"
-        draft += "_Apply-ready merge packet generated from a safe consolidation action._\n\n"
-        draft += "## Merge Intent\n"
-        draft += "Fold \(sourceLink) into \(targetLink) while preserving any unique context and aliases.\n\n"
-        draft += "## Source Summary\n"
+        var draft = "# Патч слияния — \(action.source.canonicalName) → \(target.canonicalName)\n\n"
+        draft += "_Готовый пакет слияния, сгенерированный из безопасного действия консолидации._\n\n"
+        draft += "## Замысел слияния\n"
+        draft += "Сложить \(sourceLink) в \(targetLink), сохранив уникальный контекст и алиасы.\n\n"
+        draft += "## Сводка источника\n"
         if let overview {
             draft += "- \(overview)\n"
         } else {
-            draft += "- Source note: \(sourceLink)\n"
+            draft += "- Исходная заметка: \(sourceLink)\n"
         }
-        draft += "\n## Signals To Preserve\n"
+        draft += "\n## Сигналы, которые нужно сохранить\n"
         if signalLines.isEmpty && relationshipLines.isEmpty {
-            draft += "- No extra structured signals were found beyond the source note title.\n"
+            draft += "- Кроме заголовка исходной заметки, дополнительных структурированных сигналов не найдено.\n"
         } else {
             for line in signalLines {
                 draft += "\(line)\n"
@@ -1659,21 +1671,21 @@ final class KnowledgeMaintenance {
                 draft += "\(line)\n"
             }
         }
-        draft += "\n## Suggested Root Additions\n"
-        draft += "- Add `\(action.source.canonicalName)` to the alias trail of \(targetLink).\n"
-        draft += "- Pull any unique summary or relationship context from \(sourceLink) into \(targetLink).\n"
+        draft += "\n## Предлагаемые дополнения в корневую заметку\n"
+        draft += "- Добавь `\(action.source.canonicalName)` в след алиасов у \(targetLink).\n"
+        draft += "- Перетащи любую уникальную сводку или контекст связей из \(sourceLink) в \(targetLink).\n"
         if !aliases.isEmpty {
-            draft += "- Preserve aliases: \(joinNaturalLanguage(aliases))\n"
+            draft += "- Сохрани алиасы: \(joinNaturalLanguage(aliases))\n"
         }
-        draft += "\n## Review Checklist\n"
-        draft += "- Update the stronger root note before replacing the standalone source note.\n"
-        draft += "- Keep a redirect stub until backlinks stop depending on the source title.\n"
-        draft += "- Rebuild the knowledge graph after merging to confirm the weaker note drops out cleanly.\n"
+        draft += "\n## Чеклист ревью\n"
+        draft += "- Обнови более сильную корневую заметку до замены исходной отдельной заметки.\n"
+        draft += "- Держи редирект, пока обратные ссылки не перестанут зависеть от исходного заголовка.\n"
+        draft += "- После слияния пересобери knowledge graph, чтобы убедиться, что более слабая заметка чисто выпала.\n"
 
         return KnowledgeDraftArtifact(
             kind: .applyReadyMergePatch,
             relativePath: relativePath,
-            title: "Merge Patch — \(action.source.canonicalName) → \(target.canonicalName)",
+            title: "Патч слияния — \(action.source.canonicalName) → \(target.canonicalName)",
             markdown: draft,
             suppressedEntityId: action.source.id,
             mergeOverlayDraft: KnowledgeDraftArtifact.MergeOverlayDraft(
@@ -1705,8 +1717,8 @@ final class KnowledgeMaintenance {
                 let redirectArtifact = artifacts.first(where: { $0.kind == .applyReadyLessonRedirect })
                 lessonRows.append(
                     "- [[\(applyArtifact.linkTarget)|\(action.source.canonicalName)]]"
-                    + " — promote [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into a lesson draft"
-                    + (redirectArtifact.map { " • [[\($0.linkTarget)|redirect]]" } ?? "")
+                    + " — поднять [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] в черновик вывода"
+                    + (redirectArtifact.map { " • [[\($0.linkTarget)|редирект]]" } ?? "")
                 )
             case .consolidateIntoRoot:
                 guard let target = action.target,
@@ -1728,33 +1740,33 @@ final class KnowledgeMaintenance {
 
         guard !lessonRows.isEmpty || !redirectRows.isEmpty || !mergeRows.isEmpty else { return nil }
 
-        var markdown = "# Knowledge Apply Board\n\n"
-        markdown += "_Apply-ready drafts exported from safe maintenance actions._\n\n"
-        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
+        var markdown = "# Доска применения изменений знаний\n\n"
+        markdown += "_Готовые черновики применения, экспортированные из безопасных действий обслуживания._\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|центр управления]]\n\n"
         if !lessonRows.isEmpty {
-            markdown += "## Lesson Promotions\n"
+            markdown += "## Повышения в Lessons\n"
             markdown += lessonRows.joined(separator: "\n")
             markdown += "\n\n"
         }
         if !redirectRows.isEmpty {
-            markdown += "## Redirect Stubs\n"
+            markdown += "## Редиректы\n"
             markdown += redirectRows.joined(separator: "\n")
             markdown += "\n\n"
         }
         if !mergeRows.isEmpty {
-            markdown += "## Merge Patches\n"
+            markdown += "## Патчи слияния\n"
             markdown += mergeRows.joined(separator: "\n")
             markdown += "\n\n"
         }
-        markdown += "## Usage\n"
-        markdown += "- Review the apply-ready draft before moving it into the main `Knowledge/*` tree.\n"
-        markdown += "- Keep the paired review draft open if you need the rationale and migration checklist.\n"
-        markdown += "- Do not replace the main note until aliases and unique context are preserved.\n"
+        markdown += "## Как использовать\n"
+        markdown += "- Просмотри готовый черновик применения до переноса в основное дерево `Knowledge/*`.\n"
+        markdown += "- Держи рядом парный черновик ревью, если нужен контекст решения и migration checklist.\n"
+        markdown += "- Не заменяй основную заметку, пока не сохранены алиасы и уникальный контекст.\n"
 
         return KnowledgeDraftArtifact(
             kind: .applyIndex,
             relativePath: "Apply/_index.md",
-            title: "Knowledge Apply Board",
+            title: "Доска применения изменений знаний",
             markdown: markdown
         )
     }
@@ -1781,13 +1793,13 @@ final class KnowledgeMaintenance {
         let mediumCount = groupedRows[.medium]?.count ?? 0
         let lowCount = groupedRows[.low]?.count ?? 0
 
-        var markdown = "# Knowledge Review Board\n\n"
-        markdown += "_Review packets exported from the current maintenance queue._\n\n"
-        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
-        markdown += "## Priority Overview\n"
-        markdown += "- High priority: \(highCount)\n"
-        markdown += "- Standard review: \(mediumCount)\n"
-        markdown += "- Low-signal review: \(lowCount)\n\n"
+        var markdown = "# Доска ревью знаний\n\n"
+        markdown += "_Пакеты ревью, экспортированные из текущей очереди обслуживания._\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|центр управления]]\n\n"
+        markdown += "## Сводка по приоритетам\n"
+        markdown += "- Высокий приоритет: \(highCount)\n"
+        markdown += "- Обычное ревью: \(mediumCount)\n"
+        markdown += "- Низкосигнальное ревью: \(lowCount)\n\n"
 
         for priority in [KnowledgeManualReviewItem.Priority.high, .medium, .low] {
             guard let rows = groupedRows[priority], !rows.isEmpty else { continue }
@@ -1796,20 +1808,19 @@ final class KnowledgeMaintenance {
             markdown += rows.map(\.1).prefix(rowLimit).joined(separator: "\n")
             if priority == .low && rows.count > rowLimit {
                 let remaining = rows.count - rowLimit
-                markdown += "\n- ...and \(remaining) more low-signal review packet"
-                if remaining == 1 { markdown += "" } else { markdown += "s" }
+                markdown += "\n- ...и еще \(counted(remaining, one: "низкосигнальный пакет ревью", few: "низкосигнальных пакета ревью", many: "низкосигнальных пакетов ревью"))"
             }
             markdown += "\n\n"
         }
-        markdown += "## Usage\n"
-        markdown += "- Open the linked review draft before changing the main `Knowledge/*` note.\n"
-        markdown += "- Use these packets for merge, reclassify, stale, and weak-topic decisions that are not safe enough to auto-apply.\n"
-        markdown += "- Once a decision is applied, the candidate should drop out of the review queue on the next rebuild.\n"
+        markdown += "## Как использовать\n"
+        markdown += "- Открывай связанный черновик ревью до изменения основной заметки в `Knowledge/*`.\n"
+        markdown += "- Используй эти пакеты для решений по слиянию, переклассификации, устареванию и слабым темам, которые еще недостаточно безопасны для автоприменения.\n"
+        markdown += "- После применения решения кандидат должен выпасть из очереди ревью на следующем rebuild.\n"
 
         return KnowledgeDraftArtifact(
             kind: .reviewIndex,
             relativePath: "Review/_index.md",
-            title: "Knowledge Review Board",
+            title: "Доска ревью знаний",
             markdown: markdown
         )
     }
@@ -1817,13 +1828,13 @@ final class KnowledgeMaintenance {
     private func manualReviewKindLabel(for kind: KnowledgeManualReviewItem.Kind) -> String {
         switch kind {
         case .reclassify:
-            return "Reclassify"
+            return "Переклассификация"
         case .consolidate:
-            return "Consolidate"
+            return "Консолидация"
         case .weakTopic:
-            return "Weak Topic"
+            return "Слабая тема"
         case .stale:
-            return "Stale"
+            return "Устаревшее"
         }
     }
 
@@ -1835,69 +1846,67 @@ final class KnowledgeMaintenance {
         appliedActions: [KnowledgeAppliedActionRecord],
         reviewDecisions: [KnowledgeReviewDecisionRecord]
     ) -> KnowledgeDraftArtifact {
-        var markdown = "# Knowledge Workflow Center\n\n"
-        markdown += "_Operational hub for active, applied, and resolved knowledge actions._\n\n"
-        markdown += "## Dashboard\n"
-        markdown += "- [[Knowledge/_maintenance|maintenance dashboard]]\n"
-        markdown += "- Safe to apply: \(safeActions.count)\n"
-        markdown += "- Needs review: \(manualReviewItems.count)\n"
-        markdown += "- Standard review: \(manualReviewItems.filter { $0.priority != .low }.count)\n"
-        markdown += "- Low-signal review: \(manualReviewItems.filter { $0.priority == .low }.count)\n"
-        markdown += "- Recently applied: \(appliedActions.count)\n"
-        markdown += "- Recently reviewed: \(reviewDecisions.count)\n\n"
+        var markdown = "# Центр управления слоем знаний\n\n"
+        markdown += "_Операционный хаб для активных, примененных и завершенных действий слоя знаний._\n\n"
+        markdown += "## Дашборд\n"
+        markdown += "- [[Knowledge/_maintenance|дашборд обслуживания]]\n"
+        markdown += "- Безопасно применить: \(safeActions.count)\n"
+        markdown += "- Требует ревью: \(manualReviewItems.count)\n"
+        markdown += "- Обычное ревью: \(manualReviewItems.filter { $0.priority != .low }.count)\n"
+        markdown += "- Низкосигнальное ревью: \(manualReviewItems.filter { $0.priority == .low }.count)\n"
+        markdown += "- Недавно применено: \(appliedActions.count)\n"
+        markdown += "- Недавно отревьюено: \(reviewDecisions.count)\n\n"
 
         let actionableReviewItems = manualReviewItems.filter { $0.priority != .low }
         let lowSignalReviewCount = manualReviewItems.count - actionableReviewItems.count
-        markdown += "## Recommended Next Moves\n"
+        markdown += "## Рекомендуемые следующие шаги\n"
         if safeActions.isEmpty && actionableReviewItems.isEmpty {
-            markdown += "- No immediate workflow queue right now.\n"
+            markdown += "- Сейчас нет немедленной очереди действий.\n"
         } else {
             for action in safeActions.prefix(3) {
                 switch action.kind {
                 case .promoteToLessonDraft:
-                    markdown += "- Apply: promote [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into `Lessons`.\n"
+                    markdown += "- Применить: перенести [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] в `Lessons`.\n"
                 case .consolidateIntoRoot:
                     guard let target = action.target else { continue }
-                    markdown += "- Apply: consolidate [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into [[\(linkTarget(for: target))|\(target.canonicalName)]].\n"
+                    markdown += "- Применить: сконсолидировать [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] в [[\(linkTarget(for: target))|\(target.canonicalName)]].\n"
                 }
             }
             for item in actionableReviewItems.prefix(3) {
-                markdown += "- Review [\(item.priority.badge)]: \(item.markdownLine)\n"
+                markdown += "- Ревью [\(item.priority.badge)]: \(item.markdownLine)\n"
             }
             if lowSignalReviewCount > 0 {
-                markdown += "- Defer: \(lowSignalReviewCount) low-signal review packet"
-                if lowSignalReviewCount == 1 { markdown += "" } else { markdown += "s" }
-                markdown += " remain in the review board.\n"
+                markdown += "- Отложить: \(counted(lowSignalReviewCount, one: "низкосигнальный пакет ревью", few: "низкосигнальных пакета ревью", many: "низкосигнальных пакетов ревью")) остаются на доске ревью.\n"
             }
         }
         markdown += "\n"
 
-        markdown += "## Active Queues\n"
+        markdown += "## Активные очереди\n"
         if let applyIndexArtifact {
-            markdown += "- [[\(applyIndexArtifact.linkTarget)|apply board]]\n"
+            markdown += "- [[\(applyIndexArtifact.linkTarget)|доска применения]]\n"
         } else {
-            markdown += "- No apply-ready packets right now.\n"
+            markdown += "- Сейчас нет готовых пакетов применения.\n"
         }
         if let reviewIndexArtifact {
-            markdown += "- [[\(reviewIndexArtifact.linkTarget)|review board]]\n"
+            markdown += "- [[\(reviewIndexArtifact.linkTarget)|доска ревью]]\n"
         } else {
-            markdown += "- No active review queue right now.\n"
+            markdown += "- Сейчас нет активной очереди ревью.\n"
         }
         markdown += "\n"
 
-        markdown += "## History and Resolved\n"
-        markdown += "- [[Knowledge/_applied|applied history]]\n"
-        markdown += "- [[Knowledge/_reviewed|review history]]\n"
-        markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|resolved review board]]\n\n"
+        markdown += "## История и завершенные\n"
+        markdown += "- [[Knowledge/_applied|история применений]]\n"
+        markdown += "- [[Knowledge/_reviewed|история ревью]]\n"
+        markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|доска завершенных ревью]]\n\n"
 
-        markdown += "## Usage\n"
-        markdown += "- Start here when you want to move through safe actions, review packets, and archived decisions without opening folders manually.\n"
-        markdown += "- Use the apply board for high-confidence packets, the review board for manual decisions, and the resolved board to revisit closed decisions.\n"
+        markdown += "## Как использовать\n"
+        markdown += "- Начинай отсюда, если хочешь пройтись по безопасным действиям, пакетам ревью и архиву решений без ручного открытия папок.\n"
+        markdown += "- Используй доску применения для высокоуверенных пакетов, доску ревью для ручных решений, а доску завершенных ревью — чтобы пересматривать закрытые решения.\n"
 
         return KnowledgeDraftArtifact(
             kind: .workflowIndex,
             relativePath: "_index.md",
-            title: "Knowledge Workflow Center",
+            title: "Центр управления слоем знаний",
             markdown: markdown
         )
     }
@@ -1905,8 +1914,8 @@ final class KnowledgeMaintenance {
     private func buildReclassifyReviewDraft(for candidate: KnowledgeReclassifyCandidate) throws -> KnowledgeDraftArtifact {
         let note = try loadKnowledgeNote(for: candidate.entity)
         let overview = extractOverview(from: note?.bodyMarkdown)
-        let keySignals = extractBulletSection("Key Signals", from: note?.bodyMarkdown).prefix(4)
-        let relationships = extractBulletSection("Relationships", from: note?.bodyMarkdown).prefix(4)
+        let keySignals = extractBulletSection("Ключевые сигналы", from: note?.bodyMarkdown).prefix(4)
+        let relationships = extractBulletSection("Связи", from: note?.bodyMarkdown).prefix(4)
         let relativePath = "Review/reclassify-\(candidate.entity.slug).md"
         let sourceLink = "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
         let targetFolder = candidate.targetType.folderName
@@ -1915,39 +1924,39 @@ final class KnowledgeMaintenance {
         var markdown = """
         <!-- memograph-review-key: \(manualReviewKey(for: candidate)) -->
         <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.promoteToLesson.rawValue) -->
-        # Review Packet — Reclassify \(candidate.entity.canonicalName)
+        # Пакет ревью — Переклассификация \(candidate.entity.canonicalName)
 
         """
-        markdown += "## Candidate\n"
-        markdown += "- Source note: \(sourceLink)\n"
-        markdown += "- Proposed destination: \(destinationLink)\n"
-        markdown += "- Reason: \(candidate.reason)\n\n"
-        markdown += "## Decision\n"
-        markdown += "- Change `Decision: pending` to `Decision: apply` once this review is approved.\n"
-        markdown += "- Use `Decision: dismiss` if this note should stay as-is.\n"
+        markdown += "## Кандидат\n"
+        markdown += "- Исходная заметка: \(sourceLink)\n"
+        markdown += "- Предлагаемое место: \(destinationLink)\n"
+        markdown += "- Причина: \(candidate.reason)\n\n"
+        markdown += "## Решение\n"
+        markdown += "- Замени `Decision: pending` на `Decision: apply`, когда это ревью будет одобрено.\n"
+        markdown += "- Используй `Decision: dismiss`, если заметка должна остаться как есть.\n"
         markdown += "Decision: pending\n\n"
-        markdown += "## Current Read\n"
+        markdown += "## Текущее чтение\n"
         if let overview {
             markdown += "- \(overview)\n"
         } else {
-            markdown += "- No overview was available in the current note.\n"
+            markdown += "- В текущей заметке не нашлось блока обзора.\n"
         }
-        markdown += "\n## Signals To Keep\n"
+        markdown += "\n## Сигналы, которые нужно сохранить\n"
         if keySignals.isEmpty && relationships.isEmpty {
-            markdown += "- Review the source note manually; no structured signals were available.\n"
+            markdown += "- Просмотри исходную заметку вручную: структурированных сигналов не нашлось.\n"
         } else {
             for line in keySignals { markdown += "\(line)\n" }
             for line in relationships { markdown += "\(line)\n" }
         }
-        markdown += "\n## Review Checklist\n"
-        markdown += "- Confirm this note reads more like durable guidance than a standalone topic.\n"
-        markdown += "- Keep aliases and backlinks intact if you move it under `\(targetFolder)`.\n"
-        markdown += "- Preserve any unique project or topic relationships before changing the note type.\n"
+        markdown += "\n## Чеклист ревью\n"
+        markdown += "- Подтверди, что заметка больше похожа на устойчивое руководство, чем на отдельную тему.\n"
+        markdown += "- Сохрани алиасы и обратные ссылки, если переносишь ее в `\(targetFolder)`.\n"
+        markdown += "- Сохрани уникальные связи с проектами и темами до смены типа заметки.\n"
 
         return KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: relativePath,
-            title: "Review Packet — Reclassify \(candidate.entity.canonicalName)",
+            title: "Пакет ревью — Переклассификация \(candidate.entity.canonicalName)",
             markdown: markdown,
             reviewPacketKey: manualReviewKey(for: candidate),
             reviewDecisionKind: .promoteToLesson
@@ -1957,7 +1966,7 @@ final class KnowledgeMaintenance {
     private func buildManualConsolidationReviewDraft(for candidate: KnowledgeConsolidationCandidate) throws -> KnowledgeDraftArtifact {
         let sourceNote = try loadKnowledgeNote(for: candidate.source)
         let sourceOverview = extractOverview(from: sourceNote?.bodyMarkdown)
-        let sourceSignals = extractBulletSection("Key Signals", from: sourceNote?.bodyMarkdown).prefix(4)
+        let sourceSignals = extractBulletSection("Ключевые сигналы", from: sourceNote?.bodyMarkdown).prefix(4)
         let relativePath = "Review/consolidate-\(candidate.source.slug)-into-\(candidate.target.slug).md"
         let sourceLink = "[[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]]"
         let targetLink = "[[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]"
@@ -1965,38 +1974,38 @@ final class KnowledgeMaintenance {
         var markdown = """
         <!-- memograph-review-key: \(manualReviewKey(for: candidate)) -->
         <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.consolidate.rawValue) -->
-        # Review Packet — Consolidate \(candidate.source.canonicalName)
+        # Пакет ревью — Консолидация \(candidate.source.canonicalName)
 
         """
-        markdown += "## Candidate\n"
-        markdown += "- Source note: \(sourceLink)\n"
-        markdown += "- Target note: \(targetLink)\n"
-        markdown += "- Reason: \(candidate.reason)\n\n"
-        markdown += "## Decision\n"
-        markdown += "- Change `Decision: pending` to `Decision: apply` once this merge is approved.\n"
-        markdown += "- Use `Decision: dismiss` if the source note should remain standalone.\n"
+        markdown += "## Кандидат\n"
+        markdown += "- Исходная заметка: \(sourceLink)\n"
+        markdown += "- Целевая заметка: \(targetLink)\n"
+        markdown += "- Причина: \(candidate.reason)\n\n"
+        markdown += "## Решение\n"
+        markdown += "- Замени `Decision: pending` на `Decision: apply`, когда это слияние будет одобрено.\n"
+        markdown += "- Используй `Decision: dismiss`, если исходная заметка должна остаться отдельной.\n"
         markdown += "Decision: pending\n\n"
-        markdown += "## Source Context\n"
+        markdown += "## Контекст источника\n"
         if let sourceOverview {
             markdown += "- \(sourceOverview)\n"
         } else {
-            markdown += "- No overview was available in the current source note.\n"
+            markdown += "- В текущей исходной заметке не нашлось блока обзора.\n"
         }
-        markdown += "\n## Signals To Preserve\n"
+        markdown += "\n## Сигналы, которые нужно сохранить\n"
         if sourceSignals.isEmpty {
-            markdown += "- Review the source note manually before merging.\n"
+            markdown += "- Перед слиянием просмотри исходную заметку вручную.\n"
         } else {
             for line in sourceSignals { markdown += "\(line)\n" }
         }
-        markdown += "\n## Review Checklist\n"
-        markdown += "- Confirm the target note is actually the stronger root for this topic family.\n"
-        markdown += "- Preserve unique aliases and context before redirecting the source note.\n"
-        markdown += "- If the source still carries unique meaning, keep it separate and reject the consolidation.\n"
+        markdown += "\n## Чеклист ревью\n"
+        markdown += "- Подтверди, что целевая заметка действительно более сильный root для этого семейства тем.\n"
+        markdown += "- Сохрани уникальные алиасы и контекст до редиректа исходной заметки.\n"
+        markdown += "- Если источник все еще несет уникальный смысл, оставь его отдельно и отклони консолидацию.\n"
 
         return KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: relativePath,
-            title: "Review Packet — Consolidate \(candidate.source.canonicalName)",
+            title: "Пакет ревью — Консолидация \(candidate.source.canonicalName)",
             markdown: markdown,
             reviewPacketKey: manualReviewKey(for: candidate),
             reviewDecisionKind: .consolidate
@@ -2010,28 +2019,28 @@ final class KnowledgeMaintenance {
         let markdown = """
         <!-- memograph-review-key: \(manualReviewKey(for: candidate)) -->
         <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.suppress.rawValue) -->
-        # Review Packet — Stale Note \(candidate.entity.canonicalName)
+        # Пакет ревью — Устаревшая заметка \(candidate.entity.canonicalName)
 
-        ## Candidate
-        - Note: \(sourceLink)
-        - Last seen: \(candidate.daysSinceSeen) day\(candidate.daysSinceSeen == 1 ? "" : "s") ago
-        - Reason: \(candidate.reason)
+        ## Кандидат
+        - Заметка: \(sourceLink)
+        - Последний раз замечена \(counted(candidate.daysSinceSeen, one: "день", few: "дня", many: "дней")) назад
+        - Причина: \(candidate.reason)
 
-        ## Decision
-        - Change `Decision: pending` to `Decision: apply` to suppress this note from the active knowledge graph.
-        - Use `Decision: dismiss` if the note should stay visible.
+        ## Решение
+        - Замени `Decision: pending` на `Decision: apply`, чтобы подавить эту заметку в активном графе знаний.
+        - Используй `Decision: dismiss`, если заметка должна остаться видимой.
         Decision: pending
 
-        ## Review Checklist
-        - Keep it if it still serves as durable reference material.
-        - Merge or redirect it if a stronger root note already covers the same idea.
-        - Archive or suppress it if it no longer has an active project trail.
+        ## Чеклист ревью
+        - Оставь ее, если она все еще служит устойчивым справочным материалом.
+        - Слей или заредиректь ее, если более сильная корневая заметка уже покрывает ту же идею.
+        - Архивируй или подави ее, если у нее больше нет активного следа по проектам.
         """
 
         return KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: relativePath,
-            title: "Review Packet — Stale Note \(candidate.entity.canonicalName)",
+            title: "Пакет ревью — Устаревшая заметка \(candidate.entity.canonicalName)",
             markdown: markdown,
             suppressedEntityId: candidate.entity.id,
             reviewPacketKey: manualReviewKey(for: candidate),
@@ -2046,28 +2055,28 @@ final class KnowledgeMaintenance {
         let markdown = """
         <!-- memograph-review-key: \(manualReviewKey(forWeakTopic: metric.entity)) -->
         <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.suppress.rawValue) -->
-        # Review Packet — Weak Topic \(metric.entity.canonicalName)
+        # Пакет ревью — Слабая тема \(metric.entity.canonicalName)
 
-        ## Candidate
-        - Topic: \(sourceLink)
-        - Loose links: \(metric.coOccurrenceEdgeCount)
-        - Strong relations: \(metric.typedEdgeCount)
+        ## Кандидат
+        - Тема: \(sourceLink)
+        - Слабые связи: \(metric.coOccurrenceEdgeCount)
+        - Сильные связи: \(metric.typedEdgeCount)
 
-        ## Decision
-        - Change `Decision: pending` to `Decision: apply` to suppress this note from the active knowledge graph.
-        - Use `Decision: dismiss` if the topic should stay visible.
+        ## Решение
+        - Замени `Decision: pending` на `Decision: apply`, чтобы подавить эту заметку в активном графе знаний.
+        - Используй `Decision: dismiss`, если тема должна остаться видимой.
         Decision: pending
 
-        ## Review Checklist
-        - Keep it only if it carries durable meaning beyond co-occurrence noise.
-        - Consolidate it into a stronger root topic if it is just a narrow variant.
-        - Reclassify it if it actually reads like a guide, workflow, or lesson.
+        ## Чеклист ревью
+        - Оставляй ее только если она несет устойчивый смысл сверх шума совместной встречаемости.
+        - Сконсолидируй ее в более сильную корневую тему, если это просто узкий вариант.
+        - Переклассифицируй ее, если по смыслу это руководство, рабочий процесс или вывод.
         """
 
         return KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: relativePath,
-            title: "Review Packet — Weak Topic \(metric.entity.canonicalName)",
+            title: "Пакет ревью — Слабая тема \(metric.entity.canonicalName)",
             markdown: markdown,
             suppressedEntityId: metric.entity.id,
             reviewPacketKey: manualReviewKey(forWeakTopic: metric.entity),
@@ -2082,29 +2091,29 @@ final class KnowledgeMaintenance {
         let markdown = """
         <!-- memograph-review-key: \(manualReviewKey(forWeakTopic: hotspot.entity)) -->
         <!-- memograph-review-kind: \(KnowledgeReviewDecisionKind.suppress.rawValue) -->
-        # Review Packet — Thin Durable Topic \(hotspot.entity.canonicalName)
+        # Пакет ревью — Тонкая устойчивая тема \(hotspot.entity.canonicalName)
 
-        ## Candidate
-        - Topic: \(sourceLink)
-        - Strong relations: \(hotspot.relationStats.typedEdges)
-        - Loose links: \(hotspot.relationStats.coOccurrenceEdges)
-        - Project trail: \(hotspot.relationStats.projectRelations)
+        ## Кандидат
+        - Тема: \(sourceLink)
+        - Сильные связи: \(hotspot.relationStats.typedEdges)
+        - Слабые связи: \(hotspot.relationStats.coOccurrenceEdges)
+        - Связей с проектами: \(hotspot.relationStats.projectRelations)
 
-        ## Decision
-        - Change `Decision: pending` to `Decision: apply` to suppress this note from the active knowledge graph.
-        - Use `Decision: dismiss` if the topic should stay visible.
+        ## Решение
+        - Замени `Decision: pending` на `Decision: apply`, чтобы подавить эту заметку в активном графе знаний.
+        - Используй `Decision: dismiss`, если тема должна остаться видимой.
         Decision: pending
 
-        ## Review Checklist
-        - Keep it visible if it represents a real durable topic the graph should expose.
-        - Improve typed relations or merge it into a stronger topic if the note stays too thin.
-        - Reclassify it if the title and context suggest a lesson rather than a topic.
+        ## Чеклист ревью
+        - Оставь ее видимой, если это реальная устойчивая тема, которую граф должен показывать.
+        - Улучши типизированные связи или слей ее в более сильную тему, если заметка остается слишком тонкой.
+        - Переклассифицируй ее, если заголовок и контекст больше похожи на lesson, чем на тему.
         """
 
         return KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: relativePath,
-            title: "Review Packet — Thin Durable Topic \(hotspot.entity.canonicalName)",
+            title: "Пакет ревью — Тонкая устойчивая тема \(hotspot.entity.canonicalName)",
             markdown: markdown,
             suppressedEntityId: hotspot.entity.id,
             reviewPacketKey: manualReviewKey(forWeakTopic: hotspot.entity),
@@ -2117,7 +2126,7 @@ final class KnowledgeMaintenance {
         guard lessonLikeTopicSignals.contains(where: { lowered.contains($0) }) else {
             return nil
         }
-        return "topic reads more like a durable guide or workflow note"
+        return "тема больше похожа на устойчивое руководство или заметку о рабочем процессе"
     }
 
     private func consolidationReason(
@@ -2144,7 +2153,7 @@ final class KnowledgeMaintenance {
         guard targetTokens.count <= 3 else { return nil }
         guard target.claimCount >= source.claimCount else { return nil }
 
-        return "overlapping topic family; consider consolidating under the stronger root note"
+        return "темы перекрываются; стоит консолидировать под более сильной корневой заметкой"
     }
 
     private func significantTokens(in value: String) -> [String] {
@@ -2162,7 +2171,7 @@ final class KnowledgeMaintenance {
     }
 
     private func extractOverview(from markdown: String?) -> String? {
-        guard let section = extractSection(named: "Overview", from: markdown) else { return nil }
+        guard let section = extractSection(named: "Обзор", from: markdown) else { return nil }
         let lines = section
             .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -2183,9 +2192,10 @@ final class KnowledgeMaintenance {
         let lines = markdown.components(separatedBy: "\n")
         var captured: [String] = []
         var isInSection = false
+        let variants = localizedSectionHeadingVariants(for: heading)
 
         for line in lines {
-            if line == "## \(heading)" {
+            if variants.contains(line) {
                 isInSection = true
                 continue
             }
@@ -2201,6 +2211,22 @@ final class KnowledgeMaintenance {
 
         let section = captured.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return section.isEmpty ? nil : section
+    }
+
+    private func localizedSectionHeadingVariants(for heading: String) -> Set<String> {
+        let normalized = heading.trimmingCharacters(in: .whitespacesAndNewlines)
+        let variants: [String]
+        switch normalized.lowercased() {
+        case "overview", "обзор":
+            variants = ["## Overview", "## Обзор"]
+        case "key signals", "ключевые сигналы":
+            variants = ["## Key Signals", "## Ключевые сигналы"]
+        case "relationships", "связи":
+            variants = ["## Relationships", "## Связи"]
+        default:
+            variants = ["## \(normalized)"]
+        }
+        return Set(variants)
     }
 
     private func aliases(for entity: KnowledgeEntityRecord) -> [String] {

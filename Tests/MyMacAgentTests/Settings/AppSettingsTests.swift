@@ -21,6 +21,11 @@ struct AppSettingsTests {
         #expect(settings.knowledgeMergeOverlays.isEmpty)
         #expect(settings.knowledgeAliasOverrides.isEmpty)
         #expect(settings.knowledgeReviewDecisions.isEmpty)
+        #expect(settings.audioTranscriptionProvider == .localWhisper)
+        #expect(settings.audioTranscriptionBaseURL == "https://api.openai.com/v1")
+        #expect(settings.audioMicrophoneModel == "gpt-4o-transcribe")
+        #expect(settings.audioSystemModel == "gpt-4o-mini-transcribe")
+        #expect(settings.audioTranscriptionAPIKey.isEmpty)
         #expect(settings.maxCapturesPerSession == 500)
     }
 
@@ -32,6 +37,11 @@ struct AppSettingsTests {
         settings.obsidianVaultPath = "/Users/test/vault"
         settings.openRouterApiKey = "sk-test-123"
         settings.retentionDays = 14
+        settings.audioTranscriptionProvider = .localWhisper
+        settings.audioTranscriptionBaseURL = "https://api.openai.com/v1"
+        settings.audioTranscriptionAPIKey = "sk-audio-123"
+        settings.audioMicrophoneModel = "gpt-4o-transcribe"
+        settings.audioSystemModel = "gpt-4o-mini-transcribe"
         settings.knowledgeMaintenanceIntervalHours = 12
         settings.lastKnowledgeMaintenanceAt = "2026-04-03T12:00:00Z"
         settings.knowledgeSuppressedEntityIds = ["entity-2", "entity-1", "entity-1"]
@@ -82,6 +92,11 @@ struct AppSettingsTests {
         #expect(settings2.obsidianVaultPath == "/Users/test/vault")
         #expect(settings2.openRouterApiKey == "sk-test-123")
         #expect(settings2.retentionDays == 14)
+        #expect(settings2.audioTranscriptionProvider == .localWhisper)
+        #expect(settings2.audioTranscriptionBaseURL == "https://api.openai.com/v1")
+        #expect(settings2.audioTranscriptionAPIKey == "sk-audio-123")
+        #expect(settings2.audioMicrophoneModel == "gpt-4o-transcribe")
+        #expect(settings2.audioSystemModel == "gpt-4o-mini-transcribe")
         #expect(settings2.knowledgeMaintenanceIntervalHours == 12)
         #expect(settings2.lastKnowledgeMaintenanceAt == "2026-04-03T12:00:00Z")
         #expect(settings2.knowledgeSuppressedEntityIds == ["entity-1", "entity-2"])
@@ -130,6 +145,20 @@ struct AppSettingsTests {
 
         #expect(settings.hasApiKey)
         #expect(defaults.bool(forKey: "hasExternalAPIKey"))
+    }
+
+    @Test("Audio transcription key persists separately from summary provider key")
+    func audioTranscriptionApiKeyPersistsSeparately() {
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        let store = InMemoryCredentialsStore()
+        var settings = AppSettings(defaults: defaults, credentialsStore: store)
+        settings.openRouterApiKey = "sk-summary"
+        settings.audioTranscriptionAPIKey = "sk-audio"
+
+        let loaded = AppSettings(defaults: defaults, credentialsStore: store)
+        #expect(loaded.openRouterApiKey == "sk-summary")
+        #expect(loaded.audioTranscriptionAPIKey == "sk-audio")
+        #expect(loaded.resolvedAudioTranscriptionAPIKey == "sk-audio")
     }
 
     @Test("Legacy Keychain value migrates into local settings store")

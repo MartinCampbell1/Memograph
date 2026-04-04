@@ -15,6 +15,8 @@ struct AudioTranscript {
 }
 
 final class AudioTranscriber: @unchecked Sendable {
+    typealias UploadTransport = @Sendable (URLRequest, Data) async throws -> (Data, URLResponse)
+
     private struct QueuedTranscriptionPayload: Codable {
         let path: String
         let sessionId: String?
@@ -27,10 +29,12 @@ final class AudioTranscriber: @unchecked Sendable {
     private let db: DatabaseManager
     let venvPath: String
     private let scriptPath: String
-    private let runtimeStatus: AudioRuntimeStatus
+    private let runtimeStatusOverride: AudioRuntimeStatus?
     private let logger = Logger.app
     private let dateSupport: LocalDateSupport
     private let now: () -> Date
+    private let settingsProvider: @Sendable () -> AppSettings
+    private let uploadTransport: UploadTransport
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -39,10 +43,16 @@ final class AudioTranscriber: @unchecked Sendable {
          scriptPath: String = "",
          runtimeStatus: AudioRuntimeStatus? = nil,
          timeZone: TimeZone = .autoupdatingCurrent,
+         settingsProvider: @escaping @Sendable () -> AppSettings = { AppSettings() },
+         uploadTransport: UploadTransport? = nil,
          now: @escaping () -> Date = Date.init) {
         self.db = db
-        self.runtimeStatus = runtimeStatus ?? AudioRuntimeResolver.resolve()
+        self.runtimeStatusOverride = runtimeStatus
         self.dateSupport = LocalDateSupport(timeZone: timeZone)
+        self.settingsProvider = settingsProvider
+        self.uploadTransport = uploadTransport ?? { request, body in
+            try await URLSession.shared.upload(for: request, from: body)
+        }
         self.now = now
 
         if venvPath.isEmpty {
@@ -52,10 +62,10 @@ final class AudioTranscriber: @unchecked Sendable {
         }
 
         if scriptPath.isEmpty {
-            switch self.runtimeStatus {
+            switch runtimeStatus ?? AudioRuntimeResolver.resolve(settings: settingsProvider()) {
             case .ready(let environment):
                 self.scriptPath = environment.scriptPath
-            case .missingPython, .missingScript:
+            case .cloudReady, .missingAPIKey, .missingPython, .missingScript:
                 self.scriptPath = ""
             }
         } else {
@@ -90,65 +100,33 @@ final class AudioTranscriber: @unchecked Sendable {
         """)
     }
 
-    func transcribeFile(audioPath: String, language: String? = nil) async throws -> AudioTranscript {
-        let environment: AudioRuntimeEnvironment
+    func transcribeFile(audioPath: String, language: String? = nil, source: String? = nil) async throws -> AudioTranscript {
+        let settings = settingsProvider()
+        let runtimeStatus = runtimeStatusOverride ?? AudioRuntimeResolver.resolve(settings: settings)
+
         switch runtimeStatus {
+        case .cloudReady(let environment):
+            return try await transcribeViaCloud(
+                audioPath: audioPath,
+                language: language,
+                source: source,
+                environment: environment
+            )
+
         case .ready(let resolvedEnvironment):
-            environment = resolvedEnvironment
+            return try await transcribeViaLocalWhisper(
+                audioPath: audioPath,
+                language: language,
+                environment: resolvedEnvironment
+            )
+
+        case .missingAPIKey(let details):
+            throw AudioError.missingAPIKey(details)
         case .missingPython(let details):
             throw AudioError.pythonNotFound(details)
         case .missingScript(let details):
             throw AudioError.scriptNotFound(details)
         }
-
-        var args = environment.launchArgumentsPrefix + [environment.scriptPath, audioPath]
-        if let lang = language { args.append(lang) }
-
-        let process = Process()
-        process.executableURL = environment.executableURL
-        process.arguments = args
-        process.environment = ProcessInfo.processInfo.environment.merging(
-            ["MEMOGRAPH_WHISPER_MODEL": environment.modelName]
-        ) { _, newValue in newValue }
-
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        let stdoutData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        guard let json = try? JSONSerialization.jsonObject(with: stdoutData) as? [String: Any] else {
-            throw AudioError.transcriptionFailed(stderr.isEmpty ? "Failed to parse whisper output" : stderr)
-        }
-
-        if let error = json["error"] as? String {
-            throw AudioError.transcriptionFailed(error)
-        }
-
-        guard let text = json["text"] as? String else {
-            throw AudioError.transcriptionFailed("Whisper output did not contain text")
-        }
-
-        let detectedLang = json["language"] as? String
-
-        return AudioTranscript(
-            id: UUID().uuidString,
-            sessionId: nil,
-            timestamp: ISO8601DateFormatter().string(from: Date()),
-            segmentStartedAt: nil,
-            segmentEndedAt: nil,
-            persistedAt: nil,
-            durationSeconds: 0,
-            text: text,
-            language: detectedLang ?? language,
-            source: nil
-        )
     }
 
     func persistTranscript(
@@ -376,7 +354,11 @@ final class AudioTranscriber: @unchecked Sendable {
             throw AudioError.transcriptionFailed("Queued audio segment missing at \(payload.path)")
         }
 
-        let result = try await transcribeFile(audioPath: payload.path, language: payload.language)
+        let result = try await transcribeFile(
+            audioPath: payload.path,
+            language: payload.language,
+            source: payload.source
+        )
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let segmentStart = dateSupport.parseDateTime(payload.segmentStartedAt) ?? now()
         let segmentEnd = dateSupport.parseDateTime(payload.segmentEndedAt) ?? segmentStart
@@ -405,15 +387,192 @@ final class AudioTranscriber: @unchecked Sendable {
         let boundedRetryCount = min(max(retryCount, 1), 6)
         return Double(1 << boundedRetryCount) * 60
     }
+
+    private func transcribeViaLocalWhisper(
+        audioPath: String,
+        language: String?,
+        environment: AudioRuntimeEnvironment
+    ) async throws -> AudioTranscript {
+        var args = environment.launchArgumentsPrefix + [environment.scriptPath, audioPath]
+        if let lang = language { args.append(lang) }
+
+        let process = Process()
+        process.executableURL = environment.executableURL
+        process.arguments = args
+        process.environment = ProcessInfo.processInfo.environment.merging(
+            ["MEMOGRAPH_WHISPER_MODEL": environment.modelName]
+        ) { _, newValue in newValue }
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        let stdoutData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard let json = try? JSONSerialization.jsonObject(with: stdoutData) as? [String: Any] else {
+            throw AudioError.transcriptionFailed(stderr.isEmpty ? "Failed to parse whisper output" : stderr)
+        }
+
+        return try parseTranscriptResponse(json, fallbackLanguage: language)
+    }
+
+    private func transcribeViaCloud(
+        audioPath: String,
+        language: String?,
+        source: String?,
+        environment: AudioCloudRuntimeEnvironment
+    ) async throws -> AudioTranscript {
+        let fileURL = URL(fileURLWithPath: audioPath)
+        let audioData = try Data(contentsOf: fileURL)
+        let modelName = modelName(for: source, environment: environment)
+        let boundary = "Boundary-\(UUID().uuidString)"
+
+        var request = URLRequest(url: URL(string: normalizedBaseURL(environment.baseURL) + "/audio/transcriptions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(environment.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 300
+
+        let body = buildMultipartBody(
+            boundary: boundary,
+            audioData: audioData,
+            fileName: fileURL.lastPathComponent,
+            mimeType: mimeType(for: fileURL.pathExtension),
+            modelName: modelName,
+            language: language
+        )
+
+        let (data, response) = try await uploadTransport(request, body)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AudioError.transcriptionFailed("Invalid HTTP response from audio transcription API")
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            throw AudioError.transcriptionFailed("HTTP \(httpResponse.statusCode): \(bodyText)")
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AudioError.transcriptionFailed("Failed to parse cloud transcription output")
+        }
+
+        logger.info("AudioTranscriber: cloud transcription ok for \(source ?? "audio", privacy: .public) using \(modelName, privacy: .public)")
+        return try parseTranscriptResponse(json, fallbackLanguage: language)
+    }
+
+    private func parseTranscriptResponse(
+        _ json: [String: Any],
+        fallbackLanguage: String?
+    ) throws -> AudioTranscript {
+        if let error = json["error"] as? String {
+            throw AudioError.transcriptionFailed(error)
+        }
+
+        guard let text = json["text"] as? String else {
+            throw AudioError.transcriptionFailed("Transcription output did not contain text")
+        }
+
+        let detectedLang = (json["language"] as? String) ?? fallbackLanguage
+        let durationSeconds = json["duration"] as? Double ?? 0
+
+        return AudioTranscript(
+            id: UUID().uuidString,
+            sessionId: nil,
+            timestamp: ISO8601DateFormatter().string(from: Date()),
+            segmentStartedAt: nil,
+            segmentEndedAt: nil,
+            persistedAt: nil,
+            durationSeconds: durationSeconds,
+            text: text,
+            language: detectedLang,
+            source: nil
+        )
+    }
+
+    private func modelName(for source: String?, environment: AudioCloudRuntimeEnvironment) -> String {
+        switch source {
+        case "microphone":
+            return environment.microphoneModel
+        case "system":
+            return environment.systemAudioModel
+        default:
+            return environment.systemAudioModel
+        }
+    }
+
+    private func normalizedBaseURL(_ value: String) -> String {
+        value.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private func mimeType(for pathExtension: String) -> String {
+        switch pathExtension.lowercased() {
+        case "wav":
+            return "audio/wav"
+        case "mp3":
+            return "audio/mpeg"
+        case "m4a":
+            return "audio/mp4"
+        case "caf":
+            return "audio/x-caf"
+        default:
+            return "application/octet-stream"
+        }
+    }
+
+    private func buildMultipartBody(
+        boundary: String,
+        audioData: Data,
+        fileName: String,
+        mimeType: String,
+        modelName: String,
+        language: String?
+    ) -> Data {
+        var body = Data()
+
+        func append(_ string: String) {
+            body.append(Data(string.utf8))
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+        append("\(modelName)\r\n")
+
+        if let language, !language.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            append("\(language)\r\n")
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
+        append("json\r\n")
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
+        append("Content-Type: \(mimeType)\r\n\r\n")
+        body.append(audioData)
+        append("\r\n")
+        append("--\(boundary)--\r\n")
+
+        return body
+    }
 }
 
 enum AudioError: Error, LocalizedError {
+    case missingAPIKey(String)
     case pythonNotFound(String)
     case scriptNotFound(String)
     case transcriptionFailed(String)
 
     var errorDescription: String? {
         switch self {
+        case .missingAPIKey(let message): return "Missing API key: \(message)"
         case .pythonNotFound(let p): return "Python runtime not found: \(p)"
         case .scriptNotFound(let p): return "Whisper script not found at \(p)"
         case .transcriptionFailed(let m): return "Transcription failed: \(m)"

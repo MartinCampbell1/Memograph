@@ -2,6 +2,13 @@ import AppKit
 import CoreAudio
 import Foundation
 
+struct AudioCloudRuntimeEnvironment {
+    let baseURL: String
+    let apiKey: String
+    let microphoneModel: String
+    let systemAudioModel: String
+}
+
 struct AudioRuntimeEnvironment {
     let executableURL: URL
     let launchArgumentsPrefix: [String]
@@ -10,19 +17,34 @@ struct AudioRuntimeEnvironment {
 }
 
 enum AudioRuntimeStatus {
+    case cloudReady(AudioCloudRuntimeEnvironment)
     case ready(AudioRuntimeEnvironment)
+    case missingAPIKey(String)
     case missingPython(String)
     case missingScript(String)
 
     var description: String {
         switch self {
+        case .cloudReady(let env):
+            return "Готово (облако: mic \(env.microphoneModel), system \(env.systemAudioModel))"
         case .ready(let env):
             let command = env.launchArgumentsPrefix.first ?? env.executableURL.lastPathComponent
-            return "Ready (\(command))"
+            return "Готово (локально: \(command))"
+        case .missingAPIKey(let details):
+            return "Нет API-ключа для аудио: \(details)"
         case .missingPython(let details):
-            return "Python runtime missing: \(details)"
+            return "Не найден Python runtime: \(details)"
         case .missingScript(let details):
-            return "Whisper helper missing: \(details)"
+            return "Не найден whisper helper: \(details)"
+        }
+    }
+
+    var canTranscribe: Bool {
+        switch self {
+        case .cloudReady, .ready:
+            return true
+        case .missingAPIKey, .missingPython, .missingScript:
+            return false
         }
     }
 }
@@ -33,6 +55,27 @@ enum AudioRuntimeResolver {
         fileManager: FileManager = .default,
         bundle: Bundle = .main
     ) -> AudioRuntimeStatus {
+        switch settings.audioTranscriptionProvider {
+        case .openAI:
+            let apiKey = settings.resolvedAudioTranscriptionAPIKey
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !apiKey.isEmpty else {
+                return .missingAPIKey("в настройках аудио не задан ключ OpenAI")
+            }
+
+            return .cloudReady(
+                AudioCloudRuntimeEnvironment(
+                    baseURL: settings.audioTranscriptionBaseURL,
+                    apiKey: apiKey,
+                    microphoneModel: settings.audioMicrophoneModel,
+                    systemAudioModel: settings.audioSystemModel
+                )
+            )
+
+        case .localWhisper:
+            break
+        }
+
         guard let scriptPath = resolveScriptPath(fileManager: fileManager, bundle: bundle) else {
             return .missingScript("whisper_transcribe.py was not found in the bundle or source tree")
         }

@@ -218,16 +218,16 @@ final class KnowledgeCompiler {
         let visibleRelationObjects = Set(relatedReferences.map { $0.entity.canonicalName })
         let displayedRelatedReferences = filteredRelatedReferences(relatedReferences, for: entity)
         var markdown = "# \(entity.canonicalName)\n\n"
-        markdown += "_Type: \(entity.entityType.rawValue)_\n\n"
+        markdown += "_Тип: \(entityTypeLabel(entity.entityType))_\n\n"
 
-        markdown += "## Snapshot\n"
+        markdown += "## Снимок\n"
         if let firstSeen = entity.firstSeenAt {
-            markdown += "- First seen: \(dateSupport.localDateTimeString(from: firstSeen))\n"
+            markdown += "- Впервые замечено: \(dateSupport.localDateTimeString(from: firstSeen))\n"
         }
         if let lastSeen = entity.lastSeenAt {
-            markdown += "- Last seen: \(dateSupport.localDateTimeString(from: lastSeen))\n"
+            markdown += "- Последний раз замечено: \(dateSupport.localDateTimeString(from: lastSeen))\n"
         }
-        markdown += "- Claims collected: \(claims.count)\n\n"
+        markdown += "- Собрано утверждений: \(claims.count)\n\n"
 
         let overviewLines = buildOverviewLines(
             for: entity,
@@ -235,7 +235,7 @@ final class KnowledgeCompiler {
             relatedReferences: displayedRelatedReferences
         )
         if !overviewLines.isEmpty {
-            markdown += "## Overview\n"
+            markdown += "## Обзор\n"
             for line in overviewLines {
                 markdown += "- \(line)\n"
             }
@@ -243,7 +243,7 @@ final class KnowledgeCompiler {
         }
 
         if !aliases.isEmpty {
-            markdown += "## Aliases\n"
+            markdown += "## Алиасы\n"
             for alias in aliases {
                 markdown += "- \(alias)\n"
             }
@@ -252,7 +252,7 @@ final class KnowledgeCompiler {
 
         let mergedContextLines = buildMergedContextLines(mergeOverlays)
         if !mergedContextLines.isEmpty {
-            markdown += "## Merged Context\n"
+            markdown += "## Объединенный контекст\n"
             for line in mergedContextLines {
                 markdown += "- \(line)\n"
             }
@@ -266,7 +266,7 @@ final class KnowledgeCompiler {
             relatedReferences: displayedRelatedReferences
         )
         if !signals.isEmpty {
-            markdown += "## Key Signals\n"
+            markdown += "## Ключевые сигналы\n"
             for signal in signals {
                 markdown += "- \(signal)\n"
             }
@@ -279,7 +279,7 @@ final class KnowledgeCompiler {
             visibleRelationObjects: visibleRelationObjects
         )
         if !recentClaims.isEmpty {
-            markdown += "## Recent Windows\n"
+            markdown += "## Недавние окна\n"
             for entry in renderRecentWindowEntries(
                 from: recentClaims,
                 entityType: entity.entityType,
@@ -291,9 +291,9 @@ final class KnowledgeCompiler {
         }
 
         if !displayedRelatedReferences.isEmpty {
-            markdown += "## Relationships\n"
+            markdown += "## Связи\n"
             for group in groupedRelatedEntities(displayedRelatedReferences, for: entity) {
-                markdown += "### \(group.type.folderName)\n"
+                markdown += "### \(entityTypeSectionTitle(group.type))\n"
                 for related in group.references {
                     let relationship = describe(relationship: related, for: entity)
                     markdown += "- [[\(linkTarget(for: related.entity))|\(related.entity.canonicalName)]]"
@@ -338,25 +338,25 @@ final class KnowledgeCompiler {
             var lines: [String] = []
             var parts: [String] = []
             if let toolCount = relationCounts[.tool], toolCount > 0 {
-                parts.append("\(toolCount) tool\(toolCount == 1 ? "" : "s")")
+                parts.append(counted(toolCount, one: "инструментом", few: "инструментами", many: "инструментами"))
             }
             if let topicCount = relationCounts[.topic], topicCount > 0 {
-                parts.append("\(topicCount) focus topic\(topicCount == 1 ? "" : "s")")
+                parts.append(counted(topicCount, one: "ключевой темой", few: "ключевыми темами", many: "ключевыми темами"))
             }
             if let issueCount = relationCounts[.issue], issueCount > 0 {
-                parts.append("\(issueCount) issue\(issueCount == 1 ? "" : "s")")
+                parts.append(counted(issueCount, one: "проблемой", few: "проблемами", many: "проблемами"))
             }
             if let lessonCount = relationCounts[.lesson], lessonCount > 0 {
-                parts.append("\(lessonCount) durable lesson\(lessonCount == 1 ? "" : "s")")
+                parts.append(counted(lessonCount, one: "устойчивым выводом", few: "устойчивыми выводами", many: "устойчивыми выводами"))
             }
             if !parts.isEmpty {
-                lines.append("Recent work around this project connects it to \(joinNaturalLanguage(parts)).")
+                lines.append("Недавняя работа вокруг этого проекта связала его с \(joinNaturalLanguage(parts)).")
             }
             if !topTopicNames.isEmpty {
-                lines.append("The strongest themes here are \(joinNaturalLanguage(topTopicNames)).")
+                lines.append("Самые сильные темы здесь: \(joinNaturalLanguage(topTopicNames)).")
             }
             if !topToolNames.isEmpty {
-                lines.append("The main tools around it are \(joinNaturalLanguage(topToolNames)).")
+                lines.append("Главные инструменты вокруг него: \(joinNaturalLanguage(topToolNames)).")
             }
             return Array(lines.prefix(3))
 
@@ -364,23 +364,23 @@ final class KnowledgeCompiler {
             var lines: [String] = []
             if let projectCount = relationCounts[.project], projectCount > 0 {
                 if !topProjectNames.isEmpty {
-                    lines.append("This topic stays active across \(projectCount) project\(projectCount == 1 ? "" : "s"), especially around \(joinNaturalLanguage(topProjectNames)).")
+                    lines.append("Эта тема остается активной в \(counted(projectCount, one: "проекте", few: "проектах", many: "проектах")), особенно вокруг \(joinNaturalLanguage(topProjectNames)).")
                 } else {
-                    lines.append("This topic stays active across \(projectCount) project\(projectCount == 1 ? "" : "s").")
+                    lines.append("Эта тема остается активной в \(counted(projectCount, one: "проекте", few: "проектах", many: "проектах")).")
                 }
             }
             if let topicCount = relationCounts[.topic], topicCount > 0 {
                 if !topTopicNames.isEmpty {
-                    lines.append("Its closest cluster includes \(joinNaturalLanguage(topTopicNames)).")
+                    lines.append("Ближайший кластер темы включает \(joinNaturalLanguage(topTopicNames)).")
                 } else {
-                    lines.append("Nearby work keeps it close to \(topicCount) related topic\(topicCount == 1 ? "" : "s").")
+                    lines.append("Соседняя работа держит ее рядом с \(counted(topicCount, one: "связанной темой", few: "связанными темами", many: "связанными темами")).")
                 }
             }
             if let lessonCount = relationCounts[.lesson], lessonCount > 0 {
                 if !topLessonNames.isEmpty {
-                    lines.append("The clearest write-up here is \(joinNaturalLanguage(topLessonNames)).")
+                    lines.append("Лучше всего эта тема раскрыта в \(joinNaturalLanguage(topLessonNames)).")
                 } else {
-                    lines.append("It is documented by \(lessonCount) lesson\(lessonCount == 1 ? "" : "s").")
+                    lines.append("Она задокументирована в \(counted(lessonCount, one: "выводе", few: "выводах", many: "выводах")).")
                 }
             }
             return Array(lines.prefix(3))
@@ -390,23 +390,23 @@ final class KnowledgeCompiler {
             var parts: [String] = []
             let hasProjectTopicSummary = !topProjectNames.isEmpty && !topTopicNames.isEmpty
             if let projectCount = relationCounts[.project], projectCount > 0 {
-                parts.append("\(projectCount) source project\(projectCount == 1 ? "" : "s")")
+                parts.append(counted(projectCount, one: "исходного проекта", few: "исходных проектов", many: "исходных проектов"))
             }
             if let topicCount = relationCounts[.topic], topicCount > 0 {
-                parts.append("\(topicCount) documented topic\(topicCount == 1 ? "" : "s")")
+                parts.append(counted(topicCount, one: "задокументированной темы", few: "задокументированных тем", many: "задокументированных тем"))
             }
             if hasProjectTopicSummary {
-                lines.append("This lesson crystallizes work from \(joinNaturalLanguage(topProjectNames)) into guidance on \(joinNaturalLanguage(topTopicNames)).")
+                lines.append("Этот вывод кристаллизует работу из \(joinNaturalLanguage(topProjectNames)) в практическое знание о \(joinNaturalLanguage(topTopicNames)).")
             } else if !parts.isEmpty {
-                lines.append("This lesson was distilled from \(joinNaturalLanguage(parts)).")
+                lines.append("Этот вывод был собран из \(joinNaturalLanguage(parts)).")
             }
             if !topProjectNames.isEmpty && !hasProjectTopicSummary {
-                lines.append("It mainly comes out of \(joinNaturalLanguage(topProjectNames)).")
+                lines.append("Главным источником для него стали \(joinNaturalLanguage(topProjectNames)).")
             }
             if !topTopicNames.isEmpty && lines.count < 3 {
                 let coverageLine = hasProjectTopicSummary
-                    ? "Its core focus stays on \(joinNaturalLanguage(topTopicNames))."
-                    : "Its core coverage is \(joinNaturalLanguage(topTopicNames))."
+                    ? "Его основной фокус держится на \(joinNaturalLanguage(topTopicNames))."
+                    : "Его основное покрытие — \(joinNaturalLanguage(topTopicNames))."
                 lines.append(coverageLine)
             }
             return Array(lines.prefix(3))
@@ -414,42 +414,42 @@ final class KnowledgeCompiler {
         case .tool:
             var parts: [String] = []
             if recentWindowCount > 0 {
-                parts.append("\(recentWindowCount) recent work window\(recentWindowCount == 1 ? "" : "s")")
+                parts.append(counted(recentWindowCount, one: "недавнем рабочем окне", few: "недавних рабочих окнах", many: "недавних рабочих окнах"))
             }
             if let projectCount = relationCounts[.project], projectCount > 0 {
-                parts.append("\(projectCount) project\(projectCount == 1 ? "" : "s")")
+                parts.append(counted(projectCount, one: "проекте", few: "проектах", many: "проектах"))
             }
             if let topicCount = relationCounts[.topic], topicCount > 0 {
-                parts.append("\(topicCount) topic\(topicCount == 1 ? "" : "s")")
+                parts.append(counted(topicCount, one: "теме", few: "темах", many: "темах"))
             }
             guard !parts.isEmpty else { return [] }
-            var lines = ["Recent activity places this tool across \(joinNaturalLanguage(parts))."]
+            var lines = ["Недавняя активность помещает этот инструмент в контекст \(joinNaturalLanguage(parts))."]
             if !topProjectNames.isEmpty {
-                lines.append("It is most tied to \(joinNaturalLanguage(topProjectNames)).")
+                lines.append("Сильнее всего он связан с \(joinNaturalLanguage(topProjectNames)).")
             }
             if !topTopicNames.isEmpty {
-                lines.append("It most often shows up around \(joinNaturalLanguage(topTopicNames)).")
+                lines.append("Чаще всего он всплывает рядом с \(joinNaturalLanguage(topTopicNames)).")
             }
             return Array(lines.prefix(3))
 
         case .issue:
             var parts: [String] = []
             if let projectCount = relationCounts[.project], projectCount > 0 {
-                parts.append("\(projectCount) affected project\(projectCount == 1 ? "" : "s")")
+                parts.append(counted(projectCount, one: "затронутом проекте", few: "затронутых проектах", many: "затронутых проектах"))
             }
             if recentWindowCount > 0 {
-                parts.append("\(recentWindowCount) surfaced window\(recentWindowCount == 1 ? "" : "s")")
+                parts.append(counted(recentWindowCount, one: "окне, где проблема всплыла", few: "окнах, где проблема всплыла", many: "окнах, где проблема всплыла"))
             }
             guard !parts.isEmpty else { return [] }
-            return ["This issue shows up across \(joinNaturalLanguage(parts))."]
+            return ["Эта проблема проявляется в \(joinNaturalLanguage(parts))."]
 
         case .model:
             guard let projectCount = relationCounts[.project], projectCount > 0 else { return [] }
-            return ["This model shows up in \(projectCount) project\(projectCount == 1 ? "" : "s")."]
+            return ["Эта модель встречается в \(counted(projectCount, one: "проекте", few: "проектах", many: "проектах"))."]
 
         case .site, .person:
             guard recentWindowCount > 0 else { return [] }
-            return ["Seen across \(recentWindowCount) recent window\(recentWindowCount == 1 ? "" : "s")."]
+            return ["Зафиксировано в \(counted(recentWindowCount, one: "недавнем окне", few: "недавних окнах", many: "недавних окнах"))."]
         }
     }
 
@@ -502,7 +502,7 @@ final class KnowledgeCompiler {
             let timestamp = dateSupport.parseDateTime(overlay.appliedAt)
                 .map(dateSupport.localDateTimeString(from:))
                 ?? overlay.appliedAt
-            var parts: [String] = ["Merged from \(overlay.sourceTitle) on \(timestamp)."]
+            var parts: [String] = ["Объединено из \(overlay.sourceTitle) \(timestamp)."]
             if let overview = overlay.sourceOverview, !overview.isEmpty {
                 parts.append(overview)
             }
@@ -512,7 +512,7 @@ final class KnowledgeCompiler {
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .joined(separator: " ")
                 if !signalSummary.isEmpty {
-                    parts.append("Preserved signals: \(signalSummary)")
+                    parts.append("Сохраненные сигналы: \(signalSummary)")
                 }
             }
             return parts.joined(separator: " ")
@@ -598,52 +598,52 @@ final class KnowledgeCompiler {
         let object = claim.objectText?.trimmingCharacters(in: .whitespacesAndNewlines)
         switch claim.predicate {
         case "used_during_window":
-            return object.map { "Used during \($0)." } ?? "Used during a captured work window."
+            return object.map { "Использовалось в \($0)." } ?? "Использовалось в зафиксированном рабочем окне."
         case "advanced_during_window":
-            return object.map { "Advanced in summary window \($0)." } ?? "Advanced in a summary window."
+            return object.map { "Продвигалось в окне сводки \($0)." } ?? "Продвигалось в окне сводки."
         case "topic_in_focus":
-            return object.map { "Appeared as a focus topic for \($0)." } ?? "Appeared as a focus topic."
+            return object.map { "Появлялось как тема фокуса для \($0)." } ?? "Появлялось как тема фокуса."
         case "related_topic":
-            return object.map { "Closely related to topic \($0)." } ?? "Closely related to another topic."
+            return object.map { "Тесно связано с темой \($0)." } ?? "Тесно связано с другой темой."
         case "uses_tool":
-            return object.map { "Worked on with \($0)." } ?? "Worked on with a tool."
+            return object.map { "Прорабатывалось с помощью \($0)." } ?? "Прорабатывалось с помощью инструмента."
         case "supports_project":
-            return object.map { "Supported work on \($0)." } ?? "Supported work on a project."
+            return object.map { "Поддерживало работу над \($0)." } ?? "Поддерживало работу над проектом."
         case "works_on_topic":
-            return object.map { "Used on topic \($0)." } ?? "Used on a topic."
+            return object.map { "Использовалось по теме \($0)." } ?? "Использовалось по теме."
         case "worked_with_tool":
-            return object.map { "Worked with tool \($0)." } ?? "Worked with a tool."
+            return object.map { "Работало вместе с инструментом \($0)." } ?? "Работало вместе с инструментом."
         case "focuses_on_topic":
-            return object.map { "Focused on \($0)." } ?? "Focused on a topic."
+            return object.map { "Фокусировалось на \($0)." } ?? "Фокусировалось на теме."
         case "relevant_to_project":
-            return object.map { "Relevant to \($0)." } ?? "Relevant to a project."
+            return object.map { "Относится к \($0)." } ?? "Относится к проекту."
         case "blocked_by_issue":
-            return object.map { "Blocked by \($0)." } ?? "Blocked by an issue."
+            return object.map { "Было заблокировано \($0)." } ?? "Было заблокировано проблемой."
         case "affects_project":
-            return object.map { "Affected \($0)." } ?? "Affected a project."
+            return object.map { "Затрагивало \($0)." } ?? "Затрагивало проект."
         case "uses_model":
-            return object.map { "Used model \($0)." } ?? "Used a model."
+            return object.map { "Использовало модель \($0)." } ?? "Использовало модель."
         case "used_in_project":
-            return object.map { "Used in \($0)." } ?? "Used in a project."
+            return object.map { "Использовалось в \($0)." } ?? "Использовалось в проекте."
         case "generates_lesson":
-            return object.map { "Generated lesson \($0)." } ?? "Generated a durable lesson."
+            return object.map { "Породило вывод \($0)." } ?? "Породило устойчивый вывод."
         case "derived_from_project":
-            return object.map { "Derived from \($0)." } ?? "Derived from a project."
+            return object.map { "Было выведено из \($0)." } ?? "Было выведено из проекта."
         case "explains_topic":
-            return object.map { "Explains topic \($0)." } ?? "Explains a topic."
+            return object.map { "Объясняет тему \($0)." } ?? "Объясняет тему."
         case "documented_in_lesson":
-            return object.map { "Documented in lesson \($0)." } ?? "Documented in a lesson."
+            return object.map { "Задокументировано в выводе \($0)." } ?? "Задокументировано в выводе."
         case "worth_capturing":
-            return object.map { "Suggested as durable knowledge for \($0)." } ?? "Suggested as durable knowledge."
+            return object.map { "Предложено как устойчивое знание для \($0)." } ?? "Предложено как устойчивое знание."
         case "surfaced_in_window":
-            return object.map { "Surfaced as an issue for \($0)." } ?? "Surfaced as an issue."
+            return object.map { "Всплыло как проблема для \($0)." } ?? "Всплыло как проблема."
         default:
             return object.map { "\(claim.predicate) — \($0)" } ?? claim.predicate
         }
     }
 
     private func formatTimestamp(_ value: String?) -> String {
-        guard let value else { return "recently" }
+        guard let value else { return "недавно" }
         return dateSupport.localDateTimeString(from: value)
     }
 
@@ -654,45 +654,45 @@ final class KnowledgeCompiler {
         switch entityType {
         case .project:
             return compactSignalLines([
-                signalLine("advanced_during_window", label: "Advanced", summaries: summaries, unit: "summary window"),
-                signalLine("used_during_window", label: "Seen", summaries: summaries, unit: "captured work window"),
-                signalLine(["uses_tool", "worked_with_tool"], label: "Main tools", summaries: summaries, fallbackNoun: "tool"),
-                signalLine("focuses_on_topic", label: "Main focus", summaries: summaries, fallbackNoun: "topic"),
-                signalLine("blocked_by_issue", label: "Recent blocker", summaries: summaries, fallbackNoun: "issue"),
-                signalLine("generates_lesson", label: "Produced lesson", summaries: summaries, fallbackNoun: "lesson")
+                signalLine("advanced_during_window", label: "Развивался", summaries: summaries),
+                signalLine("used_during_window", label: "Зафиксирован", summaries: summaries),
+                signalLine(["uses_tool", "worked_with_tool"], label: "Главные инструменты", summaries: summaries, fallbackNoun: "элементов"),
+                signalLine("focuses_on_topic", label: "Главный фокус", summaries: summaries, fallbackNoun: "тем"),
+                signalLine("blocked_by_issue", label: "Недавний блокер", summaries: summaries, fallbackNoun: "проблем"),
+                signalLine("generates_lesson", label: "Породил вывод", summaries: summaries, fallbackNoun: "выводов")
             ])
         case .tool:
             return compactSignalLines([
-                signalLine("used_during_window", label: "Seen", summaries: summaries, unit: "captured work window"),
-                signalLine(["supports_project", "used_in_project"], label: "Main projects", summaries: summaries, fallbackNoun: "project"),
-                signalLine("works_on_topic", label: "Commonly used for", summaries: summaries, fallbackNoun: "topic"),
-                signalLine("topic_in_focus", label: "Mentioned in summary focus", summaries: summaries, unit: "summary window")
+                signalLine("used_during_window", label: "Зафиксирован", summaries: summaries),
+                signalLine(["supports_project", "used_in_project"], label: "Главные проекты", summaries: summaries, fallbackNoun: "проектов"),
+                signalLine("works_on_topic", label: "Чаще всего использовался для", summaries: summaries, fallbackNoun: "тем"),
+                signalLine("topic_in_focus", label: "Упоминался в фокусе сводки", summaries: summaries)
             ])
         case .topic:
             return compactSignalLines([
-                signalLine("topic_in_focus", label: "Focused", summaries: summaries, unit: "summary window"),
-                signalLine("relevant_to_project", label: "Main projects", summaries: summaries, fallbackNoun: "project"),
-                signalLine("related_topic", label: "Closest cluster", summaries: summaries, fallbackNoun: "topic"),
-                signalLine("documented_in_lesson", label: "Best write-up", summaries: summaries, fallbackNoun: "lesson")
+                signalLine("topic_in_focus", label: "В фокусе", summaries: summaries),
+                signalLine("relevant_to_project", label: "Главные проекты", summaries: summaries, fallbackNoun: "проектов"),
+                signalLine("related_topic", label: "Ближайший кластер", summaries: summaries, fallbackNoun: "тем"),
+                signalLine("documented_in_lesson", label: "Лучшее описание", summaries: summaries, fallbackNoun: "выводов")
             ])
         case .lesson:
             return compactSignalLines([
-                signalLine("derived_from_project", label: "Source projects", summaries: summaries, fallbackNoun: "project"),
-                signalLine("explains_topic", label: "Core topic", summaries: summaries, fallbackNoun: "topic"),
+                signalLine("derived_from_project", label: "Исходные проекты", summaries: summaries, fallbackNoun: "проектов"),
+                signalLine("explains_topic", label: "Ключевая тема", summaries: summaries, fallbackNoun: "тем"),
                 signalLine("worth_capturing", label: nil, summaries: summaries)
             ])
         case .issue:
             return compactSignalLines([
-                signalLine("surfaced_in_window", label: "Surfaced", summaries: summaries, unit: "summary window"),
-                signalLine("affects_project", label: "Affected", summaries: summaries, fallbackNoun: "project")
+                signalLine("surfaced_in_window", label: "Всплывала", summaries: summaries),
+                signalLine("affects_project", label: "Затрагивала", summaries: summaries, fallbackNoun: "проектов")
             ])
         case .model:
             return compactSignalLines([
-                signalLine(["used_in_project", "uses_model"], label: "Seen on", summaries: summaries, fallbackNoun: "project")
+                signalLine(["used_in_project", "uses_model"], label: "Замечена в", summaries: summaries, fallbackNoun: "проектах")
             ])
         case .site, .person:
             return compactSignalLines([
-                signalLine("used_during_window", label: "Seen", summaries: summaries, unit: "captured work window")
+                signalLine("used_during_window", label: "Зафиксирован", summaries: summaries)
             ])
         }
     }
@@ -741,27 +741,22 @@ final class KnowledgeCompiler {
         unit: String?
     ) -> String {
         if summary.predicate == "worth_capturing" {
-            return "Captured as a durable note candidate \(summary.evidenceCount == 1 ? "once" : "\(summary.evidenceCount) times"); last seen \(formatTimestamp(summary.latest))."
-        }
-
-        if let unit {
-            let phrase = "\(summary.evidenceCount) \(unit)\(summary.evidenceCount == 1 ? "" : "s")"
-            if let label {
-                return "\(label) in \(phrase); last seen \(formatTimestamp(summary.latest))."
-            }
-            return "\(phrase.capitalized); last seen \(formatTimestamp(summary.latest))."
+            return "Зафиксировано как кандидат в устойчивые заметки \(timesPhrase(summary.evidenceCount)); последний раз \(formatTimestamp(summary.latest))."
         }
 
         let objectCount = summary.objectCount > 0 ? summary.objectCount : summary.evidenceCount
         let objectSummary = summarizeExamples(
             summary.examples,
             totalCount: objectCount,
-            fallbackNoun: fallbackNoun ?? "item"
+            fallbackNoun: fallbackNoun ?? "элементов"
         )
         if let label {
-            return "\(label): \(objectSummary); last seen \(formatTimestamp(summary.latest))."
+            if summary.examples.isEmpty && fallbackNoun == nil {
+                return "\(label): \(timesPhrase(summary.evidenceCount)); последний раз \(formatTimestamp(summary.latest))."
+            }
+            return "\(label): \(objectSummary); последний раз \(formatTimestamp(summary.latest))."
         }
-        return "\(objectSummary); last seen \(formatTimestamp(summary.latest))."
+        return "\(objectSummary); последний раз \(formatTimestamp(summary.latest))."
     }
 
     private func mergeSignalSummaries(_ summaries: [PredicateSignalSummary]) -> PredicateSignalSummary {
@@ -781,43 +776,43 @@ final class KnowledgeCompiler {
     private func renderGenericSignal(_ summary: PredicateSignalSummary) -> String? {
         switch summary.predicate {
         case "advanced_during_window":
-            return "Advanced in \(summary.evidenceCount) summary window\(summary.evidenceCount == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+            return "Развивалось \(timesPhrase(summary.evidenceCount)); последний раз \(formatTimestamp(summary.latest))."
         case "surfaced_in_window":
-            return "Surfaced as an issue in \(summary.evidenceCount) summary window\(summary.evidenceCount == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+            return "Всплывало как проблема \(timesPhrase(summary.evidenceCount)); последний раз \(formatTimestamp(summary.latest))."
         case "used_during_window":
-            return "Seen in \(summary.evidenceCount) captured work window\(summary.evidenceCount == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+            return "Зафиксировано \(timesPhrase(summary.evidenceCount)); последний раз \(formatTimestamp(summary.latest))."
         case "topic_in_focus":
-            return "Focus topic in \(summary.evidenceCount) summary window\(summary.evidenceCount == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+            return "Было в фокусе \(timesPhrase(summary.evidenceCount)); последний раз \(formatTimestamp(summary.latest))."
         case "related_topic":
-            return "Related to \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+            return "Связано с \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "темами")); последний раз \(formatTimestamp(summary.latest))."
         case "uses_tool", "worked_with_tool":
-            return "Worked with \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "tool")); last seen \(formatTimestamp(summary.latest))."
+            return "Работало с \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "инструментами")); последний раз \(formatTimestamp(summary.latest))."
         case "supports_project":
-            return "Supported \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Поддерживало \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "проекты")); последний раз \(formatTimestamp(summary.latest))."
         case "works_on_topic":
-            return "Used on \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+            return "Использовалось по \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "темам")); последний раз \(formatTimestamp(summary.latest))."
         case "focuses_on_topic":
-            return "Focus topic: \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+            return "Фокус: \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "темам")); последний раз \(formatTimestamp(summary.latest))."
         case "relevant_to_project":
-            return "Relevant to \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Относится к \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "проектам")); последний раз \(formatTimestamp(summary.latest))."
         case "blocked_by_issue":
-            return "Blocked by \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "issue")); last seen \(formatTimestamp(summary.latest))."
+            return "Заблокировано \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "проблемами")); последний раз \(formatTimestamp(summary.latest))."
         case "affects_project":
-            return "Affected \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Затронуло \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "проекты")); последний раз \(formatTimestamp(summary.latest))."
         case "uses_model":
-            return "Used with \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "model")); last seen \(formatTimestamp(summary.latest))."
+            return "Использовало \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "модели")); последний раз \(formatTimestamp(summary.latest))."
         case "used_in_project":
-            return "Used in \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Использовалось в \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "проектах")); последний раз \(formatTimestamp(summary.latest))."
         case "generates_lesson":
-            return "Generated \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
+            return "Породило \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "выводы")); последний раз \(formatTimestamp(summary.latest))."
         case "derived_from_project":
-            return "Derived from \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Выведено из \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "проектов")); последний раз \(formatTimestamp(summary.latest))."
         case "explains_topic":
-            return "Explains \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+            return "Объясняет \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "темы")); последний раз \(formatTimestamp(summary.latest))."
         case "documented_in_lesson":
-            return "Documented in \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
+            return "Задокументировано в \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "выводах")); последний раз \(formatTimestamp(summary.latest))."
         case "worth_capturing":
-            return "Captured as a durable note candidate \(summary.evidenceCount == 1 ? "once" : "\(summary.evidenceCount) times"); last seen \(formatTimestamp(summary.latest))."
+            return "Зафиксировано как кандидат в устойчивые заметки \(timesPhrase(summary.evidenceCount)); последний раз \(formatTimestamp(summary.latest))."
         default:
             return nil
         }
@@ -892,13 +887,13 @@ final class KnowledgeCompiler {
         fallbackNoun: String
     ) -> String {
         guard !examples.isEmpty else {
-            return "\(totalCount) \(fallbackNoun)\(totalCount == 1 ? "" : "s")"
+            return "\(totalCount) \(fallbackNoun)"
         }
 
         let visibleExamples = Array(examples.prefix(2))
         let remaining = max(totalCount - visibleExamples.count, 0)
         if remaining > 0 {
-            return visibleExamples.joined(separator: ", ") + " and \(remaining) more"
+            return visibleExamples.joined(separator: ", ") + " и еще \(remaining)"
         }
         return joinNaturalLanguage(visibleExamples)
     }
@@ -1043,7 +1038,7 @@ final class KnowledgeCompiler {
 
             let when = windowClaims.first?.windowStart.map { dateSupport.localDateTimeString(from: $0) }
                 ?? windowClaims.first?.sourceSummaryGeneratedAt.map { dateSupport.localDateTimeString(from: $0) }
-                ?? "unknown time"
+                ?? "неизвестное время"
 
             var seenFragments = Set<String>()
             let fragments = windowClaims.compactMap { claim -> String? in
@@ -1058,7 +1053,7 @@ final class KnowledgeCompiler {
                 entityType: entityType
             )
             if let context = windowContexts[windowKey], !context.isEmpty {
-                description += " Context: \(context)"
+                description += " Контекст: \(context)"
             }
             return (when: when, description: description)
         }
@@ -1092,66 +1087,66 @@ final class KnowledgeCompiler {
         let object = claim.objectText?.trimmingCharacters(in: .whitespacesAndNewlines)
         switch claim.predicate {
         case "used_during_window":
-            return object.map { "active during \($0)" } ?? "active in a captured work window"
+            return object.map { "активно в \($0)" } ?? "активно в зафиксированном рабочем окне"
         case "advanced_during_window":
-            return "advanced in the summary"
+            return "развивалось в сводке"
         case "topic_in_focus":
-            return entityType == .topic ? "in focus during the summary" : "in focus for the summary"
+            return entityType == .topic ? "в фокусе этой сводки" : "в фокусе сводки"
         case "related_topic":
-            return object.map { "near \($0)" } ?? "near another topic"
+            return object.map { "рядом с \($0)" } ?? "рядом с другой темой"
         case "uses_tool":
-            return object.map { "with \($0)" } ?? "with a tool"
+            return object.map { "с \($0)" } ?? "с инструментом"
         case "supports_project":
             if entityType == .tool {
-                return object.map { "used while working on \($0)" } ?? "used while working on a project"
+                return object.map { "использовался при работе над \($0)" } ?? "использовался при работе над проектом"
             }
-            return object.map { "supporting \($0)" } ?? "supporting a project"
+            return object.map { "поддерживая \($0)" } ?? "поддерживая проект"
         case "works_on_topic":
             if entityType == .tool {
-                return object.map { "exploring \($0)" } ?? "exploring a topic"
+                return object.map { "исследуя \($0)" } ?? "исследуя тему"
             }
-            return object.map { "used on \($0)" } ?? "used on a topic"
+            return object.map { "использовалось по \($0)" } ?? "использовалось по теме"
         case "worked_with_tool":
-            return object.map { "with \($0)" } ?? "with a tool"
+            return object.map { "с \($0)" } ?? "с инструментом"
         case "focuses_on_topic":
-            return object.map { "focused on \($0)" } ?? "focused on a topic"
+            return object.map { "сфокусировано на \($0)" } ?? "сфокусировано на теме"
         case "relevant_to_project":
             if entityType == .topic {
-                return object.map { "active around \($0)" } ?? "active around a project"
+                return object.map { "активно вокруг \($0)" } ?? "активно вокруг проекта"
             }
-            return object.map { "tied to \($0)" } ?? "tied to a project"
+            return object.map { "связано с \($0)" } ?? "связано с проектом"
         case "blocked_by_issue":
-            return object.map { "blocked by \($0)" } ?? "blocked by an issue"
+            return object.map { "заблокировано \($0)" } ?? "заблокировано проблемой"
         case "affects_project":
-            return object.map { "affected \($0)" } ?? "affected a project"
+            return object.map { "затронуло \($0)" } ?? "затронуло проект"
         case "uses_model":
-            return object.map { "using \($0)" } ?? "using a model"
+            return object.map { "используя \($0)" } ?? "используя модель"
         case "used_in_project":
             if entityType == .model {
-                return object.map { "used on \($0)" } ?? "used on a project"
+                return object.map { "использовалась в \($0)" } ?? "использовалась в проекте"
             }
-            return object.map { "used in \($0)" } ?? "used in a project"
+            return object.map { "использовалось в \($0)" } ?? "использовалось в проекте"
         case "generates_lesson":
-            return object.map { "generated lesson \($0)" } ?? "generated a lesson"
+            return object.map { "породило вывод \($0)" } ?? "породило вывод"
         case "derived_from_project":
             if entityType == .lesson {
-                return object.map { "distilled from \($0)" } ?? "distilled from a project"
+                return object.map { "выведено из \($0)" } ?? "выведено из проекта"
             }
-            return object.map { "derived from \($0)" } ?? "derived from a project"
+            return object.map { "получено из \($0)" } ?? "получено из проекта"
         case "explains_topic":
             if entityType == .lesson {
-                return object.map { "covering \($0)" } ?? "covering a topic"
+                return object.map { "раскрывая \($0)" } ?? "раскрывая тему"
             }
-            return object.map { "explains \($0)" } ?? "explains a topic"
+            return object.map { "объясняет \($0)" } ?? "объясняет тему"
         case "documented_in_lesson":
             if entityType == .topic {
-                return object.map { "explained in \($0)" } ?? "explained in a lesson"
+                return object.map { "объяснено в \($0)" } ?? "объяснено в выводе"
             }
-            return object.map { "documented in \($0)" } ?? "documented in a lesson"
+            return object.map { "задокументировано в \($0)" } ?? "задокументировано в выводе"
         case "worth_capturing":
-            return "captured as a durable note candidate"
+            return "зафиксировано как кандидат в устойчивые заметки"
         case "surfaced_in_window":
-            return object.map { "surfaced as an issue for \($0)" } ?? "surfaced as an issue"
+            return object.map { "всплыло как проблема для \($0)" } ?? "всплыло как проблема"
         default:
             return describe(claim: claim).trimmingCharacters(in: CharacterSet(charactersIn: "."))
         }
@@ -1184,23 +1179,23 @@ final class KnowledgeCompiler {
 
     private func recentWindowFragmentPriority(_ fragment: String, entityType: KnowledgeEntityType) -> Int {
         let normalized = fragment.lowercased()
-        if normalized.hasPrefix("active during") || normalized.hasPrefix("surfaced as an issue") {
+        if normalized.hasPrefix("активно в") || normalized.hasPrefix("всплыло как проблема") {
             return 6
         }
-        if normalized.hasPrefix("advanced in the summary")
-            || normalized.hasPrefix("in focus for the summary")
-            || normalized.hasPrefix("in focus during the summary") {
+        if normalized.hasPrefix("развивалось в сводке")
+            || normalized.hasPrefix("в фокусе сводки")
+            || normalized.hasPrefix("в фокусе этой сводки") {
             return 5
         }
-        if normalized.hasPrefix("with ") || normalized.hasPrefix("focused on ") || normalized.hasPrefix("using ")
-            || normalized.hasPrefix("used while working on ") || normalized.hasPrefix("exploring ") {
+        if normalized.hasPrefix("с ") || normalized.hasPrefix("сфокусировано на ") || normalized.hasPrefix("используя ")
+            || normalized.hasPrefix("использовался при работе над ") || normalized.hasPrefix("исследуя ") {
             return entityType == .project ? 4 : 3
         }
-        if normalized.hasPrefix("derived from ") || normalized.hasPrefix("distilled from ")
-            || normalized.hasPrefix("explains ") || normalized.hasPrefix("covering ") {
+        if normalized.hasPrefix("получено из ") || normalized.hasPrefix("выведено из ")
+            || normalized.hasPrefix("объясняет ") || normalized.hasPrefix("раскрывая ") {
             return entityType == .lesson ? 4 : 3
         }
-        if normalized.hasPrefix("near ") || normalized.hasPrefix("tied to ") || normalized.hasPrefix("active around ") {
+        if normalized.hasPrefix("рядом с ") || normalized.hasPrefix("связано с ") || normalized.hasPrefix("активно вокруг ") {
             return 2
         }
         return 1
@@ -1911,10 +1906,10 @@ final class KnowledgeCompiler {
         case 1:
             return parts[0]
         case 2:
-            return "\(parts[0]) and \(parts[1])"
+            return "\(parts[0]) и \(parts[1])"
         default:
             let head = parts.dropLast().joined(separator: ", ")
-            return "\(head), and \(parts.last!)"
+            return "\(head) и \(parts.last!)"
         }
     }
 
@@ -1922,39 +1917,89 @@ final class KnowledgeCompiler {
         switch relationship.edgeType {
         case "uses_tool":
             return relationship.direction == .outgoing
-                ? "used while working on this project"
-                : "project where this tool showed up"
+                ? "использовался при работе над этим проектом"
+                : "проект, где этот инструмент использовался"
         case "works_on_topic":
             return relationship.direction == .outgoing
-                ? "topic this tool was used to explore"
-                : "tool often used while exploring this topic"
+                ? "тема, для исследования которой использовался этот инструмент"
+                : "инструмент, который часто использовался при изучении этой темы"
         case "related_topic":
-            return "part of the same working cluster"
+            return "часть того же рабочего кластера"
         case "focuses_on_topic":
             return relationship.direction == .outgoing
-                ? "topic that became central in this project"
-                : "project where this topic became central"
+                ? "тема, ставшая центральной в этом проекте"
+                : "проект, где эта тема стала центральной"
         case "blocked_by_issue":
             return relationship.direction == .outgoing
-                ? "issue that blocked this project"
-                : "project impacted by this issue"
+                ? "проблема, которая блокировала этот проект"
+                : "проект, затронутый этой проблемой"
         case "uses_model":
             return relationship.direction == .outgoing
-                ? "model used in this project"
-                : "project where this model was used"
+                ? "модель, использованная в этом проекте"
+                : "проект, где использовалась эта модель"
         case "generates_lesson":
             return relationship.direction == .outgoing
-                ? "lesson distilled out of this project"
-                : "source project behind this lesson"
+                ? "вывод, дистиллированный из этого проекта"
+                : "исходный проект за этим выводом"
         case "explains_topic":
             return relationship.direction == .outgoing
-                ? "topic this lesson helps explain"
-                : "lesson that captures this topic"
+                ? "тема, которую помогает объяснить этот вывод"
+                : "вывод, который фиксирует эту тему"
         case "co_occurs_with":
-            return "often appeared in the same work windows"
+            return "часто появлялся в тех же рабочих окнах"
         default:
             return relationship.edgeType.replacingOccurrences(of: "_", with: " ")
         }
+    }
+
+    private func entityTypeLabel(_ type: KnowledgeEntityType) -> String {
+        switch type {
+        case .project: return "проект"
+        case .tool: return "инструмент"
+        case .model: return "модель"
+        case .topic: return "тема"
+        case .issue: return "проблема"
+        case .lesson: return "вывод"
+        case .site: return "сайт"
+        case .person: return "человек"
+        }
+    }
+
+    private func entityTypeSectionTitle(_ type: KnowledgeEntityType) -> String {
+        switch type {
+        case .project: return "Проекты"
+        case .tool: return "Инструменты"
+        case .model: return "Модели"
+        case .topic: return "Темы"
+        case .issue: return "Проблемы"
+        case .lesson: return "Выводы"
+        case .site: return "Сайты"
+        case .person: return "Люди"
+        }
+    }
+
+    private func counted(_ count: Int, one: String, few: String, many: String) -> String {
+        "\(count) \(pluralized(count, one: one, few: few, many: many))"
+    }
+
+    private func pluralized(_ count: Int, one: String, few: String, many: String) -> String {
+        let remainder100 = count % 100
+        let remainder10 = count % 10
+        if remainder100 >= 11 && remainder100 <= 14 {
+            return many
+        }
+        switch remainder10 {
+        case 1:
+            return one
+        case 2...4:
+            return few
+        default:
+            return many
+        }
+    }
+
+    private func timesPhrase(_ count: Int) -> String {
+        counted(count, one: "раз", few: "раза", many: "раз")
     }
 
     private func linkTarget(for entity: KnowledgeEntityRecord) -> String {

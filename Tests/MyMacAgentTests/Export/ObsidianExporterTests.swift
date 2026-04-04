@@ -54,14 +54,14 @@ struct ObsidianExporterTests {
         let exporter = ObsidianExporter(db: db, timeZone: utc)
         let markdown = try exporter.renderDailyNote(summary: summary)
 
-        #expect(markdown.contains("# Hourly Log — 2026-04-02 09:00–12:22"))
-        #expect(markdown.contains("## Summary"))
+        #expect(markdown.contains("# Почасовой лог — 2026-04-02 09:00–12:22"))
+        #expect(markdown.contains("## Сводка"))
         #expect(markdown.contains("Productive day"))
-        #expect(markdown.contains("## Main apps"))
+        #expect(markdown.contains("## Основные приложения"))
         #expect(markdown.contains("Cursor"))
-        #expect(markdown.contains("## Main topics"))
+        #expect(markdown.contains("## Основные темы"))
         #expect(markdown.contains("Swift concurrency"))
-        #expect(markdown.contains("## Suggested notes"))
+        #expect(markdown.contains("## Предлагаемые заметки"))
         #expect(markdown.contains("[[Swift Testing patterns]]"))
     }
 
@@ -73,7 +73,7 @@ struct ObsidianExporterTests {
         let summary = DailySummaryRecord(
             date: "2026-04-03",
             summaryText: """
-            ## Summary
+            ## Сводка
             Rich body.
 
             ## Детальный таймлайн
@@ -98,10 +98,10 @@ struct ObsidianExporterTests {
         let exporter = ObsidianExporter(db: db, timeZone: utc)
         let markdown = try exporter.renderDailyNote(summary: summary)
 
-        #expect(markdown.contains("# Daily Log — 2026-04-03"))
+        #expect(markdown.contains("# Дневной лог — 2026-04-03"))
         #expect(markdown.contains("## Детальный таймлайн"))
         #expect(markdown.contains("## Проекты и код"))
-        #expect(!markdown.contains("## Main apps"))
+        #expect(!markdown.contains("## Основные приложения"))
     }
 
     @Test("Writes daily note to vault directory")
@@ -127,7 +127,7 @@ struct ObsidianExporterTests {
 
         #expect(FileManager.default.fileExists(atPath: filePath))
         let content = try String(contentsOfFile: filePath, encoding: .utf8)
-        #expect(content.contains("# Daily Log — 2026-04-02"))
+        #expect(content.contains("# Дневной лог — 2026-04-02"))
         #expect(filePath.contains("/Daily/2026-04-02_"))
     }
 
@@ -374,13 +374,13 @@ struct ObsidianExporterTests {
         let artifact = KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: "Review/reclassify-prompt-engineering.md",
-            title: "Review Packet — Reclassify Prompt Engineering",
+            title: "Пакет ревью — Переклассификация Prompt Engineering",
             markdown: """
             <!-- memograph-review-key: reclassify:topic-123 -->
             <!-- memograph-review-kind: promote-to-lesson -->
-            # Review Packet — Reclassify Prompt Engineering
+            # Пакет ревью — Переклассификация Prompt Engineering
 
-            ## Decision
+            ## Решение
             Decision: pending
             """,
             reviewPacketKey: "reclassify:topic-123",
@@ -395,17 +395,17 @@ struct ObsidianExporterTests {
         let refreshedArtifact = KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: "Review/reclassify-prompt-engineering.md",
-            title: "Review Packet — Reclassify Prompt Engineering",
+            title: "Пакет ревью — Переклассификация Prompt Engineering",
             markdown: """
             <!-- memograph-review-key: reclassify:topic-123 -->
             <!-- memograph-review-kind: promote-to-lesson -->
-            # Review Packet — Reclassify Prompt Engineering
+            # Пакет ревью — Переклассификация Prompt Engineering
 
-            ## Decision
+            ## Решение
             Decision: pending
 
-            ## Candidate
-            - Source note: [[Knowledge/Topics/prompt-engineering|Prompt Engineering]]
+            ## Кандидат
+            - Исходная заметка: [[Knowledge/Topics/prompt-engineering|Prompt Engineering]]
             """,
             reviewPacketKey: "reclassify:topic-123",
             reviewDecisionKind: .promoteToLesson
@@ -414,18 +414,18 @@ struct ObsidianExporterTests {
         _ = try exporter.syncKnowledgeDraftArtifacts([refreshedArtifact])
         let preserved = try String(contentsOfFile: reviewPath, encoding: .utf8)
         #expect(preserved.contains("Decision: apply"))
-        #expect(preserved.contains("## Candidate"))
+        #expect(preserved.contains("## Кандидат"))
 
         let dismissedArtifact = KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: "Review/weak-topic-gpu-rendering.md",
-            title: "Review Packet — Weak Topic GPU Rendering",
+            title: "Пакет ревью — Слабая тема GPU Rendering",
             markdown: """
             <!-- memograph-review-key: weak:topic-gpu -->
             <!-- memograph-review-kind: suppress -->
-            # Review Packet — Weak Topic GPU Rendering
+            # Пакет ревью — Слабая тема GPU Rendering
 
-            ## Decision
+            ## Решение
             Decision: dismiss
             """,
             reviewPacketKey: "weak:topic-gpu",
@@ -461,7 +461,7 @@ struct ObsidianExporterTests {
                 key: "weak:topic-gpu",
                 kind: .suppress,
                 status: .dismiss,
-                title: "Review Packet — Weak Topic GPU Rendering",
+                title: "Пакет ревью — Слабая тема GPU Rendering",
                 path: "/tmp/Knowledge/_drafts/Review/weak-topic-gpu-rendering.md",
                 recordedAt: "2026-04-04T12:00:00Z"
             )
@@ -474,13 +474,13 @@ struct ObsidianExporterTests {
         let pendingArtifact = KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: "Review/weak-topic-gpu-rendering.md",
-            title: "Review Packet — Weak Topic GPU Rendering",
+            title: "Пакет ревью — Слабая тема GPU Rendering",
             markdown: """
             <!-- memograph-review-key: weak:topic-gpu -->
             <!-- memograph-review-kind: suppress -->
-            # Review Packet — Weak Topic GPU Rendering
+            # Пакет ревью — Слабая тема GPU Rendering
 
-            ## Decision
+            ## Решение
             Decision: pending
             """,
             reviewPacketKey: "weak:topic-gpu",
@@ -493,8 +493,8 @@ struct ObsidianExporterTests {
 
         let reviewHistoryPath = try exporter.exportKnowledgeReviewHistory(existing)
         let history = try String(contentsOfFile: reviewHistoryPath, encoding: .utf8)
-        #expect(history.contains("# Memograph Reviewed Knowledge Decisions"))
-        #expect(history.contains("dismissed [[Knowledge/_drafts/Review/weak-topic-gpu-rendering|Review Packet — Weak Topic GPU Rendering]]"))
+        #expect(history.contains("# Memograph Решения ревью по слою знаний"))
+        #expect(history.contains("отклонено [[Knowledge/_drafts/Review/weak-topic-gpu-rendering|Пакет ревью — Слабая тема GPU Rendering]]"))
     }
 
     @Test("Resolved review drafts are archived during sync and remain discoverable")
@@ -509,13 +509,13 @@ struct ObsidianExporterTests {
         let reviewArtifact = KnowledgeDraftArtifact(
             kind: .reviewDraft,
             relativePath: "Review/reclassify-prompt-engineering.md",
-            title: "Review Packet — Reclassify Prompt Engineering",
+            title: "Пакет ревью — Переклассификация Prompt Engineering",
             markdown: """
             <!-- memograph-review-key: reclassify:topic-123 -->
             <!-- memograph-review-kind: promote-to-lesson -->
-            # Review Packet — Reclassify Prompt Engineering
+            # Пакет ревью — Переклассификация Prompt Engineering
 
-            ## Decision
+            ## Решение
             Decision: pending
             """,
             reviewPacketKey: "reclassify:topic-123",
@@ -540,14 +540,14 @@ struct ObsidianExporterTests {
 
         let historyPath = try exporter.exportKnowledgeReviewHistory(decisions)
         let history = try String(contentsOfFile: historyPath, encoding: .utf8)
-        #expect(history.contains("[[Knowledge/_drafts/ReviewResolved/_index|Resolved review board]]"))
-        #expect(history.contains("approved [[Knowledge/_drafts/ReviewResolved/reclassify-prompt-engineering|Review Packet — Reclassify Prompt Engineering]]"))
+        #expect(history.contains("[[Knowledge/_drafts/ReviewResolved/_index|доска завершенных ревью]]"))
+        #expect(history.contains("одобрено [[Knowledge/_drafts/ReviewResolved/reclassify-prompt-engineering|Пакет ревью — Переклассификация Prompt Engineering]]"))
 
         let boardPath = try exporter.exportKnowledgeResolvedReviewBoard(decisions)
         let board = try String(contentsOfFile: boardPath, encoding: .utf8)
-        #expect(board.contains("# Resolved Knowledge Review Board"))
-        #expect(board.contains("## Approved"))
-        #expect(board.contains("[[Knowledge/_drafts/ReviewResolved/reclassify-prompt-engineering|Review Packet — Reclassify Prompt Engineering]]"))
+        #expect(board.contains("# Доска завершенных ревью слоя знаний"))
+        #expect(board.contains("## Одобрено"))
+        #expect(board.contains("[[Knowledge/_drafts/ReviewResolved/reclassify-prompt-engineering|Пакет ревью — Переклассификация Prompt Engineering]]"))
     }
 
     @Test("Applies safe knowledge draft artifacts into the main knowledge tree with backups")
@@ -645,11 +645,11 @@ struct ObsidianExporterTests {
         let filePath = try exporter.exportKnowledgeAppliedHistory(records)
         #expect(FileManager.default.fileExists(atPath: filePath))
         let markdown = try String(contentsOfFile: filePath, encoding: .utf8)
-        #expect(markdown.contains("# Memograph Applied Knowledge Actions"))
-        #expect(markdown.contains("## Recently Applied"))
+        #expect(markdown.contains("# Memograph Примененные действия слоя знаний"))
+        #expect(markdown.contains("## Недавно применено"))
         #expect(markdown.contains("Codex Workflow for AI Founders"))
-        #expect(markdown.contains("merged context from `OCR Accuracy in Memograph` into [[Knowledge/Topics/ocr|OCR]]"))
-        #expect(markdown.contains("Backup:"))
+        #expect(markdown.contains("объединен контекст из `OCR Accuracy in Memograph` в [[Knowledge/Topics/ocr|OCR]]"))
+        #expect(markdown.contains("Бэкап:"))
     }
 
     @Test("Discovers previously applied knowledge actions from the vault")
@@ -669,13 +669,13 @@ struct ObsidianExporterTests {
         try """
         # Codex Workflow for AI Founders
 
-        _Apply-ready lesson draft generated from a safe maintenance action._
+        _Готовый черновик вывода, сгенерированный из безопасного maintenance-действия._
         """.write(toFile: lessonPath, atomically: true, encoding: .utf8)
 
         try """
         # Codex Workflow for AI Founders
 
-        _Redirect stub generated from a safe lesson-promotion action._
+        _Редирект, сгенерированный из безопасного действия повышения в вывод._
         """.write(toFile: topicPath, atomically: true, encoding: .utf8)
 
         let backupPath = (vaultDir as NSString).appendingPathComponent(
@@ -728,19 +728,19 @@ struct ObsidianExporterTests {
             withIntermediateDirectories: true
         )
         try """
-        # Merge Patch — OCR Accuracy in Memograph → OCR
+        # Патч слияния — OCR Accuracy in Memograph → OCR
 
-        _Apply-ready merge packet generated from a safe consolidation action._
+        _Готовый пакет слияния, сгенерированный из безопасного действия консолидации._
 
-        ## Merge Intent
-        Fold [[Knowledge/Topics/ocr-accuracy-in-memograph|OCR Accuracy in Memograph]] into [[Knowledge/Topics/ocr|OCR]] while preserving any unique context and aliases.
+        ## Замысел слияния
+        Сложить [[Knowledge/Topics/ocr-accuracy-in-memograph|OCR Accuracy in Memograph]] в [[Knowledge/Topics/ocr|OCR]], сохранив уникальный контекст и алиасы.
 
-        ## Source Summary
-        - This narrow note captured OCR tuning work inside Memograph.
+        ## Сводка источника
+        - Эта узкая заметка зафиксировала работу по настройке OCR внутри Memograph.
 
-        ## Signals To Preserve
-        - Focused in 1 summary window; last seen 2026-04-04 09:00.
-        - Main projects: Memograph; last seen 2026-04-04 09:00.
+        ## Сигналы, которые нужно сохранить
+        - В фокусе в 1 окне сводки; последний раз 2026-04-04 09:00.
+        - Главные проекты: Memograph; последний раз 2026-04-04 09:00.
         """.write(toFile: mergePath, atomically: true, encoding: .utf8)
 
         let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
