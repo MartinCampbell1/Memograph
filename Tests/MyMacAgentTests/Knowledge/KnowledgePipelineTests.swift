@@ -1488,8 +1488,114 @@ struct KnowledgePipelineTests {
         #expect(projectNote?.bodyMarkdown.contains("## Overview") == true)
         #expect(projectNote?.bodyMarkdown.contains("Recent work around this project connects it to 1 tool and 1 focus topic.") == true)
         #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Tools/codex|Codex]] — used while working on this project") == true)
-        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — topic that stayed in focus for this project") == true)
+        #expect(projectNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — topic that became central in this project") == true)
         #expect(toolNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — project where this tool showed up") == true)
+    }
+
+    @Test("Topic and lesson notes render cluster-aware semantic summaries")
+    func topicAndLessonNotesRenderClusterAwareSummaries() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("topic-1"), .text("System Audio Capture"), .text("system-audio-capture"), .text("topic"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("project-2"), .text("geminicode"), .text("geminicode"), .text("project"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("topic-2"), .text("Screen Recording"), .text("screen-recording"), .text("topic"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("topic-3"), .text("Accessibility Permissions"), .text("accessibility-permissions"), .text("topic"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("lesson-1"), .text("macOS System Audio Capture Guide"), .text("macos-system-audio-capture-guide"), .text("lesson"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("topic-1"), .text("relevant_to_project"), .text("Memograph"), .real(0.9), .text("relation_inference"),
+            .text("claim-2"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("topic-1"), .text("relevant_to_project"), .text("geminicode"), .real(0.85), .text("relation_inference"),
+            .text("claim-3"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("topic-1"), .text("related_topic"), .text("Screen Recording"), .real(0.85), .text("relation_inference"),
+            .text("claim-4"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("topic-1"), .text("related_topic"), .text("Accessibility Permissions"), .real(0.8), .text("relation_inference"),
+            .text("claim-5"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("lesson-1"), .text("derived_from_project"), .text("Memograph"), .real(0.85), .text("relation_inference"),
+            .text("claim-6"),
+            .text("2026-04-03T10:00:00Z"), .text("2026-04-03T11:00:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T11:01:00Z"),
+            .text("lesson-1"), .text("explains_topic"), .text("System Audio Capture"), .real(0.85), .text("relation_inference")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_edges
+                (id, from_entity_id, to_entity_id, edge_type, weight, updated_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("edge-1"), .text("topic-1"), .text("project-1"), .text("focuses_on_topic"), .real(2),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-2"), .text("topic-1"), .text("project-2"), .text("focuses_on_topic"), .real(1.5),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-3"), .text("topic-1"), .text("topic-2"), .text("related_topic"), .real(1.4),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-4"), .text("topic-1"), .text("topic-3"), .text("related_topic"), .real(1.2),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-5"), .text("project-1"), .text("lesson-1"), .text("generates_lesson"), .real(1.3),
+            .text("2026-04-03T11:01:00Z"),
+            .text("edge-6"), .text("lesson-1"), .text("topic-1"), .text("explains_topic"), .real(1.2),
+            .text("2026-04-03T11:01:00Z")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let topicNote = try compiler.compileNote(for: "topic-1", sourceDate: "2026-04-03")
+        let lessonNote = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
+
+        #expect(topicNote?.bodyMarkdown.contains("This topic stays active across 2 projects, especially around Memograph and geminicode.") == true)
+        #expect(topicNote?.bodyMarkdown.contains("Its closest cluster includes Screen Recording and Accessibility Permissions.") == true)
+        #expect(topicNote?.bodyMarkdown.contains("[[Knowledge/Lessons/macos-system-audio-capture-guide|macOS System Audio Capture Guide]] — lesson that captures this topic") == true)
+
+        #expect(lessonNote?.bodyMarkdown.contains("This lesson crystallizes work from Memograph into guidance on System Audio Capture.") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Projects/memograph|Memograph]] — source project behind this lesson") == true)
+        #expect(lessonNote?.bodyMarkdown.contains("[[Knowledge/Topics/system-audio-capture|System Audio Capture]] — topic this lesson helps explain") == true)
     }
 
     @Test("Tool relationship sections prioritize projects and cap noisy tool neighbors")
@@ -1581,7 +1687,7 @@ struct KnowledgePipelineTests {
         }
 
         #expect(body.contains("[[Knowledge/Projects/memograph|Memograph]] — project where this tool showed up"))
-        #expect(body.contains("[[Knowledge/Topics/ocr|OCR]] — topic explored with this tool"))
+        #expect(body.contains("[[Knowledge/Topics/ocr|OCR]] — topic this tool was used to explore"))
         #expect(body.contains("Neighbor Tool 1"))
         #expect(body.contains("Neighbor Tool 5"))
         #expect(body.contains("Neighbor Tool 6") == false)
@@ -1649,7 +1755,7 @@ struct KnowledgePipelineTests {
         let note = try compiler.compileNote(for: "lesson-1", sourceDate: "2026-04-03")
 
         #expect(note?.bodyMarkdown.contains("## Overview") == true)
-        #expect(note?.bodyMarkdown.contains("This lesson was distilled from 1 source project and 1 documented topic.") == true)
+        #expect(note?.bodyMarkdown.contains("This lesson crystallizes work from Memograph into guidance on System Audio Capture.") == true)
         #expect(note?.bodyMarkdown.contains("### Projects") == true)
         #expect(note?.bodyMarkdown.contains("### Topics") == true)
         #expect(note?.bodyMarkdown.contains("### Lessons") == false)

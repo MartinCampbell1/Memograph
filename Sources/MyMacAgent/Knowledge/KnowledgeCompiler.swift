@@ -348,21 +348,22 @@ final class KnowledgeCompiler {
         case .topic:
             var lines: [String] = []
             if let projectCount = relationCounts[.project], projectCount > 0 {
-                lines.append("This topic stays active across \(projectCount) project\(projectCount == 1 ? "" : "s").")
-            }
-            if !topProjectNames.isEmpty {
-                lines.append("It shows up most clearly around \(joinNaturalLanguage(topProjectNames)).")
+                if !topProjectNames.isEmpty {
+                    lines.append("This topic stays active across \(projectCount) project\(projectCount == 1 ? "" : "s"), especially around \(joinNaturalLanguage(topProjectNames)).")
+                } else {
+                    lines.append("This topic stays active across \(projectCount) project\(projectCount == 1 ? "" : "s").")
+                }
             }
             if let topicCount = relationCounts[.topic], topicCount > 0 {
                 if !topTopicNames.isEmpty {
-                    lines.append("Nearby work keeps it close to \(joinNaturalLanguage(topTopicNames)).")
+                    lines.append("Its closest cluster includes \(joinNaturalLanguage(topTopicNames)).")
                 } else {
                     lines.append("Nearby work keeps it close to \(topicCount) related topic\(topicCount == 1 ? "" : "s").")
                 }
             }
             if let lessonCount = relationCounts[.lesson], lessonCount > 0 {
                 if !topLessonNames.isEmpty {
-                    lines.append("It is best explained by \(joinNaturalLanguage(topLessonNames)).")
+                    lines.append("The clearest write-up here is \(joinNaturalLanguage(topLessonNames)).")
                 } else {
                     lines.append("It is documented by \(lessonCount) lesson\(lessonCount == 1 ? "" : "s").")
                 }
@@ -372,20 +373,26 @@ final class KnowledgeCompiler {
         case .lesson:
             var lines: [String] = []
             var parts: [String] = []
+            let hasProjectTopicSummary = !topProjectNames.isEmpty && !topTopicNames.isEmpty
             if let projectCount = relationCounts[.project], projectCount > 0 {
                 parts.append("\(projectCount) source project\(projectCount == 1 ? "" : "s")")
             }
             if let topicCount = relationCounts[.topic], topicCount > 0 {
                 parts.append("\(topicCount) documented topic\(topicCount == 1 ? "" : "s")")
             }
-            if !parts.isEmpty {
+            if hasProjectTopicSummary {
+                lines.append("This lesson crystallizes work from \(joinNaturalLanguage(topProjectNames)) into guidance on \(joinNaturalLanguage(topTopicNames)).")
+            } else if !parts.isEmpty {
                 lines.append("This lesson was distilled from \(joinNaturalLanguage(parts)).")
             }
-            if !topProjectNames.isEmpty {
+            if !topProjectNames.isEmpty && !hasProjectTopicSummary {
                 lines.append("It mainly comes out of \(joinNaturalLanguage(topProjectNames)).")
             }
-            if !topTopicNames.isEmpty {
-                lines.append("Its core coverage is \(joinNaturalLanguage(topTopicNames)).")
+            if !topTopicNames.isEmpty && lines.count < 3 {
+                let coverageLine = hasProjectTopicSummary
+                    ? "Its core focus stays on \(joinNaturalLanguage(topTopicNames))."
+                    : "Its core coverage is \(joinNaturalLanguage(topTopicNames))."
+                lines.append(coverageLine)
             }
             return Array(lines.prefix(3))
 
@@ -1851,14 +1858,14 @@ final class KnowledgeCompiler {
                 : "project where this tool showed up"
         case "works_on_topic":
             return relationship.direction == .outgoing
-                ? "topic explored with this tool"
-                : "tool that showed up around this topic"
+                ? "topic this tool was used to explore"
+                : "tool often used while exploring this topic"
         case "related_topic":
-            return "often appears nearby"
+            return "part of the same working cluster"
         case "focuses_on_topic":
             return relationship.direction == .outgoing
-                ? "topic that stayed in focus for this project"
-                : "project where this topic stayed in focus"
+                ? "topic that became central in this project"
+                : "project where this topic became central"
         case "blocked_by_issue":
             return relationship.direction == .outgoing
                 ? "issue that blocked this project"
@@ -1869,12 +1876,12 @@ final class KnowledgeCompiler {
                 : "project where this model was used"
         case "generates_lesson":
             return relationship.direction == .outgoing
-                ? "lesson distilled from this project"
-                : "project this lesson was distilled from"
+                ? "lesson distilled out of this project"
+                : "source project behind this lesson"
         case "explains_topic":
             return relationship.direction == .outgoing
-                ? "topic explained by this lesson"
-                : "lesson that helps explain this topic"
+                ? "topic this lesson helps explain"
+                : "lesson that captures this topic"
         case "co_occurs_with":
             return "often appeared in the same work windows"
         default:
