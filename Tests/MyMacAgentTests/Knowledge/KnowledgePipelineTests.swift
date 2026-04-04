@@ -569,6 +569,139 @@ struct KnowledgePipelineTests {
         #expect(artifacts.draftArtifacts.count == 7)
     }
 
+    @Test("Knowledge maintenance suppresses already applied promotions and consolidations")
+    func maintenanceSuppressesAlreadyAppliedCandidates() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let maintenance = KnowledgeMaintenance(db: db, timeZone: utc)
+        let shaper = GraphShaper()
+
+        let rootTopic = KnowledgeEntityRecord(
+            id: "topic-1",
+            canonicalName: "TurboQuant",
+            slug: "turboquant",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: "2026-04-03T10:00:00Z",
+            lastSeenAt: "2026-04-03T11:00:00Z"
+        )
+        let expandedTopic = KnowledgeEntityRecord(
+            id: "topic-2",
+            canonicalName: "TurboQuant Algorithm",
+            slug: "turboquant-algorithm",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: "2026-04-03T10:00:00Z",
+            lastSeenAt: "2026-04-03T11:00:00Z"
+        )
+        let workflowTopic = KnowledgeEntityRecord(
+            id: "topic-3",
+            canonicalName: "Codex Workflow for AI Founders",
+            slug: "codex-workflow-for-ai-founders",
+            entityType: .topic,
+            aliasesJson: nil,
+            firstSeenAt: "2026-04-03T10:00:00Z",
+            lastSeenAt: "2026-04-03T11:00:00Z"
+        )
+        let staleTool = KnowledgeEntityRecord(
+            id: "tool-1",
+            canonicalName: "Old Utility",
+            slug: "old-utility",
+            entityType: .tool,
+            aliasesJson: nil,
+            firstSeenAt: "2020-01-01T00:00:00Z",
+            lastSeenAt: "2020-01-02T00:00:00Z"
+        )
+
+        let metrics = [
+            KnowledgeEntityMetrics(
+                entity: rootTopic,
+                claimCount: 5,
+                typedEdgeCount: 4,
+                coOccurrenceEdgeCount: 10,
+                projectRelationCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: expandedTopic,
+                claimCount: 2,
+                typedEdgeCount: 2,
+                coOccurrenceEdgeCount: 6,
+                projectRelationCount: 0
+            ),
+            KnowledgeEntityMetrics(
+                entity: workflowTopic,
+                claimCount: 4,
+                typedEdgeCount: 3,
+                coOccurrenceEdgeCount: 5,
+                projectRelationCount: 1
+            ),
+            KnowledgeEntityMetrics(
+                entity: staleTool,
+                claimCount: 2,
+                typedEdgeCount: 1,
+                coOccurrenceEdgeCount: 1,
+                projectRelationCount: 0
+            )
+        ]
+
+        let appliedActions = [
+            KnowledgeAppliedActionRecord(
+                appliedAt: "2026-04-04T10:33:00Z",
+                kind: .lessonPromotion,
+                title: "Codex Workflow for AI Founders",
+                sourceEntityId: "topic-3",
+                applyTargetRelativePath: "Lessons/codex-workflow-for-ai-founders.md",
+                appliedPath: "/tmp/Knowledge/Lessons/codex-workflow-for-ai-founders.md"
+            ),
+            KnowledgeAppliedActionRecord(
+                appliedAt: "2026-04-04T10:35:00Z",
+                kind: .mergeOverlay,
+                title: "TurboQuant Algorithm",
+                sourceEntityId: "topic-2",
+                applyTargetRelativePath: "Topics/turboquant.md",
+                appliedPath: "/tmp/Knowledge/Topics/turboquant.md",
+                targetTitle: "TurboQuant"
+            )
+        ]
+        let aliasOverrides = [
+            KnowledgeAliasOverrideRecord(
+                sourceName: "Codex Workflow for AI Founders",
+                canonicalName: "Codex Workflow for AI Founders",
+                entityType: .lesson,
+                reason: "lessonPromotion",
+                appliedAt: "2026-04-04T10:33:00Z"
+            ),
+            KnowledgeAliasOverrideRecord(
+                sourceName: "TurboQuant Algorithm",
+                canonicalName: "TurboQuant",
+                entityType: .topic,
+                reason: "mergeOverlay",
+                appliedAt: "2026-04-04T10:35:00Z"
+            )
+        ]
+
+        let artifacts = try maintenance.buildArtifacts(
+            metrics: metrics,
+            materializedEntityIds: Set(["topic-1", "topic-2", "topic-3", "tool-1"]),
+            graphShaper: shaper,
+            appliedActions: appliedActions,
+            aliasOverrides: aliasOverrides
+        )
+        let markdown = artifacts.markdown
+
+        #expect(markdown.contains("## Safe Auto-Actions"))
+        #expect(markdown.contains("- No high-confidence auto-actions right now."))
+        #expect(markdown.contains("## Improvement Candidates"))
+        #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]]"))
+        #expect(markdown.contains("## Recently Applied"))
+        #expect(markdown.contains("Codex Workflow for AI Founders"))
+        #expect(markdown.contains("TurboQuant Algorithm"))
+        #expect(!markdown.contains("consider moving to Lessons"))
+        #expect(!markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]]"))
+        #expect(artifacts.draftArtifacts.isEmpty)
+    }
+
     @Test("Knowledge compiler renders readable signals aliases and grouped related entities")
     func rendersReadableKnowledgeNote() throws {
         let (db, path) = try makeDB()

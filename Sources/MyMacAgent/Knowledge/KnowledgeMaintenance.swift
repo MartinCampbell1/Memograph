@@ -157,6 +157,22 @@ struct KnowledgeMaintenanceArtifacts {
     let draftArtifacts: [KnowledgeDraftArtifact]
 }
 
+private struct KnowledgeAppliedDecisionIndex {
+    let promotedEntityIds: Set<String>
+    let promotedNameKeys: Set<String>
+    let mergedEntityIds: Set<String>
+    let mergedSourceKeys: Set<String>
+    let mergedTargetKeysBySourceKey: [String: Set<String>]
+
+    static let empty = KnowledgeAppliedDecisionIndex(
+        promotedEntityIds: [],
+        promotedNameKeys: [],
+        mergedEntityIds: [],
+        mergedSourceKeys: [],
+        mergedTargetKeysBySourceKey: [:]
+    )
+}
+
 final class KnowledgeMaintenance {
     private let db: DatabaseManager
     private let dateSupport: LocalDateSupport
@@ -209,8 +225,13 @@ final class KnowledgeMaintenance {
         metrics: [KnowledgeEntityMetrics],
         materializedEntityIds: Set<String>,
         graphShaper: GraphShaper,
-        appliedActions: [KnowledgeAppliedActionRecord] = []
+        appliedActions: [KnowledgeAppliedActionRecord] = [],
+        aliasOverrides: [KnowledgeAliasOverrideRecord] = []
     ) throws -> KnowledgeMaintenanceArtifacts {
+        let appliedDecisionIndex = buildAppliedDecisionIndex(
+            appliedActions: appliedActions,
+            aliasOverrides: aliasOverrides
+        )
         let metricIndex = Dictionary(uniqueKeysWithValues: metrics.map { ($0.entity.id, $0) })
         let entities = metrics
             .filter { materializedEntityIds.contains($0.entity.id) }
@@ -280,15 +301,18 @@ final class KnowledgeMaintenance {
         let reviewItemCount = autoDemotedLessons.count + actionableAutoDemotedTopics.count + weakTopics.count
         let reclassifyCandidates = buildReclassifyCandidates(
             metrics: metrics,
-            materializedEntityIds: materializedEntityIds
+            materializedEntityIds: materializedEntityIds,
+            appliedDecisionIndex: appliedDecisionIndex
         )
         let consolidationCandidates = buildConsolidationCandidates(
             metrics: metrics,
-            materializedEntityIds: materializedEntityIds
+            materializedEntityIds: materializedEntityIds,
+            appliedDecisionIndex: appliedDecisionIndex
         )
         let staleCandidates = buildStaleCandidates(
             metrics: metrics,
-            materializedEntityIds: materializedEntityIds
+            materializedEntityIds: materializedEntityIds,
+            appliedDecisionIndex: appliedDecisionIndex
         )
         let safeActions = buildSafeActions(
             metrics: metrics,
@@ -482,13 +506,15 @@ final class KnowledgeMaintenance {
         metrics: [KnowledgeEntityMetrics],
         materializedEntityIds: Set<String>,
         graphShaper: GraphShaper,
-        appliedActions: [KnowledgeAppliedActionRecord] = []
+        appliedActions: [KnowledgeAppliedActionRecord] = [],
+        aliasOverrides: [KnowledgeAliasOverrideRecord] = []
     ) throws -> String {
         try buildArtifacts(
             metrics: metrics,
             materializedEntityIds: materializedEntityIds,
             graphShaper: graphShaper,
-            appliedActions: appliedActions
+            appliedActions: appliedActions,
+            aliasOverrides: aliasOverrides
         ).markdown
     }
 
@@ -601,10 +627,15 @@ final class KnowledgeMaintenance {
 
     private func buildReclassifyCandidates(
         metrics: [KnowledgeEntityMetrics],
-        materializedEntityIds: Set<String>
+        materializedEntityIds: Set<String>,
+        appliedDecisionIndex: KnowledgeAppliedDecisionIndex
     ) -> [KnowledgeReclassifyCandidate] {
         metrics
             .filter { materializedEntityIds.contains($0.entity.id) }
+            .filter {
+                !isAlreadyPromoted($0.entity, appliedDecisionIndex: appliedDecisionIndex)
+                    && !isAlreadyMerged($0.entity, appliedDecisionIndex: appliedDecisionIndex)
+            }
             .compactMap { metric in
                 guard metric.entity.entityType == .topic else { return nil }
                 guard let reason = reclassifyReason(for: metric.entity.canonicalName) else { return nil }
@@ -625,7 +656,8 @@ final class KnowledgeMaintenance {
 
     private func buildConsolidationCandidates(
         metrics: [KnowledgeEntityMetrics],
-        materializedEntityIds: Set<String>
+        materializedEntityIds: Set<String>,
+        appliedDecisionIndex: KnowledgeAppliedDecisionIndex
     ) -> [KnowledgeConsolidationCandidate] {
         let visibleMetrics = metrics.filter { materializedEntityIds.contains($0.entity.id) }
         let topics = visibleMetrics.filter { $0.entity.entityType == .topic }
@@ -633,8 +665,12 @@ final class KnowledgeMaintenance {
         var seenPairs = Set<String>()
 
         for source in topics {
+            guard !isAlreadyMerged(source.entity, appliedDecisionIndex: appliedDecisionIndex) else { continue }
             for target in topics {
                 guard source.entity.id != target.entity.id else { continue }
+                guard !isAlreadyMerged(source.entity, into: target.entity, appliedDecisionIndex: appliedDecisionIndex) else {
+                    continue
+                }
                 guard let reason = consolidationReason(source: source, target: target) else { continue }
                 let pairKey = "\(source.entity.id)->\(target.entity.id)"
                 guard seenPairs.insert(pairKey).inserted else { continue }
@@ -663,10 +699,15 @@ final class KnowledgeMaintenance {
     private func buildStaleCandidates(
         metrics: [KnowledgeEntityMetrics],
         materializedEntityIds: Set<String>,
+        appliedDecisionIndex: KnowledgeAppliedDecisionIndex,
         now: Date = Date()
     ) -> [KnowledgeStaleCandidate] {
         metrics
             .filter { materializedEntityIds.contains($0.entity.id) }
+            .filter {
+                !isAlreadyPromoted($0.entity, appliedDecisionIndex: appliedDecisionIndex)
+                    && !isAlreadyMerged($0.entity, appliedDecisionIndex: appliedDecisionIndex)
+            }
             .compactMap { metric in
                 guard metric.entity.entityType != .project else { return nil }
                 guard metric.claimCount <= 4 else { return nil }
@@ -689,6 +730,108 @@ final class KnowledgeMaintenance {
                 }
                 return lhs.entity.canonicalName.localizedCaseInsensitiveCompare(rhs.entity.canonicalName) == .orderedAscending
             }
+    }
+
+    private func buildAppliedDecisionIndex(
+        appliedActions: [KnowledgeAppliedActionRecord],
+        aliasOverrides: [KnowledgeAliasOverrideRecord]
+    ) -> KnowledgeAppliedDecisionIndex {
+        guard !appliedActions.isEmpty || !aliasOverrides.isEmpty else {
+            return .empty
+        }
+
+        var promotedEntityIds = Set<String>()
+        var promotedNameKeys = Set<String>()
+        var mergedEntityIds = Set<String>()
+        var mergedSourceKeys = Set<String>()
+        var mergedTargetKeysBySourceKey: [String: Set<String>] = [:]
+
+        for action in appliedActions {
+            let titleKey = decisionKey(for: action.title)
+            switch action.kind {
+            case .lessonPromotion, .lessonRedirect:
+                if let sourceEntityId = action.sourceEntityId, !sourceEntityId.isEmpty {
+                    promotedEntityIds.insert(sourceEntityId)
+                }
+                if !titleKey.isEmpty {
+                    promotedNameKeys.insert(titleKey)
+                }
+            case .redirect, .mergeOverlay:
+                if let sourceEntityId = action.sourceEntityId, !sourceEntityId.isEmpty {
+                    mergedEntityIds.insert(sourceEntityId)
+                }
+                if !titleKey.isEmpty {
+                    mergedSourceKeys.insert(titleKey)
+                    if let targetTitle = action.targetTitle {
+                        let targetKey = decisionKey(for: targetTitle)
+                        if !targetKey.isEmpty {
+                            mergedTargetKeysBySourceKey[titleKey, default: []].insert(targetKey)
+                        }
+                    }
+                }
+            }
+        }
+
+        for override in aliasOverrides {
+            let sourceKey = decisionKey(for: override.sourceName)
+            let canonicalKey = decisionKey(for: override.canonicalName)
+            switch override.entityType {
+            case .lesson:
+                if !sourceKey.isEmpty {
+                    promotedNameKeys.insert(sourceKey)
+                }
+            default:
+                if override.reason == "mergeOverlay", !sourceKey.isEmpty {
+                    mergedSourceKeys.insert(sourceKey)
+                    if !canonicalKey.isEmpty {
+                        mergedTargetKeysBySourceKey[sourceKey, default: []].insert(canonicalKey)
+                    }
+                }
+            }
+        }
+
+        return KnowledgeAppliedDecisionIndex(
+            promotedEntityIds: promotedEntityIds,
+            promotedNameKeys: promotedNameKeys,
+            mergedEntityIds: mergedEntityIds,
+            mergedSourceKeys: mergedSourceKeys,
+            mergedTargetKeysBySourceKey: mergedTargetKeysBySourceKey
+        )
+    }
+
+    private func isAlreadyPromoted(
+        _ entity: KnowledgeEntityRecord,
+        appliedDecisionIndex: KnowledgeAppliedDecisionIndex
+    ) -> Bool {
+        appliedDecisionIndex.promotedEntityIds.contains(entity.id)
+            || appliedDecisionIndex.promotedNameKeys.contains(decisionKey(for: entity.canonicalName))
+    }
+
+    private func isAlreadyMerged(
+        _ entity: KnowledgeEntityRecord,
+        appliedDecisionIndex: KnowledgeAppliedDecisionIndex
+    ) -> Bool {
+        appliedDecisionIndex.mergedEntityIds.contains(entity.id)
+            || appliedDecisionIndex.mergedSourceKeys.contains(decisionKey(for: entity.canonicalName))
+    }
+
+    private func isAlreadyMerged(
+        _ source: KnowledgeEntityRecord,
+        into target: KnowledgeEntityRecord,
+        appliedDecisionIndex: KnowledgeAppliedDecisionIndex
+    ) -> Bool {
+        let sourceKey = decisionKey(for: source.canonicalName)
+        let targetKey = decisionKey(for: target.canonicalName)
+        guard !sourceKey.isEmpty, !targetKey.isEmpty else { return false }
+        return appliedDecisionIndex.mergedTargetKeysBySourceKey[sourceKey]?.contains(targetKey) == true
+    }
+
+    private func decisionKey(for value: String) -> String {
+        value
+            .folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .lowercased()
     }
 
     private func buildSafeActions(

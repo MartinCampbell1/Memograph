@@ -377,7 +377,8 @@ final class KnowledgePipeline {
             metrics: metrics,
             materializedEntityIds: materializedEntityIds,
             graphShaper: graphShaper,
-            appliedActions: settings.knowledgeAppliedActions
+            appliedActions: settings.knowledgeAppliedActions,
+            aliasOverrides: settings.knowledgeAliasOverrides
         )
     }
 
