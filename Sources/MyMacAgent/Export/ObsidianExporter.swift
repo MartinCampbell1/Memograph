@@ -369,6 +369,7 @@ final class ObsidianExporter {
     func renderKnowledgeReviewHistory(_ records: [KnowledgeReviewDecisionRecord]) -> String {
         var markdown = "# Memograph Reviewed Knowledge Decisions\n\n"
         markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n"
         markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|Resolved review board]]\n\n"
 
         guard !records.isEmpty else {
@@ -410,6 +411,7 @@ final class ObsidianExporter {
     func renderKnowledgeResolvedReviewBoard(_ records: [KnowledgeReviewDecisionRecord]) -> String {
         var markdown = "# Resolved Knowledge Review Board\n\n"
         markdown += "_Archived review packets that already received a decision._\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
 
         guard !records.isEmpty else {
             markdown += "- No resolved review packets yet.\n"
@@ -465,6 +467,7 @@ final class ObsidianExporter {
     func renderKnowledgeAppliedHistory(_ records: [KnowledgeAppliedActionRecord]) -> String {
         var markdown = "# Memograph Applied Knowledge Actions\n\n"
         markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
 
         guard !records.isEmpty else {
             markdown += "- No knowledge actions have been applied yet.\n"

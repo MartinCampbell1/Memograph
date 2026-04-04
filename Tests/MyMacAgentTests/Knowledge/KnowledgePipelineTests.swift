@@ -306,6 +306,7 @@ struct KnowledgePipelineTests {
         #expect(maintenance.contains("# Memograph Knowledge Maintenance"))
         #expect(maintenance.contains("## Snapshot"))
         #expect(maintenance.contains("## Dashboard"))
+        #expect(maintenance.contains("[[Knowledge/_drafts/_index|workflow center]]"))
         #expect(maintenance.contains("## Next Actions"))
         #expect(maintenance.contains("## Review Queue"))
         #expect(maintenance.contains("## Safe Auto-Actions"))
@@ -547,6 +548,7 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("## Improvement Candidates"))
         #expect(markdown.contains("## Safe Auto-Actions"))
         #expect(markdown.contains("## Next Actions"))
+        #expect(markdown.contains("[[Knowledge/_drafts/_index|workflow center]]"))
         #expect(markdown.contains("[[Knowledge/_drafts/Apply/_index|apply board]]"))
         #expect(markdown.contains("### Safe to Apply"))
         #expect(markdown.contains("Promote [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] into `Lessons`."))
@@ -575,7 +577,8 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]]"))
         #expect(markdown.contains("low-touch note with no active project trail"))
         #expect(markdown.contains("Review: [[Knowledge/_drafts/Review/stale-old-utility|review draft]]"))
-        #expect(artifacts.draftArtifacts.count == 9)
+        #expect(artifacts.draftArtifacts.count == 10)
+        #expect(artifacts.draftArtifacts.contains { $0.relativePath == "_index.md" && $0.kind == .workflowIndex })
     }
 
     @Test("Knowledge maintenance suppresses already applied promotions and consolidations")
@@ -702,6 +705,7 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("## Safe Auto-Actions"))
         #expect(markdown.contains("- No high-confidence auto-actions right now."))
         #expect(markdown.contains("## Improvement Candidates"))
+        #expect(markdown.contains("[[Knowledge/_drafts/_index|workflow center]]"))
         #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]]"))
         #expect(markdown.contains("## Recently Applied"))
         #expect(markdown.contains("Codex Workflow for AI Founders"))
@@ -711,7 +715,8 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("## Next Actions"))
         #expect(markdown.contains("[[Knowledge/_drafts/Review/_index|review board]]"))
         #expect(markdown.contains("[[Knowledge/_drafts/Review/stale-old-utility|review]]"))
-        #expect(artifacts.draftArtifacts.count == 2)
+        #expect(artifacts.draftArtifacts.count == 3)
+        #expect(artifacts.draftArtifacts.contains { $0.relativePath == "_index.md" && $0.kind == .workflowIndex })
     }
 
     @Test("Knowledge maintenance suppresses dismissed review candidates and shows review history")

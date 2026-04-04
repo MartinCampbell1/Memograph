@@ -63,6 +63,7 @@ private struct KnowledgeSafeAction {
 }
 
 enum KnowledgeDraftArtifactKind {
+    case workflowIndex
     case reviewDraft
     case reviewIndex
     case applyReadyLesson
@@ -73,19 +74,23 @@ enum KnowledgeDraftArtifactKind {
 
     var sortOrder: Int {
         switch self {
-        case .reviewDraft:
+        case .workflowIndex:
             return 0
-        case .reviewIndex:
+        case .reviewDraft:
             return 1
-        case .applyReadyLesson, .applyReadyLessonRedirect, .applyReadyRedirect, .applyReadyMergePatch:
+        case .reviewIndex:
             return 2
-        case .applyIndex:
+        case .applyReadyLesson, .applyReadyLessonRedirect, .applyReadyRedirect, .applyReadyMergePatch:
             return 3
+        case .applyIndex:
+            return 4
         }
     }
 
     var lineLabel: String {
         switch self {
+        case .workflowIndex:
+            return "Board"
         case .reviewDraft:
             return "Review"
         case .reviewIndex:
@@ -103,6 +108,8 @@ enum KnowledgeDraftArtifactKind {
 
     var linkLabel: String {
         switch self {
+        case .workflowIndex:
+            return "workflow center"
         case .reviewDraft:
             return "review draft"
         case .reviewIndex:
@@ -406,7 +413,16 @@ final class KnowledgeMaintenance {
             from: manualReviewItems,
             draftArtifactsByKey: manualReviewArtifactsByKey
         )
+        let workflowIndexArtifact = buildWorkflowIndexArtifact(
+            safeActions: safeActions,
+            manualReviewItems: manualReviewItems,
+            applyIndexArtifact: applyIndexArtifact,
+            reviewIndexArtifact: reviewIndexArtifact,
+            appliedActions: appliedActions,
+            reviewDecisions: reviewDecisions
+        )
         var draftArtifacts = draftArtifactEntries.map(\.value) + manualReviewArtifactEntries.map(\.value)
+        draftArtifacts.append(workflowIndexArtifact)
         if let applyIndexArtifact {
             draftArtifacts.append(applyIndexArtifact)
         }
@@ -418,6 +434,7 @@ final class KnowledgeMaintenance {
         if !topHotspotNames.isEmpty {
             markdown += "- Strongest clusters right now: \(joinNaturalLanguage(topHotspotNames))\n"
         }
+        markdown += "- [[\(workflowIndexArtifact.linkTarget)|workflow center]]\n"
         markdown += "- Safe actions ready: \(safeActions.count)\n"
         markdown += "- Manual review candidates: \(manualReviewItems.count)\n"
         markdown += "- Review items waiting: \(reviewItemCount)\n"
@@ -1654,6 +1671,7 @@ final class KnowledgeMaintenance {
 
         var markdown = "# Knowledge Apply Board\n\n"
         markdown += "_Apply-ready drafts exported from safe maintenance actions._\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
         if !lessonRows.isEmpty {
             markdown += "## Lesson Promotions\n"
             markdown += lessonRows.joined(separator: "\n")
@@ -1716,6 +1734,7 @@ final class KnowledgeMaintenance {
 
         var markdown = "# Knowledge Review Board\n\n"
         markdown += "_Review packets exported from the current maintenance queue._\n\n"
+        markdown += "- [[Knowledge/_drafts/_index|Workflow center]]\n\n"
         if !consolidationRows.isEmpty {
             markdown += "## Consolidations\n"
             markdown += consolidationRows.prefix(8).joined(separator: "\n")
@@ -1745,6 +1764,53 @@ final class KnowledgeMaintenance {
             kind: .reviewIndex,
             relativePath: "Review/_index.md",
             title: "Knowledge Review Board",
+            markdown: markdown
+        )
+    }
+
+    private func buildWorkflowIndexArtifact(
+        safeActions: [KnowledgeSafeAction],
+        manualReviewItems: [KnowledgeManualReviewItem],
+        applyIndexArtifact: KnowledgeDraftArtifact?,
+        reviewIndexArtifact: KnowledgeDraftArtifact?,
+        appliedActions: [KnowledgeAppliedActionRecord],
+        reviewDecisions: [KnowledgeReviewDecisionRecord]
+    ) -> KnowledgeDraftArtifact {
+        var markdown = "# Knowledge Workflow Center\n\n"
+        markdown += "_Operational hub for active, applied, and resolved knowledge actions._\n\n"
+        markdown += "## Dashboard\n"
+        markdown += "- [[Knowledge/_maintenance|maintenance dashboard]]\n"
+        markdown += "- Safe to apply: \(safeActions.count)\n"
+        markdown += "- Needs review: \(manualReviewItems.count)\n"
+        markdown += "- Recently applied: \(appliedActions.count)\n"
+        markdown += "- Recently reviewed: \(reviewDecisions.count)\n\n"
+
+        markdown += "## Active Queues\n"
+        if let applyIndexArtifact {
+            markdown += "- [[\(applyIndexArtifact.linkTarget)|apply board]]\n"
+        } else {
+            markdown += "- No apply-ready packets right now.\n"
+        }
+        if let reviewIndexArtifact {
+            markdown += "- [[\(reviewIndexArtifact.linkTarget)|review board]]\n"
+        } else {
+            markdown += "- No active review queue right now.\n"
+        }
+        markdown += "\n"
+
+        markdown += "## History and Resolved\n"
+        markdown += "- [[Knowledge/_applied|applied history]]\n"
+        markdown += "- [[Knowledge/_reviewed|review history]]\n"
+        markdown += "- [[Knowledge/_drafts/ReviewResolved/_index|resolved review board]]\n\n"
+
+        markdown += "## Usage\n"
+        markdown += "- Start here when you want to move through safe actions, review packets, and archived decisions without opening folders manually.\n"
+        markdown += "- Use the apply board for high-confidence packets, the review board for manual decisions, and the resolved board to revisit closed decisions.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .workflowIndex,
+            relativePath: "_index.md",
+            title: "Knowledge Workflow Center",
             markdown: markdown
         )
     }
