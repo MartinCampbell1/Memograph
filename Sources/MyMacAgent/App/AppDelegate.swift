@@ -264,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         knowledgePipeline = KnowledgePipeline(db: db)
         refreshKnowledgeAppliedActionHistory()
         refreshKnowledgeMergeOverlayHistory()
+        refreshKnowledgeAliasOverrideHistory()
         logger.info("Phase 3 components initialized (fusion, summary, export)")
         performKnowledgeMaintenance(reason: "startup", force: true)
     }
@@ -745,8 +746,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         existing: settings.knowledgeAppliedActions,
                         incoming: mergeAppliedActions
                     )
+                    settings.knowledgeAliasOverrides = derivedKnowledgeAliasOverrides(from: settings)
+                    rebuildKnowledgePipeline()
+                    let activeKnowledgePipeline = self.knowledgePipeline ?? knowledgePipeline
                     _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
-                    let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
+                    let materializedCount = try activeKnowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
                     logger.info("Knowledge safe-action apply finished: \(mergeOverlayRecords.count) merge overlays applied, \(materializedCount) notes materialized")
                     for overlay in mergeOverlayRecords {
                         print(overlay.targetRelativePath)
@@ -779,9 +783,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 existing: settings.knowledgeAppliedActions,
                 incoming: newRecords
             )
+            settings.knowledgeAliasOverrides = derivedKnowledgeAliasOverrides(from: settings)
+            rebuildKnowledgePipeline()
+            let activeKnowledgePipeline = self.knowledgePipeline ?? knowledgePipeline
             _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
 
-            let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
+            let materializedCount = try activeKnowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
             logger.info("Knowledge safe-action apply finished: \(applyResults.count) files applied, \(mergeOverlayRecords.count) merge overlays stored, \(materializedCount) notes materialized")
             for result in applyResults {
                 print(result.appliedPath)
@@ -822,6 +829,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.knowledgeMergeOverlays = discovered
         settings.knowledgeAppliedActions = mergedAppliedActions
         _ = try? exporter.exportKnowledgeAppliedHistory(mergedAppliedActions)
+    }
+
+    private func refreshKnowledgeAliasOverrideHistory() {
+        var settings = AppSettings()
+        let derived = derivedKnowledgeAliasOverrides(from: settings)
+        guard derived != settings.knowledgeAliasOverrides else { return }
+        settings.knowledgeAliasOverrides = derived
+        rebuildKnowledgePipeline()
     }
 
     private func buildAppliedActionRecord(
@@ -919,6 +934,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return lhs.id < rhs.id
         }
+    }
+
+    private func derivedKnowledgeAliasOverrides(from settings: AppSettings) -> [KnowledgeAliasOverrideRecord] {
+        var byId: [String: KnowledgeAliasOverrideRecord] = [:]
+
+        for action in settings.knowledgeAppliedActions where action.kind == .lessonPromotion || action.kind == .lessonRedirect {
+            let record = KnowledgeAliasOverrideRecord(
+                sourceName: action.title,
+                canonicalName: action.title,
+                entityType: .lesson,
+                reason: action.kind == .lessonPromotion ? "lessonPromotion" : "lessonRedirect",
+                appliedAt: action.appliedAt
+            )
+            byId[record.id] = record
+        }
+
+        for overlay in settings.knowledgeMergeOverlays {
+            guard let entityType = knowledgeEntityType(for: overlay.targetRelativePath) else { continue }
+            for alias in Set([overlay.sourceTitle] + overlay.sourceAliases) {
+                let record = KnowledgeAliasOverrideRecord(
+                    sourceName: alias,
+                    canonicalName: overlay.targetTitle,
+                    entityType: entityType,
+                    reason: "mergeOverlay",
+                    appliedAt: overlay.appliedAt
+                )
+                byId[record.id] = record
+            }
+        }
+
+        return byId.values.sorted { lhs, rhs in
+            if lhs.appliedAt != rhs.appliedAt {
+                return lhs.appliedAt < rhs.appliedAt
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private func knowledgeEntityType(for relativePath: String) -> KnowledgeEntityType? {
+        let folder = (relativePath as NSString).pathComponents.first ?? ""
+        switch folder {
+        case "Projects": return .project
+        case "Tools": return .tool
+        case "Models": return .model
+        case "Topics": return .topic
+        case "Sites": return .site
+        case "People": return .person
+        case "Issues": return .issue
+        case "Lessons": return .lesson
+        default: return nil
+        }
+    }
+
+    private func rebuildKnowledgePipeline() {
+        guard let db = databaseManager else { return }
+        knowledgePipeline = KnowledgePipeline(db: db)
     }
 
     private func summaryWindowDescriptor(from summary: DailySummaryRecord) -> SummaryWindowDescriptor? {

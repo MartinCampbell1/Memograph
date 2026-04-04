@@ -101,6 +101,76 @@ struct KnowledgePipelineTests {
         #expect((edgeRows.first?["count"]?.intValue ?? 0) > 0)
     }
 
+    @Test("Knowledge pipeline respects applied alias overrides during extraction")
+    func respectsAppliedAliasOverrides() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        var settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        settings.knowledgeAliasOverrides = [
+            KnowledgeAliasOverrideRecord(
+                sourceName: "OCR Accuracy in Memograph",
+                canonicalName: "OCR",
+                entityType: .topic,
+                reason: "mergeOverlay",
+                appliedAt: "2026-04-04T10:33:00Z"
+            )
+        ]
+
+        let summary = DailySummaryRecord(
+            date: "2026-04-04",
+            summaryText: """
+            ## Summary
+            Investigated [[OCR Accuracy in Memograph]] while working on [[Memograph]].
+            """,
+            topAppsJson: """
+            [{"name":"Codex","duration_min":30}]
+            """,
+            topTopicsJson: """
+            ["OCR Accuracy in Memograph","Memograph"]
+            """,
+            aiSessionsJson: nil,
+            contextSwitchesJson: """
+            {"window_start":"2026-04-04T01:00:00Z","window_end":"2026-04-04T02:00:00Z","mode":"hourly"}
+            """,
+            unfinishedItemsJson: nil,
+            suggestedNotesJson: nil,
+            generatedAt: "2026-04-04T02:01:00Z",
+            modelName: "google/gemini-3-flash-preview",
+            tokenUsageInput: 0,
+            tokenUsageOutput: 0,
+            generationStatus: "success"
+        )
+
+        let sessions = [
+            SessionData(
+                sessionId: "s1",
+                appName: "Codex",
+                bundleId: "com.openai.codex",
+                windowTitles: ["OCR pass"],
+                startedAt: "2026-04-04T01:00:00Z",
+                endedAt: "2026-04-04T01:40:00Z",
+                durationMs: 2_400_000,
+                uncertaintyMode: "normal",
+                contextTexts: ["Reviewed OCR extraction quality in Memograph"]
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc, settings: settings)
+        let window = SummaryWindowDescriptor(
+            date: "2026-04-04",
+            start: ISO8601DateFormatter().date(from: "2026-04-04T01:00:00Z")!,
+            end: ISO8601DateFormatter().date(from: "2026-04-04T02:00:00Z")!
+        )
+
+        _ = try pipeline.process(summary: summary, window: window, sessions: sessions)
+
+        let entityRows = try db.query("SELECT canonical_name, entity_type FROM knowledge_entities ORDER BY canonical_name")
+        #expect(entityRows.contains { $0["canonical_name"]?.textValue == "OCR" && $0["entity_type"]?.textValue == "topic" })
+        #expect(!entityRows.contains { $0["canonical_name"]?.textValue == "OCR Accuracy in Memograph" && $0["entity_type"]?.textValue == "topic" })
+    }
+
     @Test("Knowledge compiler builds index grouped by entity type")
     func buildsKnowledgeIndex() throws {
         let (db, path) = try makeDB()

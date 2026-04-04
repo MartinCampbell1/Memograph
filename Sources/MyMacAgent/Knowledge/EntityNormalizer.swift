@@ -11,6 +11,7 @@ struct KnowledgeEntityCandidate: Hashable {
 }
 
 final class EntityNormalizer {
+    private let overrideAliasMap: [String: (canonicalName: String, entityType: KnowledgeEntityType)]
     private static let rawAliasMap: [String: (canonicalName: String, entityType: KnowledgeEntityType)] = [
         "twitter": ("X", .site),
         "x": ("X", .site),
@@ -116,6 +117,17 @@ final class EntityNormalizer {
         "founderos"
     ]
 
+    init(settings: AppSettings = AppSettings()) {
+        self.overrideAliasMap = settings.knowledgeAliasOverrides.reduce(
+            into: [String: (canonicalName: String, entityType: KnowledgeEntityType)]()
+        ) { partial, record in
+            partial[Self.lookupKey(record.sourceName)] = (
+                canonicalName: record.canonicalName,
+                entityType: record.entityType
+            )
+        }
+    }
+
     func normalize(
         rawName: String,
         typeHint: KnowledgeEntityType? = nil,
@@ -128,6 +140,14 @@ final class EntityNormalizer {
         let normalizedKnownToolNames = Set(knownToolNames.map(Self.lookupKey))
         guard !stopPhrases.contains(lower) else { return nil }
         guard cleaned.count >= 2 else { return nil }
+
+        if let alias = overrideAliasMap[lower] {
+            return KnowledgeEntityCandidate(
+                canonicalName: alias.canonicalName,
+                entityType: alias.entityType,
+                aliases: [cleaned]
+            )
+        }
 
         if let alias = aliasMap[lower] {
             return KnowledgeEntityCandidate(

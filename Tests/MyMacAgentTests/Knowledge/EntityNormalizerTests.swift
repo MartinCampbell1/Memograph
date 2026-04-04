@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import MyMacAgent
 
 struct EntityNormalizerTests {
@@ -146,5 +147,47 @@ struct EntityNormalizerTests {
         #expect(entity?.canonicalName == "Claude Code")
         #expect(entity?.entityType == .tool)
         #expect(entity?.aliases.contains("Claude Code v2.1.89") == true)
+    }
+
+    @Test("Applied merge aliases override future normalization")
+    func appliedMergeAliasesOverrideNormalization() {
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        var settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        settings.knowledgeAliasOverrides = [
+            KnowledgeAliasOverrideRecord(
+                sourceName: "OCR Accuracy in Memograph",
+                canonicalName: "OCR",
+                entityType: .topic,
+                reason: "mergeOverlay",
+                appliedAt: "2026-04-04T10:33:00Z"
+            )
+        ]
+
+        let normalizer = EntityNormalizer(settings: settings)
+        let entity = normalizer.normalize(rawName: "OCR Accuracy in Memograph")
+
+        #expect(entity?.canonicalName == "OCR")
+        #expect(entity?.entityType == .topic)
+    }
+
+    @Test("Applied lesson promotions force future mentions into lessons")
+    func appliedLessonPromotionsForceLessonType() {
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        var settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        settings.knowledgeAliasOverrides = [
+            KnowledgeAliasOverrideRecord(
+                sourceName: "Codex Workflow for AI Founders",
+                canonicalName: "Codex Workflow for AI Founders",
+                entityType: .lesson,
+                reason: "lessonPromotion",
+                appliedAt: "2026-04-04T10:47:00Z"
+            )
+        ]
+
+        let normalizer = EntityNormalizer(settings: settings)
+        let entity = normalizer.normalize(rawName: "Codex Workflow for AI Founders")
+
+        #expect(entity?.canonicalName == "Codex Workflow for AI Founders")
+        #expect(entity?.entityType == .lesson)
     }
 }

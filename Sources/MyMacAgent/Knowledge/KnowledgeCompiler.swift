@@ -31,13 +31,13 @@ final class KnowledgeCompiler {
     init(
         db: DatabaseManager,
         timeZone: TimeZone = .autoupdatingCurrent,
-        normalizer: EntityNormalizer = EntityNormalizer(),
+        normalizer: EntityNormalizer? = nil,
         settings: AppSettings = AppSettings()
     ) {
         self.db = db
         self.dateSupport = LocalDateSupport(timeZone: timeZone)
-        self.normalizer = normalizer
         self.settings = settings
+        self.normalizer = normalizer ?? EntityNormalizer(settings: settings)
     }
 
     func compileNote(for entityId: String, sourceDate: String?) throws -> KnowledgeNoteRecord? {

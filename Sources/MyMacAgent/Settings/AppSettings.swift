@@ -299,6 +299,11 @@ struct AppSettings {
         set { writeCodableArray(Array(newValue.suffix(100)), forKey: "knowledgeMergeOverlays") }
     }
 
+    var knowledgeAliasOverrides: [KnowledgeAliasOverrideRecord] {
+        get { readCodableArray(forKey: "knowledgeAliasOverrides") }
+        set { writeCodableArray(Array(newValue.suffix(300)), forKey: "knowledgeAliasOverrides") }
+    }
+
     var maxCapturesPerSession: Int {
         get {
             let val = defaults.integer(forKey: "maxCapturesPerSession")

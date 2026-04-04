@@ -24,7 +24,7 @@ final class KnowledgePipeline {
         self.db = db
         self.dateSupport = LocalDateSupport(timeZone: timeZone)
         self.settings = settings
-        self.normalizer = EntityNormalizer()
+        self.normalizer = EntityNormalizer(settings: settings)
         self.extractor = ClaimExtractor(normalizer: normalizer, timeZone: timeZone)
         self.compiler = KnowledgeCompiler(
             db: db,
