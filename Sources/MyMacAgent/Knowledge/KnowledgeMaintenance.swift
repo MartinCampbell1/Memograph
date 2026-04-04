@@ -47,13 +47,75 @@ private struct KnowledgeSafeAction {
     let score: Int
 }
 
+enum KnowledgeDraftArtifactKind {
+    case reviewDraft
+    case applyReadyLesson
+    case applyReadyRedirect
+    case applyIndex
+
+    var sortOrder: Int {
+        switch self {
+        case .reviewDraft:
+            return 0
+        case .applyReadyLesson, .applyReadyRedirect:
+            return 1
+        case .applyIndex:
+            return 2
+        }
+    }
+
+    var lineLabel: String {
+        switch self {
+        case .reviewDraft:
+            return "Review"
+        case .applyReadyLesson, .applyReadyRedirect:
+            return "Apply"
+        case .applyIndex:
+            return "Board"
+        }
+    }
+
+    var linkLabel: String {
+        switch self {
+        case .reviewDraft:
+            return "review draft"
+        case .applyReadyLesson:
+            return "apply-ready lesson"
+        case .applyReadyRedirect:
+            return "redirect stub"
+        case .applyIndex:
+            return "apply board"
+        }
+    }
+}
+
 struct KnowledgeDraftArtifact {
+    let kind: KnowledgeDraftArtifactKind
+    let relativePath: String
     let fileName: String
     let title: String
     let markdown: String
 
+    init(kind: KnowledgeDraftArtifactKind, relativePath: String, title: String, markdown: String) {
+        let normalizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        self.kind = kind
+        self.relativePath = normalizedPath
+        self.fileName = (normalizedPath as NSString).lastPathComponent
+        self.title = title
+        self.markdown = markdown
+    }
+
+    init(fileName: String, title: String, markdown: String) {
+        self.init(
+            kind: .reviewDraft,
+            relativePath: "Maintenance/\(fileName)",
+            title: title,
+            markdown: markdown
+        )
+    }
+
     var linkTarget: String {
-        "Knowledge/_drafts/Maintenance/\(fileName.replacingOccurrences(of: ".md", with: ""))"
+        "Knowledge/_drafts/\(relativePath.replacingOccurrences(of: ".md", with: ""))"
     }
 }
 
@@ -199,9 +261,21 @@ final class KnowledgeMaintenance {
             reclassifyCandidates: reclassifyCandidates,
             consolidationCandidates: consolidationCandidates
         )
-        let draftArtifactEntries = buildDraftArtifacts(from: safeActions)
-        let draftArtifactByKey = Dictionary(uniqueKeysWithValues: draftArtifactEntries)
-        let draftArtifacts = draftArtifactEntries.map(\.value)
+        let draftArtifactEntries = try buildDraftArtifacts(from: safeActions)
+        let draftArtifactsByKey = Dictionary(grouping: draftArtifactEntries, by: \.key)
+            .mapValues { entries in
+                entries.map(\.value).sorted { lhs, rhs in
+                    lhs.kind.sortOrder < rhs.kind.sortOrder
+                }
+            }
+        let applyIndexArtifact = buildApplyIndexArtifact(
+            from: safeActions,
+            draftArtifactsByKey: draftArtifactsByKey
+        )
+        var draftArtifacts = draftArtifactEntries.map(\.value)
+        if let applyIndexArtifact {
+            draftArtifacts.append(applyIndexArtifact)
+        }
 
         markdown += "## Dashboard\n"
         if !topHotspotNames.isEmpty {
@@ -267,14 +341,17 @@ final class KnowledgeMaintenance {
         } else {
             let lessonPromotions = safeActions.filter { $0.kind == .promoteToLessonDraft }
             let consolidations = safeActions.filter { $0.kind == .consolidateIntoRoot }
+            if let applyIndexArtifact {
+                markdown += "- [[\(applyIndexArtifact.linkTarget)|\(applyIndexArtifact.kind.linkLabel)]]\n\n"
+            }
 
             if !lessonPromotions.isEmpty {
                 markdown += "### Draft Lesson Promotions\n"
                 for action in lessonPromotions.prefix(6) {
                     markdown += "- [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
                     markdown += " — promote into \(KnowledgeEntityType.lesson.folderName): \(action.reason)\n"
-                    if let artifact = draftArtifactByKey[safeActionKey(action)] {
-                        markdown += "  Draft: [[\(artifact.linkTarget)|draft]]\n"
+                    for artifact in draftArtifactsByKey[safeActionKey(action)] ?? [] {
+                        markdown += "  \(artifact.kind.lineLabel): [[\(artifact.linkTarget)|\(artifact.kind.linkLabel)]]\n"
                     }
                 }
                 markdown += "\n"
@@ -287,8 +364,8 @@ final class KnowledgeMaintenance {
                     markdown += "- [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
                     markdown += " → [[\(linkTarget(for: target))|\(target.canonicalName)]]"
                     markdown += " — \(action.reason)\n"
-                    if let artifact = draftArtifactByKey[safeActionKey(action)] {
-                        markdown += "  Draft: [[\(artifact.linkTarget)|draft]]\n"
+                    for artifact in draftArtifactsByKey[safeActionKey(action)] ?? [] {
+                        markdown += "  \(artifact.kind.lineLabel): [[\(artifact.linkTarget)|\(artifact.kind.linkLabel)]]\n"
                     }
                 }
                 markdown += "\n"
@@ -598,23 +675,31 @@ final class KnowledgeMaintenance {
         }
     }
 
-    private func buildDraftArtifacts(from safeActions: [KnowledgeSafeAction]) -> [(key: String, value: KnowledgeDraftArtifact)] {
-        safeActions.compactMap { action in
-            let artifact: KnowledgeDraftArtifact?
+    private func buildDraftArtifacts(from safeActions: [KnowledgeSafeAction]) throws -> [(key: String, value: KnowledgeDraftArtifact)] {
+        var artifacts: [(key: String, value: KnowledgeDraftArtifact)] = []
+
+        for action in safeActions {
+            let key = safeActionKey(action)
             switch action.kind {
             case .promoteToLessonDraft:
-                artifact = buildLessonPromotionDraft(for: action)
+                artifacts.append((key, buildLessonPromotionReviewDraft(for: action)))
+                artifacts.append((key, try buildLessonPromotionApplyDraft(for: action)))
             case .consolidateIntoRoot:
-                artifact = buildConsolidationDraft(for: action)
+                if let artifact = buildConsolidationReviewDraft(for: action) {
+                    artifacts.append((key, artifact))
+                }
+                if let applyArtifact = try buildConsolidationApplyDraft(for: action) {
+                    artifacts.append((key, applyArtifact))
+                }
             }
-            guard let artifact else { return nil }
-            return (safeActionKey(action), artifact)
         }
+
+        return artifacts
     }
 
-    private func buildLessonPromotionDraft(for action: KnowledgeSafeAction) -> KnowledgeDraftArtifact {
+    private func buildLessonPromotionReviewDraft(for action: KnowledgeSafeAction) -> KnowledgeDraftArtifact {
         let destinationSlug = slug(for: action.source.canonicalName)
-        let fileName = "lesson-promotion-\(destinationSlug).md"
+        let relativePath = "Maintenance/lesson-promotion-\(destinationSlug).md"
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let draft = """
         # Draft Lesson Promotion — \(action.source.canonicalName)
@@ -643,17 +728,72 @@ final class KnowledgeMaintenance {
         """
 
         return KnowledgeDraftArtifact(
-            fileName: fileName,
+            kind: .reviewDraft,
+            relativePath: relativePath,
             title: "Draft Lesson Promotion — \(action.source.canonicalName)",
             markdown: draft
         )
     }
 
-    private func buildConsolidationDraft(for action: KnowledgeSafeAction) -> KnowledgeDraftArtifact? {
+    private func buildLessonPromotionApplyDraft(for action: KnowledgeSafeAction) throws -> KnowledgeDraftArtifact {
+        let destinationSlug = slug(for: action.source.canonicalName)
+        let relativePath = "Apply/Lessons/\(destinationSlug).md"
+        let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
+        let destinationLink = "[[Knowledge/Lessons/\(destinationSlug)|\(action.source.canonicalName)]]"
+        let sourceNote = try loadKnowledgeNote(for: action.source)
+        let overview = extractOverview(from: sourceNote?.bodyMarkdown)
+            ?? "Promoted from \(sourceLink) because this note now behaves like durable guidance instead of a loose standalone topic."
+        let signalLines = extractBulletSection("Key Signals", from: sourceNote?.bodyMarkdown).prefix(4)
+        let relationshipLines = extractBulletSection("Relationships", from: sourceNote?.bodyMarkdown).prefix(4)
+        let aliases = aliases(for: action.source)
+
+        var draft = "# \(action.source.canonicalName)\n\n"
+        draft += "_Apply-ready lesson draft generated from a safe maintenance action._\n\n"
+        draft += "## Draft Summary\n"
+        draft += "\(overview)\n\n"
+        draft += "## Distilled Guidance\n"
+        if signalLines.isEmpty {
+            draft += "- Reframe this note as reusable guidance rather than a narrow topic fragment.\n"
+            draft += "- Keep the explanation concise enough to survive outside the original hourly window.\n"
+        } else {
+            for line in signalLines {
+                draft += "\(line)\n"
+            }
+        }
+        draft += "\n## Related Context\n"
+        if relationshipLines.isEmpty {
+            draft += "- Source note: \(sourceLink)\n"
+            draft += "- Proposed final location: \(destinationLink)\n"
+        } else {
+            for line in relationshipLines {
+                draft += "\(line)\n"
+            }
+        }
+        draft += "\n## Source Trail\n"
+        draft += "- Promoted from: \(sourceLink)\n"
+        draft += "- Proposed final location: \(destinationLink)\n"
+        draft += "- Promotion reason: \(action.reason)\n"
+        if !aliases.isEmpty {
+            draft += "- Preserve aliases: \(joinNaturalLanguage(aliases))\n"
+        }
+        draft += "\n## Review Checklist\n"
+        draft += "- Tighten the summary into durable guidance before moving this note into `Knowledge/Lessons`.\n"
+        draft += "- Keep a short redirect or alias note if existing links already point to the topic note.\n"
+        draft += "- Pull over any unique relationships that are missing from the target lesson.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .applyReadyLesson,
+            relativePath: relativePath,
+            title: action.source.canonicalName,
+            markdown: draft
+        )
+    }
+
+    private func buildConsolidationReviewDraft(for action: KnowledgeSafeAction) -> KnowledgeDraftArtifact? {
         guard let target = action.target else { return nil }
         let sourceSlug = slug(for: action.source.canonicalName)
         let targetSlug = slug(for: target.canonicalName)
-        let fileName = "consolidate-\(sourceSlug)-into-\(targetSlug).md"
+        let relativePath = "Maintenance/consolidate-\(sourceSlug)-into-\(targetSlug).md"
         let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
         let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
         let draft = """
@@ -683,9 +823,109 @@ final class KnowledgeMaintenance {
         """
 
         return KnowledgeDraftArtifact(
-            fileName: fileName,
+            kind: .reviewDraft,
+            relativePath: relativePath,
             title: "Draft Consolidation — \(action.source.canonicalName) → \(target.canonicalName)",
             markdown: draft
+        )
+    }
+
+    private func buildConsolidationApplyDraft(for action: KnowledgeSafeAction) throws -> KnowledgeDraftArtifact? {
+        guard let target = action.target else { return nil }
+        let sourceSlug = slug(for: action.source.canonicalName)
+        let relativePath = "Apply/Redirects/\(sourceSlug).md"
+        let sourceLink = "[[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
+        let targetLink = "[[\(linkTarget(for: target))|\(target.canonicalName)]]"
+        let sourceNote = try loadKnowledgeNote(for: action.source)
+        let overview = extractOverview(from: sourceNote?.bodyMarkdown)
+        let signalLines = extractBulletSection("Key Signals", from: sourceNote?.bodyMarkdown).prefix(4)
+        let aliases = aliases(for: action.source)
+
+        var draft = "# \(action.source.canonicalName)\n\n"
+        draft += "_Redirect stub draft generated from a safe consolidation action._\n\n"
+        draft += "This note likely folds into \(targetLink).\n\n"
+        draft += "## Proposed Redirect Copy\n"
+        draft += "This slice of work is better treated as part of \(targetLink). Review the unique context below before replacing the standalone note.\n\n"
+        draft += "## Unique Context To Preserve\n"
+        if !signalLines.isEmpty {
+            for line in signalLines {
+                draft += "\(line)\n"
+            }
+        } else if let overview {
+            draft += "- \(overview)\n"
+        } else {
+            draft += "- Source note: \(sourceLink)\n"
+        }
+        draft += "\n## Alias Trail\n"
+        draft += "- \(action.source.canonicalName)\n"
+        for alias in aliases.prefix(6) {
+            draft += "- \(alias)\n"
+        }
+        draft += "\n## Merge Checklist\n"
+        draft += "- Move any unique signals from \(sourceLink) into \(targetLink).\n"
+        draft += "- Preserve \(action.source.canonicalName) as an alias on the stronger root note if links still point here.\n"
+        draft += "- Replace the standalone note only after the root note captures the missing context.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .applyReadyRedirect,
+            relativePath: relativePath,
+            title: action.source.canonicalName,
+            markdown: draft
+        )
+    }
+
+    private func buildApplyIndexArtifact(
+        from safeActions: [KnowledgeSafeAction],
+        draftArtifactsByKey: [String: [KnowledgeDraftArtifact]]
+    ) -> KnowledgeDraftArtifact? {
+        var lessonRows: [String] = []
+        var redirectRows: [String] = []
+
+        for action in safeActions {
+            let artifacts = draftArtifactsByKey[safeActionKey(action)] ?? []
+            switch action.kind {
+            case .promoteToLessonDraft:
+                guard let applyArtifact = artifacts.first(where: { $0.kind == .applyReadyLesson }) else { continue }
+                lessonRows.append(
+                    "- [[\(applyArtifact.linkTarget)|\(action.source.canonicalName)]]"
+                    + " — promote [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]] into a lesson draft"
+                )
+            case .consolidateIntoRoot:
+                guard let target = action.target,
+                      let applyArtifact = artifacts.first(where: { $0.kind == .applyReadyRedirect }) else {
+                    continue
+                }
+                redirectRows.append(
+                    "- [[\(applyArtifact.linkTarget)|\(action.source.canonicalName)]]"
+                    + " → [[\(linkTarget(for: target))|\(target.canonicalName)]]"
+                )
+            }
+        }
+
+        guard !lessonRows.isEmpty || !redirectRows.isEmpty else { return nil }
+
+        var markdown = "# Knowledge Apply Board\n\n"
+        markdown += "_Apply-ready drafts exported from safe maintenance actions._\n\n"
+        if !lessonRows.isEmpty {
+            markdown += "## Lesson Promotions\n"
+            markdown += lessonRows.joined(separator: "\n")
+            markdown += "\n\n"
+        }
+        if !redirectRows.isEmpty {
+            markdown += "## Redirect Stubs\n"
+            markdown += redirectRows.joined(separator: "\n")
+            markdown += "\n\n"
+        }
+        markdown += "## Usage\n"
+        markdown += "- Review the apply-ready draft before moving it into the main `Knowledge/*` tree.\n"
+        markdown += "- Keep the paired review draft open if you need the rationale and migration checklist.\n"
+        markdown += "- Do not replace the main note until aliases and unique context are preserved.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .applyIndex,
+            relativePath: "Apply/_index.md",
+            title: "Knowledge Apply Board",
+            markdown: markdown
         )
     }
 
@@ -728,6 +968,68 @@ final class KnowledgeMaintenance {
         value.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty && !tokenStopWords.contains($0) }
+    }
+
+    private func loadKnowledgeNote(for entity: KnowledgeEntityRecord) throws -> KnowledgeNoteRecord? {
+        let rows = try db.query(
+            "SELECT * FROM knowledge_notes WHERE id = ? LIMIT 1",
+            params: [.text("knowledge:\(entity.id)")]
+        )
+        return rows.first.flatMap(KnowledgeNoteRecord.init(row:))
+    }
+
+    private func extractOverview(from markdown: String?) -> String? {
+        guard let section = extractSection(named: "Overview", from: markdown) else { return nil }
+        let lines = section
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("- ") && !$0.hasPrefix("### ") }
+        return lines.first
+    }
+
+    private func extractBulletSection(_ heading: String, from markdown: String?) -> [String] {
+        guard let section = extractSection(named: heading, from: markdown) else { return [] }
+        return section
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("- ") }
+    }
+
+    private func extractSection(named heading: String, from markdown: String?) -> String? {
+        guard let markdown else { return nil }
+        let lines = markdown.components(separatedBy: "\n")
+        var captured: [String] = []
+        var isInSection = false
+
+        for line in lines {
+            if line == "## \(heading)" {
+                isInSection = true
+                continue
+            }
+
+            if isInSection && line.hasPrefix("## ") {
+                break
+            }
+
+            if isInSection {
+                captured.append(line)
+            }
+        }
+
+        let section = captured.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return section.isEmpty ? nil : section
+    }
+
+    private func aliases(for entity: KnowledgeEntityRecord) -> [String] {
+        guard let aliasesJson = entity.aliasesJson,
+              let data = aliasesJson.data(using: .utf8),
+              let aliases = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+            return []
+        }
+        return aliases
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.caseInsensitiveCompare(entity.canonicalName) != .orderedSame }
+            .sorted()
     }
 
     private func slug(for value: String) -> String {

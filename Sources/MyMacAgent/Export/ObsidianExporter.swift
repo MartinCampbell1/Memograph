@@ -210,23 +210,30 @@ final class ObsidianExporter {
 
     @discardableResult
     func syncKnowledgeDraftArtifacts(_ artifacts: [KnowledgeDraftArtifact]) throws -> [String] {
-        let draftsDirectory = knowledgeDraftsDirectory()
-        try FileManager.default.createDirectory(atPath: draftsDirectory, withIntermediateDirectories: true)
+        let draftsRoot = knowledgeDraftsDirectory()
+        try FileManager.default.createDirectory(atPath: draftsRoot, withIntermediateDirectories: true)
 
-        let expectedFileNames = Set(artifacts.map(\.fileName))
-        let existingFiles = (try? FileManager.default.contentsOfDirectory(atPath: draftsDirectory)) ?? []
-        for file in existingFiles where file.hasSuffix(".md") && !expectedFileNames.contains(file) {
-            let path = (draftsDirectory as NSString).appendingPathComponent(file)
+        let expectedRelativePaths = Set(artifacts.map(\.relativePath))
+        let enumerator = FileManager.default.enumerator(atPath: draftsRoot)
+        while let relativePath = enumerator?.nextObject() as? String {
+            guard relativePath.hasSuffix(".md"),
+                  !expectedRelativePaths.contains(relativePath) else {
+                continue
+            }
+            let path = (draftsRoot as NSString).appendingPathComponent(relativePath)
             try? FileManager.default.removeItem(atPath: path)
         }
 
         var writtenPaths: [String] = []
         for artifact in artifacts {
-            let filePath = (draftsDirectory as NSString).appendingPathComponent(artifact.fileName)
+            let filePath = (draftsRoot as NSString).appendingPathComponent(artifact.relativePath)
+            let directory = (filePath as NSString).deletingLastPathComponent
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try artifact.markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
             writtenPaths.append(filePath)
         }
 
+        pruneEmptyDraftDirectories(under: draftsRoot)
         return writtenPaths
     }
 
@@ -481,8 +488,33 @@ final class ObsidianExporter {
 
     private func knowledgeDraftsDirectory() -> String {
         let knowledgeRoot = (vaultPath as NSString).appendingPathComponent("Knowledge")
-        let draftsRoot = (knowledgeRoot as NSString).appendingPathComponent("_drafts")
-        return (draftsRoot as NSString).appendingPathComponent("Maintenance")
+        return (knowledgeRoot as NSString).appendingPathComponent("_drafts")
+    }
+
+    private func pruneEmptyDraftDirectories(under root: String) {
+        guard let enumerator = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: root),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        let directories = enumerator.compactMap { element -> URL? in
+            guard let url = element as? URL else { return nil }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            return values?.isDirectory == true ? url : nil
+        }.sorted { lhs, rhs in
+            lhs.path.count > rhs.path.count
+        }
+
+        for directory in directories {
+            guard directory.path != root else { continue }
+            let contents = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+            if contents.isEmpty {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
     }
 
     private func knowledgeSlug(for title: String) -> String {

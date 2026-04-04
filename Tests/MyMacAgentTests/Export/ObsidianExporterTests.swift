@@ -310,29 +310,32 @@ struct ObsidianExporterTests {
 
         let firstBatch = [
             KnowledgeDraftArtifact(
-                fileName: "lesson-promotion-sqlite.md",
+                kind: .reviewDraft,
+                relativePath: "Maintenance/lesson-promotion-sqlite.md",
                 title: "Draft Lesson Promotion — SQLite",
                 markdown: "# Draft Lesson Promotion — SQLite\n"
             ),
             KnowledgeDraftArtifact(
-                fileName: "consolidate-ocr-accuracy-into-ocr.md",
-                title: "Draft Consolidation — OCR Accuracy into OCR",
-                markdown: "# Draft Consolidation — OCR Accuracy into OCR\n"
+                kind: .applyReadyRedirect,
+                relativePath: "Apply/Redirects/ocr-accuracy.md",
+                title: "OCR Accuracy",
+                markdown: "# OCR Accuracy\n"
             )
         ]
 
         let written = try exporter.syncKnowledgeDraftArtifacts(firstBatch)
         #expect(written.count == 2)
 
-        let draftsDir = (vaultDir as NSString).appendingPathComponent("Knowledge/_drafts/Maintenance")
-        let firstFile = (draftsDir as NSString).appendingPathComponent("lesson-promotion-sqlite.md")
-        let secondFile = (draftsDir as NSString).appendingPathComponent("consolidate-ocr-accuracy-into-ocr.md")
+        let draftsRoot = (vaultDir as NSString).appendingPathComponent("Knowledge/_drafts")
+        let firstFile = (draftsRoot as NSString).appendingPathComponent("Maintenance/lesson-promotion-sqlite.md")
+        let secondFile = (draftsRoot as NSString).appendingPathComponent("Apply/Redirects/ocr-accuracy.md")
         #expect(FileManager.default.fileExists(atPath: firstFile))
         #expect(FileManager.default.fileExists(atPath: secondFile))
 
         let secondBatch = [
             KnowledgeDraftArtifact(
-                fileName: "lesson-promotion-sqlite.md",
+                kind: .reviewDraft,
+                relativePath: "Maintenance/lesson-promotion-sqlite.md",
                 title: "Draft Lesson Promotion — SQLite",
                 markdown: "# Updated Draft\n"
             )
