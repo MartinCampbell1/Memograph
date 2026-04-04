@@ -130,6 +130,23 @@ struct SystemAudioUsageEvaluatorTests {
         )
     }
 
+    @Test("Low-confidence helper signature maps back to the foreground app")
+    func helperSignatureMapsToForegroundApp() {
+        #expect(SystemAudioUsageEvaluator.isLowConfidenceSignature("com.apple.WebKit.GPU"))
+        #expect(
+            SystemAudioUsageEvaluator.hasFrontmostAffinity(
+                "com.apple.WebKit.GPU",
+                frontmostBundleID: "com.apple.Safari"
+            )
+        )
+        #expect(
+            !SystemAudioUsageEvaluator.hasFrontmostAffinity(
+                "com.apple.WebKit.GPU",
+                frontmostBundleID: "com.openai.codex"
+            )
+        )
+    }
+
     @Test("Suppresses repeated probe for the same silent renderer signature")
     func suppressesRepeatedProbeForSameSignature() {
         let now = Date()
@@ -143,6 +160,8 @@ struct SystemAudioUsageEvaluatorTests {
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.WebKit.GPU",
+                isLowConfidenceOutput: false,
+                hasFrontmostAffinity: false,
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
                 requiresSilentSignatureReset: true,
                 knownAudibleSignatures: [],
@@ -164,6 +183,8 @@ struct SystemAudioUsageEvaluatorTests {
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.Safari",
+                isLowConfidenceOutput: false,
+                hasFrontmostAffinity: false,
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
                 requiresSilentSignatureReset: true,
                 knownAudibleSignatures: [],
@@ -185,6 +206,8 @@ struct SystemAudioUsageEvaluatorTests {
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.WebKit.GPU",
+                isLowConfidenceOutput: false,
+                hasFrontmostAffinity: false,
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
                 requiresSilentSignatureReset: true,
                 knownAudibleSignatures: [],
@@ -206,6 +229,8 @@ struct SystemAudioUsageEvaluatorTests {
                 stableOutputObservedSince: now.addingTimeInterval(-1),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.WebKit.GPU",
+                isLowConfidenceOutput: false,
+                hasFrontmostAffinity: false,
                 suppressedSilentSignature: nil,
                 requiresSilentSignatureReset: false,
                 knownAudibleSignatures: [],
@@ -227,6 +252,8 @@ struct SystemAudioUsageEvaluatorTests {
                 stableOutputObservedSince: now.addingTimeInterval(-5),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.Safari",
+                isLowConfidenceOutput: false,
+                hasFrontmostAffinity: false,
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
                 requiresSilentSignatureReset: false,
                 knownAudibleSignatures: [],
@@ -248,9 +275,57 @@ struct SystemAudioUsageEvaluatorTests {
                 stableOutputObservedSince: now.addingTimeInterval(-12),
                 minimumStableObservation: 3,
                 outputSignature: "com.apple.Safari",
+                isLowConfidenceOutput: false,
+                hasFrontmostAffinity: false,
                 suppressedSilentSignature: "com.apple.WebKit.GPU",
                 requiresSilentSignatureReset: true,
                 knownAudibleSignatures: ["com.apple.Safari"],
+                globalSilentCooldownUntil: .distantPast
+            )
+        )
+    }
+
+    @Test("Blocks low-confidence helper output when the owning app is not foreground")
+    func blocksLowConfidenceBackgroundHelper() {
+        let now = Date()
+
+        #expect(
+            !SystemAudioProbePolicy.shouldAttemptCapture(
+                now: now,
+                hasExternalOutput: true,
+                phase: .idle,
+                retryCaptureAfter: .distantPast,
+                stableOutputObservedSince: now.addingTimeInterval(-20),
+                minimumStableObservation: 3,
+                outputSignature: "com.apple.WebKit.GPU",
+                isLowConfidenceOutput: true,
+                hasFrontmostAffinity: false,
+                suppressedSilentSignature: nil,
+                requiresSilentSignatureReset: false,
+                knownAudibleSignatures: [],
+                globalSilentCooldownUntil: .distantPast
+            )
+        )
+    }
+
+    @Test("Allows low-confidence helper output once the owning app is foreground")
+    func allowsLowConfidenceForegroundHelper() {
+        let now = Date()
+
+        #expect(
+            SystemAudioProbePolicy.shouldAttemptCapture(
+                now: now,
+                hasExternalOutput: true,
+                phase: .idle,
+                retryCaptureAfter: .distantPast,
+                stableOutputObservedSince: now.addingTimeInterval(-20),
+                minimumStableObservation: 3,
+                outputSignature: "com.apple.WebKit.GPU",
+                isLowConfidenceOutput: true,
+                hasFrontmostAffinity: true,
+                suppressedSilentSignature: nil,
+                requiresSilentSignatureReset: false,
+                knownAudibleSignatures: [],
                 globalSilentCooldownUntil: .distantPast
             )
         )

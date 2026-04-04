@@ -297,6 +297,14 @@ enum MicrophoneUsageEvaluator {
 }
 
 enum SystemAudioUsageEvaluator {
+    private static let lowConfidenceHelperOwners: [String: String] = [
+        "com.apple.WebKit.GPU": "com.apple.Safari",
+        "com.google.Chrome.helper": "com.google.Chrome",
+        "com.brave.Browser.helper": "com.brave.Browser",
+        "com.microsoft.edgemac.helper": "com.microsoft.edgemac",
+        "com.apple.corespeechd": "com.apple.corespeechd"
+    ]
+
     static func significantExternalProcesses(
         _ processes: [AudioProcessInfo],
         outputDeviceID: AudioDeviceID,
@@ -342,6 +350,37 @@ enum SystemAudioUsageEvaluator {
 
         return Array(Set(bundleIDs)).sorted().joined(separator: "|")
     }
+
+    static func isLowConfidenceSignature(_ signature: String) -> Bool {
+        let bundleIDs = signatureComponents(signature)
+        guard !bundleIDs.isEmpty else {
+            return false
+        }
+
+        return bundleIDs.allSatisfy { lowConfidenceHelperOwners[$0] != nil }
+    }
+
+    static func hasFrontmostAffinity(_ signature: String, frontmostBundleID: String?) -> Bool {
+        guard let frontmostBundleID, !frontmostBundleID.isEmpty else {
+            return false
+        }
+
+        return signatureComponents(signature).contains { bundleID in
+            canonicalOwnerBundleID(for: bundleID) == frontmostBundleID
+                || bundleID == frontmostBundleID
+        }
+    }
+
+    private static func signatureComponents(_ signature: String) -> [String] {
+        signature
+            .split(separator: "|")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func canonicalOwnerBundleID(for bundleID: String) -> String {
+        lowConfidenceHelperOwners[bundleID] ?? bundleID
+    }
 }
 
 enum SystemAudioProbePolicy {
@@ -353,6 +392,8 @@ enum SystemAudioProbePolicy {
         stableOutputObservedSince: Date?,
         minimumStableObservation: TimeInterval,
         outputSignature: String?,
+        isLowConfidenceOutput: Bool,
+        hasFrontmostAffinity: Bool,
         suppressedSilentSignature: String?,
         requiresSilentSignatureReset: Bool,
         knownAudibleSignatures: Set<String>,
@@ -375,11 +416,17 @@ enum SystemAudioProbePolicy {
             return false
         }
 
+        let isKnownAudibleSignature = knownAudibleSignatures.contains(outputSignature)
+
+        if isLowConfidenceOutput && !isKnownAudibleSignature && !hasFrontmostAffinity {
+            return false
+        }
+
         if requiresSilentSignatureReset && outputSignature == suppressedSilentSignature {
             return false
         }
 
-        if knownAudibleSignatures.contains(outputSignature) {
+        if isKnownAudibleSignature {
             return true
         }
 

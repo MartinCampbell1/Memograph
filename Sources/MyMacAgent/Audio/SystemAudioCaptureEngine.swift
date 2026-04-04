@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CoreAudio
 @preconcurrency import ScreenCaptureKit
@@ -18,6 +19,8 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private struct OutputObservation {
         let hasExternalOutput: Bool
         let signature: String?
+        let isLowConfidence: Bool
+        let hasFrontmostAffinity: Bool
     }
 
     private let silenceTimeout: TimeInterval = 1.5
@@ -192,6 +195,8 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
             stableOutputObservedSince: stableOutputObservedSince,
             minimumStableObservation: minimumStableObservationBeforeProbe,
             outputSignature: observation.signature,
+            isLowConfidenceOutput: observation.isLowConfidence,
+            hasFrontmostAffinity: observation.hasFrontmostAffinity,
             suppressedSilentSignature: suppressedSilentSignature,
             requiresSilentSignatureReset: requiresSilentSignatureReset,
             knownAudibleSignatures: knownAudibleSignatures,
@@ -221,6 +226,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private func currentOutputObservation() -> OutputObservation {
         let processes = AudioProcessInspector.fetchProcesses()
         if !processes.isEmpty {
+            let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             let hasExternalOutput = SystemAudioUsageEvaluator.hasExternalProcessUsingOutputDevice(
                 processes,
                 outputDeviceID: outputDeviceID,
@@ -231,14 +237,28 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
                 outputDeviceID: outputDeviceID,
                 currentPID: currentPID
             )
+            let isLowConfidence = signature.map(SystemAudioUsageEvaluator.isLowConfidenceSignature) ?? false
+            let hasFrontmostAffinity = signature.map {
+                SystemAudioUsageEvaluator.hasFrontmostAffinity(
+                    $0,
+                    frontmostBundleID: frontmostBundleID
+                )
+            } ?? false
 
             return OutputObservation(
                 hasExternalOutput: hasExternalOutput,
-                signature: signature
+                signature: signature,
+                isLowConfidence: isLowConfidence,
+                hasFrontmostAffinity: hasFrontmostAffinity
             )
         }
 
-        return OutputObservation(hasExternalOutput: false, signature: nil)
+        return OutputObservation(
+            hasExternalOutput: false,
+            signature: nil,
+            isLowConfidence: false,
+            hasFrontmostAffinity: false
+        )
     }
 
     private func resolveDefaultOutputDevice() -> AudioDeviceID? {
