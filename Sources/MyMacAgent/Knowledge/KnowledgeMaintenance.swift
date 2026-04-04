@@ -46,6 +46,7 @@ private struct KnowledgeManualReviewItem {
     let title: String
     let markdownLine: String
     let score: Int
+    let artifactKey: String
 }
 
 private struct KnowledgeSafeAction {
@@ -63,6 +64,7 @@ private struct KnowledgeSafeAction {
 
 enum KnowledgeDraftArtifactKind {
     case reviewDraft
+    case reviewIndex
     case applyReadyLesson
     case applyReadyLessonRedirect
     case applyReadyRedirect
@@ -73,10 +75,12 @@ enum KnowledgeDraftArtifactKind {
         switch self {
         case .reviewDraft:
             return 0
-        case .applyReadyLesson, .applyReadyLessonRedirect, .applyReadyRedirect, .applyReadyMergePatch:
+        case .reviewIndex:
             return 1
-        case .applyIndex:
+        case .applyReadyLesson, .applyReadyLessonRedirect, .applyReadyRedirect, .applyReadyMergePatch:
             return 2
+        case .applyIndex:
+            return 3
         }
     }
 
@@ -84,6 +88,8 @@ enum KnowledgeDraftArtifactKind {
         switch self {
         case .reviewDraft:
             return "Review"
+        case .reviewIndex:
+            return "Board"
         case .applyReadyLesson:
             return "Apply"
         case .applyReadyLessonRedirect, .applyReadyRedirect:
@@ -99,6 +105,8 @@ enum KnowledgeDraftArtifactKind {
         switch self {
         case .reviewDraft:
             return "review draft"
+        case .reviewIndex:
+            return "review board"
         case .applyReadyLesson:
             return "apply-ready lesson"
         case .applyReadyLessonRedirect, .applyReadyRedirect:
@@ -348,7 +356,20 @@ final class KnowledgeMaintenance {
             staleCandidates: staleCandidates
         )
         let draftArtifactEntries = try buildDraftArtifacts(from: safeActions)
+        let manualReviewArtifactEntries = try buildManualReviewDraftArtifacts(
+            actionableAutoDemotedTopics: actionableAutoDemotedTopics,
+            weakTopics: weakTopics,
+            reclassifyCandidates: filteredReclassifyCandidates,
+            consolidationCandidates: filteredConsolidationCandidates,
+            staleCandidates: staleCandidates
+        )
         let draftArtifactsByKey = Dictionary(grouping: draftArtifactEntries, by: \.key)
+            .mapValues { entries in
+                entries.map(\.value).sorted { lhs, rhs in
+                    lhs.kind.sortOrder < rhs.kind.sortOrder
+                }
+            }
+        let manualReviewArtifactsByKey = Dictionary(grouping: manualReviewArtifactEntries, by: \.key)
             .mapValues { entries in
                 entries.map(\.value).sorted { lhs, rhs in
                     lhs.kind.sortOrder < rhs.kind.sortOrder
@@ -358,9 +379,16 @@ final class KnowledgeMaintenance {
             from: safeActions,
             draftArtifactsByKey: draftArtifactsByKey
         )
-        var draftArtifacts = draftArtifactEntries.map(\.value)
+        let reviewIndexArtifact = buildReviewIndexArtifact(
+            from: manualReviewItems,
+            draftArtifactsByKey: manualReviewArtifactsByKey
+        )
+        var draftArtifacts = draftArtifactEntries.map(\.value) + manualReviewArtifactEntries.map(\.value)
         if let applyIndexArtifact {
             draftArtifacts.append(applyIndexArtifact)
+        }
+        if let reviewIndexArtifact {
+            draftArtifacts.append(reviewIndexArtifact)
         }
 
         markdown += "## Dashboard\n"
@@ -395,8 +423,15 @@ final class KnowledgeMaintenance {
 
             if !manualReviewItems.isEmpty {
                 markdown += "### Needs Review\n"
+                if let reviewIndexArtifact {
+                    markdown += "- [[\(reviewIndexArtifact.linkTarget)|\(reviewIndexArtifact.kind.linkLabel)]]\n"
+                }
                 for item in manualReviewItems.prefix(5) {
-                    markdown += "- \(item.markdownLine)\n"
+                    let reviewLink = manualReviewArtifactsByKey[item.artifactKey]?
+                        .first(where: { $0.kind == .reviewDraft })
+                        .map { " • [[\($0.linkTarget)|review]]" }
+                        ?? ""
+                    markdown += "- \(item.markdownLine)\(reviewLink)\n"
                 }
                 markdown += "\n"
             }
@@ -499,6 +534,10 @@ final class KnowledgeMaintenance {
                 for candidate in filteredReclassifyCandidates.prefix(6) {
                     markdown += "- [[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
                     markdown += " — consider moving to \(candidate.targetType.folderName): \(candidate.reason)\n"
+                    if let reviewArtifact = manualReviewArtifactsByKey[manualReviewKey(for: candidate)]?
+                        .first(where: { $0.kind == .reviewDraft }) {
+                        markdown += "  Review: [[\(reviewArtifact.linkTarget)|review draft]]\n"
+                    }
                 }
                 markdown += "\n"
             }
@@ -509,6 +548,10 @@ final class KnowledgeMaintenance {
                     markdown += "- [[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]]"
                     markdown += " → [[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]"
                     markdown += " — \(candidate.reason)\n"
+                    if let reviewArtifact = manualReviewArtifactsByKey[manualReviewKey(for: candidate)]?
+                        .first(where: { $0.kind == .reviewDraft }) {
+                        markdown += "  Review: [[\(reviewArtifact.linkTarget)|review draft]]\n"
+                    }
                 }
                 markdown += "\n"
             }
@@ -520,6 +563,10 @@ final class KnowledgeMaintenance {
                     markdown += " — last seen \(candidate.daysSinceSeen) day"
                     if candidate.daysSinceSeen == 1 { markdown += "" } else { markdown += "s" }
                     markdown += " ago; \(candidate.reason)\n"
+                    if let reviewArtifact = manualReviewArtifactsByKey[manualReviewKey(for: candidate)]?
+                        .first(where: { $0.kind == .reviewDraft }) {
+                        markdown += "  Review: [[\(reviewArtifact.linkTarget)|review draft]]\n"
+                    }
                 }
                 markdown += "\n"
             }
@@ -969,7 +1016,8 @@ final class KnowledgeMaintenance {
                 kind: .reclassify,
                 title: candidate.entity.canonicalName,
                 markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] → consider moving to \(candidate.targetType.folderName.lowercased())",
-                score: candidate.score + 40
+                score: candidate.score + 40,
+                artifactKey: manualReviewKey(for: candidate)
             )
         }
 
@@ -978,7 +1026,8 @@ final class KnowledgeMaintenance {
                 kind: .consolidate,
                 title: candidate.source.canonicalName,
                 markdownLine: "[[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]] → [[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]",
-                score: candidate.score + 50
+                score: candidate.score + 50,
+                artifactKey: manualReviewKey(for: candidate)
             )
         }
 
@@ -987,7 +1036,8 @@ final class KnowledgeMaintenance {
                 kind: .weakTopic,
                 title: metric.entity.canonicalName,
                 markdownLine: "`\(metric.entity.canonicalName)` — weak topic with \(metric.coOccurrenceEdgeCount) loose links and only \(metric.typedEdgeCount) strong relation\(metric.typedEdgeCount == 1 ? "" : "s")",
-                score: metric.coOccurrenceEdgeCount * 2 - metric.typedEdgeCount
+                score: metric.coOccurrenceEdgeCount * 2 - metric.typedEdgeCount,
+                artifactKey: manualReviewKey(forWeakTopic: metric.entity)
             )
         }
 
@@ -996,7 +1046,8 @@ final class KnowledgeMaintenance {
                 kind: .weakTopic,
                 title: hotspot.entity.canonicalName,
                 markdownLine: "[[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]] — durable but thinly supported",
-                score: hotspot.relationStats.coOccurrenceEdges + hotspot.relationStats.projectRelations * 4
+                score: hotspot.relationStats.coOccurrenceEdges + hotspot.relationStats.projectRelations * 4,
+                artifactKey: manualReviewKey(forWeakTopic: hotspot.entity)
             )
         }
 
@@ -1005,7 +1056,8 @@ final class KnowledgeMaintenance {
                 kind: .stale,
                 title: candidate.entity.canonicalName,
                 markdownLine: "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]] — stale for \(candidate.daysSinceSeen) day\(candidate.daysSinceSeen == 1 ? "" : "s")",
-                score: min(candidate.daysSinceSeen, 365) / 7
+                score: min(candidate.daysSinceSeen, 365) / 7,
+                artifactKey: manualReviewKey(for: candidate)
             )
         }
 
@@ -1034,6 +1086,50 @@ final class KnowledgeMaintenance {
                 guard seenTitles.insert(key).inserted else { return false }
                 return true
             }
+    }
+
+    private func manualReviewKey(for candidate: KnowledgeReclassifyCandidate) -> String {
+        "reclassify:\(candidate.entity.id)"
+    }
+
+    private func manualReviewKey(for candidate: KnowledgeConsolidationCandidate) -> String {
+        "consolidate:\(candidate.source.id)->\(candidate.target.id)"
+    }
+
+    private func manualReviewKey(for candidate: KnowledgeStaleCandidate) -> String {
+        "stale:\(candidate.entity.id)"
+    }
+
+    private func manualReviewKey(forWeakTopic entity: KnowledgeEntityRecord) -> String {
+        "weak:\(entity.id)"
+    }
+
+    private func buildManualReviewDraftArtifacts(
+        actionableAutoDemotedTopics: [KnowledgeEntityMetrics],
+        weakTopics: [KnowledgeHotspot],
+        reclassifyCandidates: [KnowledgeReclassifyCandidate],
+        consolidationCandidates: [KnowledgeConsolidationCandidate],
+        staleCandidates: [KnowledgeStaleCandidate]
+    ) throws -> [(key: String, value: KnowledgeDraftArtifact)] {
+        var artifacts: [(key: String, value: KnowledgeDraftArtifact)] = []
+
+        for candidate in reclassifyCandidates {
+            artifacts.append((manualReviewKey(for: candidate), try buildReclassifyReviewDraft(for: candidate)))
+        }
+        for candidate in consolidationCandidates {
+            artifacts.append((manualReviewKey(for: candidate), try buildManualConsolidationReviewDraft(for: candidate)))
+        }
+        for candidate in staleCandidates {
+            artifacts.append((manualReviewKey(for: candidate), buildStaleReviewDraft(for: candidate)))
+        }
+        for metric in actionableAutoDemotedTopics {
+            artifacts.append((manualReviewKey(forWeakTopic: metric.entity), buildWeakTopicReviewDraft(for: metric)))
+        }
+        for hotspot in weakTopics {
+            artifacts.append((manualReviewKey(forWeakTopic: hotspot.entity), buildWeakDurableTopicReviewDraft(for: hotspot)))
+        }
+
+        return artifacts
     }
 
     private func buildDraftArtifacts(from safeActions: [KnowledgeSafeAction]) throws -> [(key: String, value: KnowledgeDraftArtifact)] {
@@ -1410,6 +1506,231 @@ final class KnowledgeMaintenance {
             kind: .applyIndex,
             relativePath: "Apply/_index.md",
             title: "Knowledge Apply Board",
+            markdown: markdown
+        )
+    }
+
+    private func buildReviewIndexArtifact(
+        from manualReviewItems: [KnowledgeManualReviewItem],
+        draftArtifactsByKey: [String: [KnowledgeDraftArtifact]]
+    ) -> KnowledgeDraftArtifact? {
+        guard !manualReviewItems.isEmpty else { return nil }
+
+        var reclassifyRows: [String] = []
+        var consolidationRows: [String] = []
+        var weakRows: [String] = []
+        var staleRows: [String] = []
+
+        for item in manualReviewItems {
+            guard let reviewArtifact = draftArtifactsByKey[item.artifactKey]?.first(where: { $0.kind == .reviewDraft }) else {
+                continue
+            }
+            let row = "- [[\(reviewArtifact.linkTarget)|\(item.title)]] — \(item.markdownLine)"
+            switch item.kind {
+            case .reclassify:
+                reclassifyRows.append(row)
+            case .consolidate:
+                consolidationRows.append(row)
+            case .weakTopic:
+                weakRows.append(row)
+            case .stale:
+                staleRows.append(row)
+            }
+        }
+
+        guard !reclassifyRows.isEmpty || !consolidationRows.isEmpty || !weakRows.isEmpty || !staleRows.isEmpty else {
+            return nil
+        }
+
+        var markdown = "# Knowledge Review Board\n\n"
+        markdown += "_Review packets exported from the current maintenance queue._\n\n"
+        if !consolidationRows.isEmpty {
+            markdown += "## Consolidations\n"
+            markdown += consolidationRows.prefix(8).joined(separator: "\n")
+            markdown += "\n\n"
+        }
+        if !reclassifyRows.isEmpty {
+            markdown += "## Reclassifications\n"
+            markdown += reclassifyRows.prefix(8).joined(separator: "\n")
+            markdown += "\n\n"
+        }
+        if !weakRows.isEmpty {
+            markdown += "## Weak Topics\n"
+            markdown += weakRows.prefix(8).joined(separator: "\n")
+            markdown += "\n\n"
+        }
+        if !staleRows.isEmpty {
+            markdown += "## Stale Notes\n"
+            markdown += staleRows.prefix(8).joined(separator: "\n")
+            markdown += "\n\n"
+        }
+        markdown += "## Usage\n"
+        markdown += "- Open the linked review draft before changing the main `Knowledge/*` note.\n"
+        markdown += "- Use these packets for merge, reclassify, stale, and weak-topic decisions that are not safe enough to auto-apply.\n"
+        markdown += "- Once a decision is applied, the candidate should drop out of the review queue on the next rebuild.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .reviewIndex,
+            relativePath: "Review/_index.md",
+            title: "Knowledge Review Board",
+            markdown: markdown
+        )
+    }
+
+    private func buildReclassifyReviewDraft(for candidate: KnowledgeReclassifyCandidate) throws -> KnowledgeDraftArtifact {
+        let note = try loadKnowledgeNote(for: candidate.entity)
+        let overview = extractOverview(from: note?.bodyMarkdown)
+        let keySignals = extractBulletSection("Key Signals", from: note?.bodyMarkdown).prefix(4)
+        let relationships = extractBulletSection("Relationships", from: note?.bodyMarkdown).prefix(4)
+        let relativePath = "Review/reclassify-\(candidate.entity.slug).md"
+        let sourceLink = "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
+        let targetFolder = candidate.targetType.folderName
+        let destinationLink = "[[Knowledge/\(targetFolder)/\(candidate.entity.slug)|\(candidate.entity.canonicalName)]]"
+
+        var markdown = "# Review Packet — Reclassify \(candidate.entity.canonicalName)\n\n"
+        markdown += "## Candidate\n"
+        markdown += "- Source note: \(sourceLink)\n"
+        markdown += "- Proposed destination: \(destinationLink)\n"
+        markdown += "- Reason: \(candidate.reason)\n\n"
+        markdown += "## Current Read\n"
+        if let overview {
+            markdown += "- \(overview)\n"
+        } else {
+            markdown += "- No overview was available in the current note.\n"
+        }
+        markdown += "\n## Signals To Keep\n"
+        if keySignals.isEmpty && relationships.isEmpty {
+            markdown += "- Review the source note manually; no structured signals were available.\n"
+        } else {
+            for line in keySignals { markdown += "\(line)\n" }
+            for line in relationships { markdown += "\(line)\n" }
+        }
+        markdown += "\n## Review Checklist\n"
+        markdown += "- Confirm this note reads more like durable guidance than a standalone topic.\n"
+        markdown += "- Keep aliases and backlinks intact if you move it under `\(targetFolder)`.\n"
+        markdown += "- Preserve any unique project or topic relationships before changing the note type.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: relativePath,
+            title: "Review Packet — Reclassify \(candidate.entity.canonicalName)",
+            markdown: markdown
+        )
+    }
+
+    private func buildManualConsolidationReviewDraft(for candidate: KnowledgeConsolidationCandidate) throws -> KnowledgeDraftArtifact {
+        let sourceNote = try loadKnowledgeNote(for: candidate.source)
+        let sourceOverview = extractOverview(from: sourceNote?.bodyMarkdown)
+        let sourceSignals = extractBulletSection("Key Signals", from: sourceNote?.bodyMarkdown).prefix(4)
+        let relativePath = "Review/consolidate-\(candidate.source.slug)-into-\(candidate.target.slug).md"
+        let sourceLink = "[[\(linkTarget(for: candidate.source))|\(candidate.source.canonicalName)]]"
+        let targetLink = "[[\(linkTarget(for: candidate.target))|\(candidate.target.canonicalName)]]"
+
+        var markdown = "# Review Packet — Consolidate \(candidate.source.canonicalName)\n\n"
+        markdown += "## Candidate\n"
+        markdown += "- Source note: \(sourceLink)\n"
+        markdown += "- Target note: \(targetLink)\n"
+        markdown += "- Reason: \(candidate.reason)\n\n"
+        markdown += "## Source Context\n"
+        if let sourceOverview {
+            markdown += "- \(sourceOverview)\n"
+        } else {
+            markdown += "- No overview was available in the current source note.\n"
+        }
+        markdown += "\n## Signals To Preserve\n"
+        if sourceSignals.isEmpty {
+            markdown += "- Review the source note manually before merging.\n"
+        } else {
+            for line in sourceSignals { markdown += "\(line)\n" }
+        }
+        markdown += "\n## Review Checklist\n"
+        markdown += "- Confirm the target note is actually the stronger root for this topic family.\n"
+        markdown += "- Preserve unique aliases and context before redirecting the source note.\n"
+        markdown += "- If the source still carries unique meaning, keep it separate and reject the consolidation.\n"
+
+        return KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: relativePath,
+            title: "Review Packet — Consolidate \(candidate.source.canonicalName)",
+            markdown: markdown
+        )
+    }
+
+    private func buildStaleReviewDraft(for candidate: KnowledgeStaleCandidate) -> KnowledgeDraftArtifact {
+        let relativePath = "Review/stale-\(candidate.entity.slug).md"
+        let sourceLink = "[[\(linkTarget(for: candidate.entity))|\(candidate.entity.canonicalName)]]"
+
+        let markdown = """
+        # Review Packet — Stale Note \(candidate.entity.canonicalName)
+
+        ## Candidate
+        - Note: \(sourceLink)
+        - Last seen: \(candidate.daysSinceSeen) day\(candidate.daysSinceSeen == 1 ? "" : "s") ago
+        - Reason: \(candidate.reason)
+
+        ## Review Checklist
+        - Keep it if it still serves as durable reference material.
+        - Merge or redirect it if a stronger root note already covers the same idea.
+        - Archive or suppress it if it no longer has an active project trail.
+        """
+
+        return KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: relativePath,
+            title: "Review Packet — Stale Note \(candidate.entity.canonicalName)",
+            markdown: markdown
+        )
+    }
+
+    private func buildWeakTopicReviewDraft(for metric: KnowledgeEntityMetrics) -> KnowledgeDraftArtifact {
+        let relativePath = "Review/weak-topic-\(metric.entity.slug).md"
+        let sourceLink = "[[\(linkTarget(for: metric.entity))|\(metric.entity.canonicalName)]]"
+
+        let markdown = """
+        # Review Packet — Weak Topic \(metric.entity.canonicalName)
+
+        ## Candidate
+        - Topic: \(sourceLink)
+        - Loose links: \(metric.coOccurrenceEdgeCount)
+        - Strong relations: \(metric.typedEdgeCount)
+
+        ## Review Checklist
+        - Keep it only if it carries durable meaning beyond co-occurrence noise.
+        - Consolidate it into a stronger root topic if it is just a narrow variant.
+        - Reclassify it if it actually reads like a guide, workflow, or lesson.
+        """
+
+        return KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: relativePath,
+            title: "Review Packet — Weak Topic \(metric.entity.canonicalName)",
+            markdown: markdown
+        )
+    }
+
+    private func buildWeakDurableTopicReviewDraft(for hotspot: KnowledgeHotspot) -> KnowledgeDraftArtifact {
+        let relativePath = "Review/durable-topic-\(hotspot.entity.slug).md"
+        let sourceLink = "[[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
+
+        let markdown = """
+        # Review Packet — Thin Durable Topic \(hotspot.entity.canonicalName)
+
+        ## Candidate
+        - Topic: \(sourceLink)
+        - Strong relations: \(hotspot.relationStats.typedEdges)
+        - Loose links: \(hotspot.relationStats.coOccurrenceEdges)
+        - Project trail: \(hotspot.relationStats.projectRelations)
+
+        ## Review Checklist
+        - Keep it visible if it represents a real durable topic the graph should expose.
+        - Improve typed relations or merge it into a stronger topic if the note stays too thin.
+        - Reclassify it if the title and context suggest a lesson rather than a topic.
+        """
+
+        return KnowledgeDraftArtifact(
+            kind: .reviewDraft,
+            relativePath: relativePath,
+            title: "Review Packet — Thin Durable Topic \(hotspot.entity.canonicalName)",
             markdown: markdown
         )
     }

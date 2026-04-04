@@ -552,7 +552,9 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("Promote [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] into `Lessons`."))
         #expect(markdown.contains("Consolidate [[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] into [[Knowledge/Topics/turboquant|TurboQuant]]."))
         #expect(markdown.contains("### Needs Review"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Review/_index|review board]]"))
         #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]] — stale for"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Review/stale-old-utility|review]]"))
         #expect(markdown.contains("### Draft Lesson Promotions"))
         #expect(markdown.contains("[[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]]"))
         #expect(markdown.contains("high-confidence lesson-like note with stable repeated evidence"))
@@ -572,7 +574,8 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("### Stale Review Candidates"))
         #expect(markdown.contains("[[Knowledge/Tools/old-utility|Old Utility]]"))
         #expect(markdown.contains("low-touch note with no active project trail"))
-        #expect(artifacts.draftArtifacts.count == 7)
+        #expect(markdown.contains("Review: [[Knowledge/_drafts/Review/stale-old-utility|review draft]]"))
+        #expect(artifacts.draftArtifacts.count == 9)
     }
 
     @Test("Knowledge maintenance suppresses already applied promotions and consolidations")
@@ -705,7 +708,10 @@ struct KnowledgePipelineTests {
         #expect(markdown.contains("TurboQuant Algorithm"))
         #expect(!markdown.contains("consider moving to Lessons"))
         #expect(!markdown.contains("[[Knowledge/Topics/turboquant-algorithm|TurboQuant Algorithm]] → [[Knowledge/Topics/turboquant|TurboQuant]]"))
-        #expect(artifacts.draftArtifacts.isEmpty)
+        #expect(markdown.contains("## Next Actions"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Review/_index|review board]]"))
+        #expect(markdown.contains("[[Knowledge/_drafts/Review/stale-old-utility|review]]"))
+        #expect(artifacts.draftArtifacts.count == 2)
     }
 
     @Test("Knowledge compiler renders readable signals aliases and grouped related entities")
