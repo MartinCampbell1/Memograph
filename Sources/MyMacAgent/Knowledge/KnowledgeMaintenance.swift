@@ -417,6 +417,8 @@ final class KnowledgeMaintenance {
         )
         let reviewItemCount = manualReviewItems.count
         let highPriorityReviewCount = manualReviewItems.filter { $0.priority == .high }.count
+        let standardPriorityReviewCount = manualReviewItems.filter { $0.priority == .medium }.count
+        let lowSignalReviewCount = manualReviewItems.filter { $0.priority == .low }.count
         let draftArtifactEntries = try buildDraftArtifacts(from: safeActions)
         let manualReviewArtifactEntries = try buildManualReviewDraftArtifacts(
             actionableAutoDemotedTopics: filteredActionableAutoDemotedTopics,
@@ -471,6 +473,8 @@ final class KnowledgeMaintenance {
         markdown += "- Manual review candidates: \(manualReviewItems.count)\n"
         markdown += "- Review items waiting: \(reviewItemCount)\n"
         markdown += "- High-priority review items: \(highPriorityReviewCount)\n"
+        markdown += "- Standard review items: \(standardPriorityReviewCount)\n"
+        markdown += "- Low-signal review items: \(lowSignalReviewCount)\n"
         markdown += "- Commodity weak topics already suppressed: \(commodityWeakTopics.count)\n\n"
         if !appliedActions.isEmpty {
             markdown += "- Recently applied actions tracked: \(appliedActions.count)\n\n"
@@ -498,16 +502,22 @@ final class KnowledgeMaintenance {
             }
 
             if !manualReviewItems.isEmpty {
+                let actionableReviewItems = manualReviewItems.filter { $0.priority != .low }
                 markdown += "### Needs Review\n"
                 if let reviewIndexArtifact {
                     markdown += "- [[\(reviewIndexArtifact.linkTarget)|\(reviewIndexArtifact.kind.linkLabel)]]\n"
                 }
-                for item in manualReviewItems.prefix(5) {
+                for item in actionableReviewItems.prefix(5) {
                     let reviewLink = manualReviewArtifactsByKey[item.artifactKey]?
                         .first(where: { $0.kind == .reviewDraft })
                         .map { " • [[\($0.linkTarget)|review]]" }
                         ?? ""
                     markdown += "- [\(item.priority.badge)] \(item.markdownLine)\(reviewLink)\n"
+                }
+                if lowSignalReviewCount > 0 {
+                    markdown += "- Deferred low-signal review: \(lowSignalReviewCount) item"
+                    if lowSignalReviewCount == 1 { markdown += "" } else { markdown += "s" }
+                    markdown += " remain in the review board.\n"
                 }
                 markdown += "\n"
             }
@@ -1782,7 +1792,13 @@ final class KnowledgeMaintenance {
         for priority in [KnowledgeManualReviewItem.Priority.high, .medium, .low] {
             guard let rows = groupedRows[priority], !rows.isEmpty else { continue }
             markdown += "## \(priority.sectionTitle)\n"
-            markdown += rows.map(\.1).prefix(10).joined(separator: "\n")
+            let rowLimit = priority == .low ? 6 : 10
+            markdown += rows.map(\.1).prefix(rowLimit).joined(separator: "\n")
+            if priority == .low && rows.count > rowLimit {
+                let remaining = rows.count - rowLimit
+                markdown += "\n- ...and \(remaining) more low-signal review packet"
+                if remaining == 1 { markdown += "" } else { markdown += "s" }
+            }
             markdown += "\n\n"
         }
         markdown += "## Usage\n"
@@ -1825,6 +1841,8 @@ final class KnowledgeMaintenance {
         markdown += "- [[Knowledge/_maintenance|maintenance dashboard]]\n"
         markdown += "- Safe to apply: \(safeActions.count)\n"
         markdown += "- Needs review: \(manualReviewItems.count)\n"
+        markdown += "- Standard review: \(manualReviewItems.filter { $0.priority != .low }.count)\n"
+        markdown += "- Low-signal review: \(manualReviewItems.filter { $0.priority == .low }.count)\n"
         markdown += "- Recently applied: \(appliedActions.count)\n"
         markdown += "- Recently reviewed: \(reviewDecisions.count)\n\n"
 
