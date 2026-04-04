@@ -538,6 +538,99 @@ struct KnowledgePipelineTests {
         #expect(windowMarkerCount == 2)
     }
 
+    @Test("Recent windows ranks richer activity windows ahead of newer sparse relation-only windows")
+    func recentWindowsRanksRicherWindowsAheadOfSparseOnes() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        try db.execute("""
+            INSERT INTO knowledge_entities
+                (id, canonical_name, slug, entity_type, first_seen_at, last_seen_at)
+            VALUES
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T23:02:00Z"),
+            .text("tool-1"), .text("Codex"), .text("codex"), .text("tool"),
+            .text("2026-04-03T22:02:00Z"), .text("2026-04-03T23:02:00Z"),
+            .text("topic-1"), .text("OCR"), .text("ocr"), .text("topic"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO daily_summaries
+                (date, summary_text, top_apps_json, top_topics_json, context_switches_json,
+                 unfinished_items_json, suggested_notes_json, generated_at, model_name,
+                 token_usage_input, token_usage_output, generation_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("2026-04-03"),
+            .text("""
+            ## Summary
+            Worked deeply on [[Memograph]] and stabilized the OCR export loop.
+
+            ## Проекты и код
+            ### [[Memograph]]
+            - Проверка hourly summary и экспорта в Obsidian.
+            - Разбор OCR-пайплайна и качества знания в graph notes.
+            """),
+            .text("[{\"name\":\"Memograph\",\"duration_min\":40}]"),
+            .text("[\"OCR\"]"),
+            .text("{\"window_start\":\"2026-04-03T20:02:00Z\",\"window_end\":\"2026-04-03T21:02:00Z\",\"mode\":\"hourly\"}"),
+            .null,
+            .null,
+            .text("2026-04-03T21:02:46Z"),
+            .text("test"),
+            .integer(0),
+            .integer(0),
+            .text("success")
+        ])
+
+        try db.execute("""
+            INSERT INTO knowledge_claims
+                (id, window_start, window_end, source_summary_date, source_summary_generated_at,
+                 subject_entity_id, predicate, object_text, confidence, source_kind)
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("claim-1"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("used_during_window"), .text("2026-04-03 20:02-21:02"), .real(0.95), .text("hourly_summary"),
+            .text("claim-2"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("advanced_during_window"), .text("2026-04-03"), .real(0.9), .text("hourly_summary"),
+            .text("claim-3"),
+            .text("2026-04-03T20:02:00Z"), .text("2026-04-03T21:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T21:02:46Z"),
+            .text("project-1"), .text("focuses_on_topic"), .text("OCR"), .real(0.85), .text("relation_inference"),
+            .text("claim-4"),
+            .text("2026-04-03T22:02:00Z"), .text("2026-04-03T23:02:00Z"),
+            .text("2026-04-03"), .text("2026-04-03T23:02:46Z"),
+            .text("project-1"), .text("uses_tool"), .text("Codex"), .real(0.8), .text("relation_inference")
+        ])
+
+        let compiler = KnowledgeCompiler(db: db, timeZone: utc)
+        let note = try compiler.compileNote(for: "project-1", sourceDate: "2026-04-03")
+        let body = note?.bodyMarkdown ?? ""
+
+        let richWindowRange = body.range(of: "[2026-04-03 20:02]")
+        let sparseWindowRange = body.range(of: "[2026-04-03 22:02]")
+
+        #expect(richWindowRange != nil)
+        #expect(sparseWindowRange != nil)
+        if let richWindowRange, let sparseWindowRange {
+            #expect(richWindowRange.lowerBound < sparseWindowRange.lowerBound)
+        }
+        #expect(body.contains("Context: Проверка hourly summary и экспорта в Obsidian.") == true)
+    }
+
     @Test("Project recent windows include compact summary context when available")
     func projectRecentWindowsIncludeSummaryContext() throws {
         let (db, path) = try makeDB()
@@ -656,11 +749,14 @@ struct KnowledgePipelineTests {
             VALUES
                 (?, ?, ?, ?, ?, ?),
                 (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
                 (?, ?, ?, ?, ?, ?)
         """, params: [
             .text("tool-1"), .text("Codex"), .text("codex"), .text("tool"),
             .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
             .text("project-1"), .text("Memograph"), .text("memograph"), .text("project"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("project-2"), .text("geminicode"), .text("geminicode"), .text("project"),
             .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
             .text("topic-1"), .text("OCR"), .text("ocr"), .text("topic"),
             .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z")
@@ -671,6 +767,8 @@ struct KnowledgePipelineTests {
                 (id, window_start, window_end, source_summary_date, source_summary_generated_at,
                  subject_entity_id, predicate, object_text, confidence, source_kind)
             VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
                 (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
                 (?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
                 (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -686,6 +784,14 @@ struct KnowledgePipelineTests {
             .text("claim-3"),
             .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
             .text("2026-04-04"), .text("2026-04-04T05:01:00Z"),
+            .text("tool-1"), .text("used_in_project"), .text("Memograph"), .real(0.8), .text("relation_inference"),
+            .text("claim-4"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("2026-04-04"), .text("2026-04-04T05:01:00Z"),
+            .text("tool-1"), .text("supports_project"), .text("geminicode"), .real(0.8), .text("relation_inference"),
+            .text("claim-5"),
+            .text("2026-04-04T04:00:00Z"), .text("2026-04-04T05:00:00Z"),
+            .text("2026-04-04"), .text("2026-04-04T05:01:00Z"),
             .text("tool-1"), .text("works_on_topic"), .text("OCR"), .real(0.8), .text("relation_inference")
         ])
 
@@ -694,18 +800,22 @@ struct KnowledgePipelineTests {
                 (id, from_entity_id, to_entity_id, edge_type, weight, updated_at)
             VALUES
                 (?, ?, ?, ?, ?, ?),
+                (?, ?, ?, ?, ?, ?),
                 (?, ?, ?, ?, ?, ?)
         """, params: [
             .text("edge-1"), .text("tool-1"), .text("project-1"), .text("co_occurs_with"), .real(2),
             .text("2026-04-04T05:01:00Z"),
-            .text("edge-2"), .text("tool-1"), .text("topic-1"), .text("works_on_topic"), .real(1),
+            .text("edge-2"), .text("tool-1"), .text("project-2"), .text("co_occurs_with"), .real(1),
+            .text("2026-04-04T05:01:00Z"),
+            .text("edge-3"), .text("tool-1"), .text("topic-1"), .text("works_on_topic"), .real(1),
             .text("2026-04-04T05:01:00Z")
         ])
 
         let compiler = KnowledgeCompiler(db: db, timeZone: utc)
         let note = try compiler.compileNote(for: "tool-1", sourceDate: "2026-04-04")
 
-        #expect(note?.bodyMarkdown.contains("Main projects: Memograph;") == true)
+        #expect(note?.bodyMarkdown.contains("Main projects: Memograph and geminicode;") == true)
+        #expect(note?.bodyMarkdown.contains("and 1 more") == false)
         #expect(note?.bodyMarkdown.contains("Commonly used for: OCR;") == true)
         #expect(note?.bodyMarkdown.contains("used while working on Memograph") == true)
         #expect(note?.bodyMarkdown.contains("exploring OCR") == true)

@@ -15,7 +15,8 @@ private struct RelatedKnowledgeReference {
 
 private struct PredicateSignalSummary {
     let predicate: String
-    let count: Int
+    let evidenceCount: Int
+    let objectCount: Int
     let examples: [String]
     let latest: String?
 }
@@ -243,7 +244,12 @@ final class KnowledgeCompiler {
             markdown += "\n"
         }
 
-        let signals = keySignals(for: entity, claims: claims, visibleRelationObjects: visibleRelationObjects)
+        let signals = keySignals(
+            for: entity,
+            claims: claims,
+            visibleRelationObjects: visibleRelationObjects,
+            relatedReferences: displayedRelatedReferences
+        )
         if !signals.isEmpty {
             markdown += "## Key Signals\n"
             for signal in signals {
@@ -295,9 +301,26 @@ final class KnowledgeCompiler {
     ) -> [String] {
         let relationCounts = Dictionary(grouping: relatedReferences, by: { $0.entity.entityType }).mapValues(\.count)
         let recentWindowCount = Set(claims.compactMap { claimWindowKey($0) }.filter { !$0.isEmpty }).count
+        let topToolNames = topRelatedNames(
+            sortedRelatedReferences(relatedReferences, for: entity.entityType, relatedType: .tool),
+            limit: 3
+        )
+        let topTopicNames = topRelatedNames(
+            sortedRelatedReferences(relatedReferences, for: entity.entityType, relatedType: .topic),
+            limit: 3
+        )
+        let topProjectNames = topRelatedNames(
+            sortedRelatedReferences(relatedReferences, for: entity.entityType, relatedType: .project),
+            limit: 3
+        )
+        let topLessonNames = topRelatedNames(
+            sortedRelatedReferences(relatedReferences, for: entity.entityType, relatedType: .lesson),
+            limit: 2
+        )
 
         switch entity.entityType {
         case .project:
+            var lines: [String] = []
             var parts: [String] = []
             if let toolCount = relationCounts[.tool], toolCount > 0 {
                 parts.append("\(toolCount) tool\(toolCount == 1 ? "" : "s")")
@@ -311,23 +334,43 @@ final class KnowledgeCompiler {
             if let lessonCount = relationCounts[.lesson], lessonCount > 0 {
                 parts.append("\(lessonCount) durable lesson\(lessonCount == 1 ? "" : "s")")
             }
-            guard !parts.isEmpty else { return [] }
-            return ["Recent work around this project connects it to \(joinNaturalLanguage(parts))."]
+            if !parts.isEmpty {
+                lines.append("Recent work around this project connects it to \(joinNaturalLanguage(parts)).")
+            }
+            if !topTopicNames.isEmpty {
+                lines.append("The strongest themes here are \(joinNaturalLanguage(topTopicNames)).")
+            }
+            if !topToolNames.isEmpty {
+                lines.append("The main tools around it are \(joinNaturalLanguage(topToolNames)).")
+            }
+            return Array(lines.prefix(3))
 
         case .topic:
             var lines: [String] = []
             if let projectCount = relationCounts[.project], projectCount > 0 {
                 lines.append("This topic stays active across \(projectCount) project\(projectCount == 1 ? "" : "s").")
             }
+            if !topProjectNames.isEmpty {
+                lines.append("It shows up most clearly around \(joinNaturalLanguage(topProjectNames)).")
+            }
             if let topicCount = relationCounts[.topic], topicCount > 0 {
-                lines.append("Nearby work keeps it close to \(topicCount) related topic\(topicCount == 1 ? "" : "s").")
+                if !topTopicNames.isEmpty {
+                    lines.append("Nearby work keeps it close to \(joinNaturalLanguage(topTopicNames)).")
+                } else {
+                    lines.append("Nearby work keeps it close to \(topicCount) related topic\(topicCount == 1 ? "" : "s").")
+                }
             }
             if let lessonCount = relationCounts[.lesson], lessonCount > 0 {
-                lines.append("It is documented by \(lessonCount) lesson\(lessonCount == 1 ? "" : "s").")
+                if !topLessonNames.isEmpty {
+                    lines.append("It is best explained by \(joinNaturalLanguage(topLessonNames)).")
+                } else {
+                    lines.append("It is documented by \(lessonCount) lesson\(lessonCount == 1 ? "" : "s").")
+                }
             }
-            return Array(lines.prefix(2))
+            return Array(lines.prefix(3))
 
         case .lesson:
+            var lines: [String] = []
             var parts: [String] = []
             if let projectCount = relationCounts[.project], projectCount > 0 {
                 parts.append("\(projectCount) source project\(projectCount == 1 ? "" : "s")")
@@ -336,9 +379,15 @@ final class KnowledgeCompiler {
                 parts.append("\(topicCount) documented topic\(topicCount == 1 ? "" : "s")")
             }
             if !parts.isEmpty {
-                return ["This lesson was distilled from \(joinNaturalLanguage(parts))."]
+                lines.append("This lesson was distilled from \(joinNaturalLanguage(parts)).")
             }
-            return []
+            if !topProjectNames.isEmpty {
+                lines.append("It mainly comes out of \(joinNaturalLanguage(topProjectNames)).")
+            }
+            if !topTopicNames.isEmpty {
+                lines.append("Its core coverage is \(joinNaturalLanguage(topTopicNames)).")
+            }
+            return Array(lines.prefix(3))
 
         case .tool:
             var parts: [String] = []
@@ -352,7 +401,14 @@ final class KnowledgeCompiler {
                 parts.append("\(topicCount) topic\(topicCount == 1 ? "" : "s")")
             }
             guard !parts.isEmpty else { return [] }
-            return ["Recent activity places this tool across \(joinNaturalLanguage(parts))."]
+            var lines = ["Recent activity places this tool across \(joinNaturalLanguage(parts))."]
+            if !topProjectNames.isEmpty {
+                lines.append("It is most tied to \(joinNaturalLanguage(topProjectNames)).")
+            }
+            if !topTopicNames.isEmpty {
+                lines.append("It most often shows up around \(joinNaturalLanguage(topTopicNames)).")
+            }
+            return Array(lines.prefix(3))
 
         case .issue:
             var parts: [String] = []
@@ -391,9 +447,11 @@ final class KnowledgeCompiler {
     private func keySignals(
         for entity: KnowledgeEntityRecord,
         claims: [KnowledgeClaimRecord],
-        visibleRelationObjects: Set<String>
+        visibleRelationObjects: Set<String>,
+        relatedReferences: [RelatedKnowledgeReference]
     ) -> [String] {
         let grouped = Dictionary(grouping: claims, by: \.predicate)
+        let examplePriority = examplePriorityMap(for: entity, from: relatedReferences)
         let orderedPredicates = [
             "advanced_during_window",
             "surfaced_in_window",
@@ -431,7 +489,8 @@ final class KnowledgeCompiler {
             let examples = predicateExampleObjects(
                 from: filteredClaims,
                 predicate: predicate,
-                visibleRelationObjects: visibleRelationObjects
+                visibleRelationObjects: visibleRelationObjects,
+                priority: examplePriority
             )
             let latest = filteredClaims.compactMap { claim in
                 claim.windowEnd
@@ -441,7 +500,8 @@ final class KnowledgeCompiler {
 
             return PredicateSignalSummary(
                 predicate: predicate,
-                count: count,
+                evidenceCount: count,
+                objectCount: examples.count,
                 examples: examples,
                 latest: latest
             )
@@ -606,20 +666,21 @@ final class KnowledgeCompiler {
         unit: String?
     ) -> String {
         if summary.predicate == "worth_capturing" {
-            return "Promoted to a durable note candidate \(summary.count == 1 ? "once" : "\(summary.count) times"); last seen \(formatTimestamp(summary.latest))."
+            return "Promoted to a durable note candidate \(summary.evidenceCount == 1 ? "once" : "\(summary.evidenceCount) times"); last seen \(formatTimestamp(summary.latest))."
         }
 
         if let unit {
-            let phrase = "\(summary.count) \(unit)\(summary.count == 1 ? "" : "s")"
+            let phrase = "\(summary.evidenceCount) \(unit)\(summary.evidenceCount == 1 ? "" : "s")"
             if let label {
                 return "\(label) in \(phrase); last seen \(formatTimestamp(summary.latest))."
             }
             return "\(phrase.capitalized); last seen \(formatTimestamp(summary.latest))."
         }
 
+        let objectCount = summary.objectCount > 0 ? summary.objectCount : summary.evidenceCount
         let objectSummary = summarizeExamples(
             summary.examples,
-            totalCount: summary.count,
+            totalCount: objectCount,
             fallbackNoun: fallbackNoun ?? "item"
         )
         if let label {
@@ -629,12 +690,14 @@ final class KnowledgeCompiler {
     }
 
     private func mergeSignalSummaries(_ summaries: [PredicateSignalSummary]) -> PredicateSignalSummary {
-        let count = summaries.reduce(0) { $0 + $1.count }
-        let examples = Array(Set(summaries.flatMap(\.examples))).sorted()
+        let evidenceCount = summaries.reduce(0) { $0 + $1.evidenceCount }
+        var seenExamples: Set<String> = []
+        let examples = summaries.flatMap(\.examples).filter { seenExamples.insert($0).inserted }
         let latest = summaries.compactMap(\.latest).max()
         return PredicateSignalSummary(
             predicate: summaries.first?.predicate ?? "",
-            count: count,
+            evidenceCount: evidenceCount,
+            objectCount: examples.count,
             examples: examples,
             latest: latest
         )
@@ -643,43 +706,43 @@ final class KnowledgeCompiler {
     private func renderGenericSignal(_ summary: PredicateSignalSummary) -> String? {
         switch summary.predicate {
         case "advanced_during_window":
-            return "Advanced in \(summary.count) summary window\(summary.count == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+            return "Advanced in \(summary.evidenceCount) summary window\(summary.evidenceCount == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
         case "surfaced_in_window":
-            return "Surfaced as an issue in \(summary.count) summary window\(summary.count == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+            return "Surfaced as an issue in \(summary.evidenceCount) summary window\(summary.evidenceCount == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
         case "used_during_window":
-            return "Seen in \(summary.count) captured work window\(summary.count == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+            return "Seen in \(summary.evidenceCount) captured work window\(summary.evidenceCount == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
         case "topic_in_focus":
-            return "Focus topic in \(summary.count) summary window\(summary.count == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
+            return "Focus topic in \(summary.evidenceCount) summary window\(summary.evidenceCount == 1 ? "" : "s"); last seen \(formatTimestamp(summary.latest))."
         case "related_topic":
-            return "Related to \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+            return "Related to \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
         case "uses_tool", "worked_with_tool":
-            return "Worked with \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "tool")); last seen \(formatTimestamp(summary.latest))."
+            return "Worked with \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "tool")); last seen \(formatTimestamp(summary.latest))."
         case "supports_project":
-            return "Supported \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Supported \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
         case "works_on_topic":
-            return "Used on \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+            return "Used on \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
         case "focuses_on_topic":
-            return "Focus topic: \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+            return "Focus topic: \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
         case "relevant_to_project":
-            return "Relevant to \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Relevant to \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
         case "blocked_by_issue":
-            return "Blocked by \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "issue")); last seen \(formatTimestamp(summary.latest))."
+            return "Blocked by \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "issue")); last seen \(formatTimestamp(summary.latest))."
         case "affects_project":
-            return "Affected \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Affected \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
         case "uses_model":
-            return "Used with \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "model")); last seen \(formatTimestamp(summary.latest))."
+            return "Used with \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "model")); last seen \(formatTimestamp(summary.latest))."
         case "used_in_project":
-            return "Used in \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Used in \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
         case "generates_lesson":
-            return "Generated \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
+            return "Generated \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
         case "derived_from_project":
-            return "Derived from \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
+            return "Derived from \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "project")); last seen \(formatTimestamp(summary.latest))."
         case "explains_topic":
-            return "Explains \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
+            return "Explains \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "topic")); last seen \(formatTimestamp(summary.latest))."
         case "documented_in_lesson":
-            return "Documented in \(summarizeExamples(summary.examples, totalCount: summary.count, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
+            return "Documented in \(summarizeExamples(summary.examples, totalCount: summary.objectCount, fallbackNoun: "lesson")); last seen \(formatTimestamp(summary.latest))."
         case "worth_capturing":
-            return "Promoted to a durable note candidate \(summary.count == 1 ? "once" : "\(summary.count) times"); last seen \(formatTimestamp(summary.latest))."
+            return "Promoted to a durable note candidate \(summary.evidenceCount == 1 ? "once" : "\(summary.evidenceCount) times"); last seen \(formatTimestamp(summary.latest))."
         default:
             return nil
         }
@@ -688,15 +751,64 @@ final class KnowledgeCompiler {
     private func predicateExampleObjects(
         from claims: [KnowledgeClaimRecord],
         predicate: String,
-        visibleRelationObjects: Set<String>
+        visibleRelationObjects: Set<String>,
+        priority: [String: Int]
     ) -> [String] {
-        Array(Set(claims.compactMap {
+        let uniqueExamples = Array(Set(claims.compactMap {
             filteredExampleObject(
                 from: $0,
                 predicate: predicate,
                 visibleRelationObjects: visibleRelationObjects
             )
-        })).filter { !$0.isEmpty }.sorted()
+        })).filter { !$0.isEmpty }
+
+        return uniqueExamples.sorted { lhs, rhs in
+            let lhsPriority = priority[lhs] ?? Int.max
+            let rhsPriority = priority[rhs] ?? Int.max
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+            return lhs < rhs
+        }
+    }
+
+    private func examplePriorityMap(
+        for entity: KnowledgeEntityRecord,
+        from references: [RelatedKnowledgeReference]
+    ) -> [String: Int] {
+        var ranking: [String: Int] = [:]
+        let orderedReferences = groupedRelatedEntities(references, for: entity).flatMap(\.references)
+        for (index, reference) in orderedReferences.enumerated() {
+            ranking[reference.entity.canonicalName] = min(ranking[reference.entity.canonicalName] ?? Int.max, index)
+        }
+        return ranking
+    }
+
+    private func topRelatedNames(
+        _ references: [RelatedKnowledgeReference]?,
+        limit: Int
+    ) -> [String] {
+        Array((references ?? []).prefix(limit).map { $0.entity.canonicalName })
+    }
+
+    private func sortedRelatedReferences(
+        _ references: [RelatedKnowledgeReference],
+        for entityType: KnowledgeEntityType,
+        relatedType: KnowledgeEntityType
+    ) -> [RelatedKnowledgeReference] {
+        references
+            .filter { $0.entity.entityType == relatedType }
+            .sorted { lhs, rhs in
+                let lhsPriority = relationPriority(lhs.edgeType, for: entityType, relatedType: relatedType)
+                let rhsPriority = relationPriority(rhs.edgeType, for: entityType, relatedType: relatedType)
+                if lhsPriority != rhsPriority {
+                    return lhsPriority > rhsPriority
+                }
+                if lhs.weight != rhs.weight {
+                    return lhs.weight > rhs.weight
+                }
+                return lhs.entity.canonicalName < rhs.entity.canonicalName
+            }
     }
 
     private func summarizeExamples(
@@ -823,15 +935,30 @@ final class KnowledgeCompiler {
         entityType: KnowledgeEntityType,
         windowContexts: [String: String]
     ) -> [(when: String, description: String)] {
-        var orderedWindowKeys: [String] = []
         var claimsByWindow: [String: [KnowledgeClaimRecord]] = [:]
 
         for claim in claims {
             let windowKey = claimWindowKey(claim)
-            if claimsByWindow[windowKey] == nil {
-                orderedWindowKeys.append(windowKey)
-            }
             claimsByWindow[windowKey, default: []].append(claim)
+        }
+
+        let orderedWindowKeys = claimsByWindow.keys.sorted { lhs, rhs in
+            let lhsClaims = claimsByWindow[lhs] ?? []
+            let rhsClaims = claimsByWindow[rhs] ?? []
+            let lhsScore = recentWindowScore(
+                for: lhsClaims,
+                entityType: entityType,
+                context: windowContexts[lhs]
+            )
+            let rhsScore = recentWindowScore(
+                for: rhsClaims,
+                entityType: entityType,
+                context: windowContexts[rhs]
+            )
+            if lhsScore != rhsScore {
+                return lhsScore > rhsScore
+            }
+            return recentWindowSortTimestamp(for: lhsClaims) > recentWindowSortTimestamp(for: rhsClaims)
         }
 
         return orderedWindowKeys.compactMap { windowKey in
@@ -860,6 +987,30 @@ final class KnowledgeCompiler {
             }
             return (when: when, description: description)
         }
+    }
+
+    private func recentWindowScore(
+        for claims: [KnowledgeClaimRecord],
+        entityType: KnowledgeEntityType,
+        context: String?
+    ) -> Int {
+        let relationBonus = claims.reduce(0) { partial, claim in
+            partial + recentClaimPriority(claim, entityType: entityType)
+        }
+        let sourceBonus = claims.reduce(0) { partial, claim in
+            partial + sourceKindPriority(claim.sourceKind)
+        }
+        let contextBonus = (context?.isEmpty == false) ? 6 : 0
+        let activityBonus = claims.contains { claim in
+            ["used_during_window", "advanced_during_window", "surfaced_in_window", "topic_in_focus"].contains(claim.predicate)
+        } ? 4 : 0
+        return relationBonus + sourceBonus + contextBonus + activityBonus
+    }
+
+    private func recentWindowSortTimestamp(for claims: [KnowledgeClaimRecord]) -> String {
+        claims
+            .map(claimSortTimestamp)
+            .max() ?? ""
     }
 
     private func describeRecentWindowClaim(_ claim: KnowledgeClaimRecord, entityType: KnowledgeEntityType) -> String {
