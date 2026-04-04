@@ -194,7 +194,8 @@ final class KnowledgeMaintenance {
     func buildArtifacts(
         metrics: [KnowledgeEntityMetrics],
         materializedEntityIds: Set<String>,
-        graphShaper: GraphShaper
+        graphShaper: GraphShaper,
+        appliedActions: [KnowledgeAppliedActionRecord] = []
     ) throws -> KnowledgeMaintenanceArtifacts {
         let metricIndex = Dictionary(uniqueKeysWithValues: metrics.map { ($0.entity.id, $0) })
         let entities = metrics
@@ -302,6 +303,9 @@ final class KnowledgeMaintenance {
         }
         markdown += "- Review items waiting: \(reviewItemCount)\n"
         markdown += "- Commodity weak topics already suppressed: \(commodityWeakTopics.count)\n\n"
+        if !appliedActions.isEmpty {
+            markdown += "- Recently applied actions tracked: \(appliedActions.count)\n\n"
+        }
 
         markdown += "## Review Queue\n"
         if autoDemotedLessons.isEmpty && weakTopics.isEmpty && actionableAutoDemotedTopics.isEmpty && commodityWeakTopics.isEmpty {
@@ -426,6 +430,21 @@ final class KnowledgeMaintenance {
             }
         }
 
+        markdown += "## Recently Applied\n"
+        if appliedActions.isEmpty {
+            markdown += "- No applied KB actions tracked yet.\n\n"
+        } else {
+            for action in appliedActions
+                .sorted(by: compareAppliedActions)
+                .prefix(8) {
+                markdown += "- \(formattedAppliedAction(action))\n"
+                if let backupPath = action.backupPath, !backupPath.isEmpty {
+                    markdown += "  Backup: `\(backupPath)`\n"
+                }
+            }
+            markdown += "\n"
+        }
+
         markdown += "## Hotspots\n"
         for hotspot in sortedHotspots.prefix(10) {
             markdown += "- [[\(linkTarget(for: hotspot.entity))|\(hotspot.entity.canonicalName)]]"
@@ -448,12 +467,14 @@ final class KnowledgeMaintenance {
     func buildMarkdown(
         metrics: [KnowledgeEntityMetrics],
         materializedEntityIds: Set<String>,
-        graphShaper: GraphShaper
+        graphShaper: GraphShaper,
+        appliedActions: [KnowledgeAppliedActionRecord] = []
     ) throws -> String {
         try buildArtifacts(
             metrics: metrics,
             materializedEntityIds: materializedEntityIds,
-            graphShaper: graphShaper
+            graphShaper: graphShaper,
+            appliedActions: appliedActions
         ).markdown
     }
 
@@ -533,6 +554,29 @@ final class KnowledgeMaintenance {
         default:
             let head = parts.dropLast().joined(separator: ", ")
             return "\(head), and \(parts.last!)"
+        }
+    }
+
+    private func compareAppliedActions(_ lhs: KnowledgeAppliedActionRecord, _ rhs: KnowledgeAppliedActionRecord) -> Bool {
+        if lhs.appliedAt != rhs.appliedAt {
+            return lhs.appliedAt > rhs.appliedAt
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+
+    private func formattedAppliedAction(_ action: KnowledgeAppliedActionRecord) -> String {
+        let timestamp = dateSupport
+            .parseDateTime(action.appliedAt)
+            .map(dateSupport.localDateTimeString(from:))
+            ?? action.appliedAt
+        let linkTarget = "Knowledge/\(action.applyTargetRelativePath.replacingOccurrences(of: ".md", with: ""))"
+        switch action.kind {
+        case .lessonPromotion:
+            return "`\(timestamp)` — promoted [[\(linkTarget)|\(action.title)]] into the main knowledge tree"
+        case .lessonRedirect:
+            return "`\(timestamp)` — applied a lesson redirect at [[\(linkTarget)|\(action.title)]]"
+        case .redirect:
+            return "`\(timestamp)` — applied a consolidation redirect at [[\(linkTarget)|\(action.title)]]"
         }
     }
 

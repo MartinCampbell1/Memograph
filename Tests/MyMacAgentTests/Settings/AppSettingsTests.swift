@@ -17,6 +17,7 @@ struct AppSettingsTests {
         #expect(settings.knowledgeMaintenanceIntervalHours == 24)
         #expect(settings.lastKnowledgeMaintenanceAt == nil)
         #expect(settings.knowledgeSuppressedEntityIds.isEmpty)
+        #expect(settings.knowledgeAppliedActions.isEmpty)
         #expect(settings.maxCapturesPerSession == 500)
     }
 
@@ -31,6 +32,16 @@ struct AppSettingsTests {
         settings.knowledgeMaintenanceIntervalHours = 12
         settings.lastKnowledgeMaintenanceAt = "2026-04-03T12:00:00Z"
         settings.knowledgeSuppressedEntityIds = ["entity-2", "entity-1", "entity-1"]
+        settings.knowledgeAppliedActions = [
+            KnowledgeAppliedActionRecord(
+                appliedAt: "2026-04-04T10:33:00Z",
+                kind: .lessonPromotion,
+                title: "Codex Workflow for AI Founders",
+                sourceEntityId: "entity-1",
+                applyTargetRelativePath: "Lessons/codex-workflow-for-ai-founders.md",
+                appliedPath: "/Users/test/vault/Knowledge/Lessons/codex-workflow-for-ai-founders.md"
+            )
+        ]
 
         let settings2 = AppSettings(defaults: defaults, credentialsStore: store)
         #expect(settings2.obsidianVaultPath == "/Users/test/vault")
@@ -39,6 +50,9 @@ struct AppSettingsTests {
         #expect(settings2.knowledgeMaintenanceIntervalHours == 12)
         #expect(settings2.lastKnowledgeMaintenanceAt == "2026-04-03T12:00:00Z")
         #expect(settings2.knowledgeSuppressedEntityIds == ["entity-1", "entity-2"])
+        #expect(settings2.knowledgeAppliedActions.count == 1)
+        #expect(settings2.knowledgeAppliedActions.first?.kind == .lessonPromotion)
+        #expect(settings2.knowledgeAppliedActions.first?.title == "Codex Workflow for AI Founders")
     }
 
     @Test("Default credentials storage persists locally without Keychain")

@@ -136,6 +136,7 @@ final class KnowledgePipeline {
         if let exporter {
             let indexMarkdown = try compiler.buildIndexMarkdown()
             _ = try? exporter.exportKnowledgeIndex(indexMarkdown)
+            _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
 
             let maintenanceArtifacts = try buildMaintenanceArtifacts(metrics: metrics, materializedEntityIds: materializedIds)
             _ = try? exporter.exportKnowledgeMaintenance(maintenanceArtifacts.markdown)
@@ -370,7 +371,8 @@ final class KnowledgePipeline {
         try maintenance.buildArtifacts(
             metrics: metrics,
             materializedEntityIds: materializedEntityIds,
-            graphShaper: graphShaper
+            graphShaper: graphShaper,
+            appliedActions: settings.knowledgeAppliedActions
         )
     }
 

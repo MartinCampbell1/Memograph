@@ -1,6 +1,12 @@
 import Foundation
 import os
 
+struct AppliedKnowledgeDraftResult {
+    let artifact: KnowledgeDraftArtifact
+    let appliedPath: String
+    let backupPath: String?
+}
+
 final class ObsidianExporter {
     private struct SummaryWindowMetadata {
         let count: Int?
@@ -239,7 +245,7 @@ final class ObsidianExporter {
     }
 
     @discardableResult
-    func applyKnowledgeDraftArtifacts(_ artifacts: [KnowledgeDraftArtifact]) throws -> [String] {
+    func applyKnowledgeDraftArtifacts(_ artifacts: [KnowledgeDraftArtifact]) throws -> [AppliedKnowledgeDraftResult] {
         let applyableArtifacts = artifacts.filter { $0.applyTargetRelativePath != nil }
         guard !applyableArtifacts.isEmpty else { return [] }
 
@@ -249,26 +255,132 @@ final class ObsidianExporter {
         let backupRoot = appliedBackupDirectory()
         try FileManager.default.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
 
-        var writtenPaths: [String] = []
+        var results: [AppliedKnowledgeDraftResult] = []
         for artifact in applyableArtifacts {
             guard let targetRelativePath = artifact.applyTargetRelativePath else { continue }
             let targetPath = (knowledgeRoot as NSString).appendingPathComponent(targetRelativePath)
             let targetDirectory = (targetPath as NSString).deletingLastPathComponent
             try FileManager.default.createDirectory(atPath: targetDirectory, withIntermediateDirectories: true)
 
+            var backupPath: String?
             if FileManager.default.fileExists(atPath: targetPath) {
-                let backupPath = (backupRoot as NSString).appendingPathComponent(targetRelativePath)
-                let backupDirectory = (backupPath as NSString).deletingLastPathComponent
+                backupPath = (backupRoot as NSString).appendingPathComponent(targetRelativePath)
+                let backupDirectory = ((backupPath ?? "") as NSString).deletingLastPathComponent
                 try FileManager.default.createDirectory(atPath: backupDirectory, withIntermediateDirectories: true)
                 let existingData = try Data(contentsOf: URL(fileURLWithPath: targetPath))
-                try existingData.write(to: URL(fileURLWithPath: backupPath), options: .atomic)
+                try existingData.write(to: URL(fileURLWithPath: backupPath ?? ""), options: .atomic)
             }
 
             try artifact.markdown.write(toFile: targetPath, atomically: true, encoding: .utf8)
-            writtenPaths.append(targetPath)
+            results.append(
+                AppliedKnowledgeDraftResult(
+                    artifact: artifact,
+                    appliedPath: targetPath,
+                    backupPath: backupPath
+                )
+            )
         }
 
-        return writtenPaths
+        return results
+    }
+
+    func renderKnowledgeAppliedHistory(_ records: [KnowledgeAppliedActionRecord]) -> String {
+        var markdown = "# Memograph Applied Knowledge Actions\n\n"
+        markdown += "_Refreshed: \(dateSupport.localDateTimeString(from: Date()))_\n\n"
+
+        guard !records.isEmpty else {
+            markdown += "- No knowledge actions have been applied yet.\n"
+            return markdown
+        }
+
+        markdown += "## Recently Applied\n"
+        for record in records.sorted(by: compareAppliedActions).prefix(20) {
+            let appliedAt = dateSupport.parseDateTime(record.appliedAt)
+                .map(dateSupport.localDateTimeString(from:))
+                ?? record.appliedAt
+            let linkTarget = "Knowledge/\(record.applyTargetRelativePath.replacingOccurrences(of: ".md", with: ""))"
+            markdown += "- `\(appliedAt)` — \(actionVerb(for: record.kind)) [[\(linkTarget)|\(record.title)]]\n"
+            if let backupPath = record.backupPath, !backupPath.isEmpty {
+                markdown += "  Backup: `\(backupPath)`\n"
+            }
+        }
+        markdown += "\n"
+        return markdown
+    }
+
+    func exportKnowledgeAppliedHistory(_ records: [KnowledgeAppliedActionRecord]) throws -> String {
+        let knowledgeRoot = knowledgeRootDirectory()
+        try FileManager.default.createDirectory(atPath: knowledgeRoot, withIntermediateDirectories: true)
+
+        let filePath = (knowledgeRoot as NSString).appendingPathComponent("_applied.md")
+        let markdown = renderKnowledgeAppliedHistory(records)
+        try markdown.write(toFile: filePath, atomically: true, encoding: .utf8)
+        return filePath
+    }
+
+    func discoverAppliedKnowledgeActions(existing: [KnowledgeAppliedActionRecord]) -> [KnowledgeAppliedActionRecord] {
+        let knowledgeRoot = knowledgeRootDirectory()
+        let candidateDirectories = [
+            (knowledgeRoot as NSString).appendingPathComponent("Lessons"),
+            (knowledgeRoot as NSString).appendingPathComponent("Topics")
+        ]
+
+        var byKey = Dictionary(uniqueKeysWithValues: existing.map {
+            (appliedActionKey(kind: $0.kind, relativePath: $0.applyTargetRelativePath), $0)
+        })
+
+        for directory in candidateDirectories where FileManager.default.fileExists(atPath: directory) {
+            guard let files = try? FileManager.default.contentsOfDirectory(atPath: directory) else { continue }
+            for file in files where file.hasSuffix(".md") {
+                let path = (directory as NSString).appendingPathComponent(file)
+                guard let content = try? String(contentsOfFile: path, encoding: .utf8),
+                      let kind = detectedAppliedActionKind(from: content) else {
+                    continue
+                }
+                let relativePath = relativeKnowledgePath(for: path)
+                let key = appliedActionKey(kind: kind, relativePath: relativePath)
+                guard byKey[key] == nil else { continue }
+                let title = extractedTitle(from: content) ?? ((file as NSString).deletingPathExtension)
+                let appliedAt = fileTimestamp(at: path)
+                let backupPath = latestBackupPath(for: relativePath)
+                byKey[key] = KnowledgeAppliedActionRecord(
+                    id: KnowledgeAppliedActionRecord.stableID(kind: kind, applyTargetRelativePath: relativePath),
+                    appliedAt: appliedAt,
+                    kind: kind,
+                    title: title,
+                    sourceEntityId: nil,
+                    applyTargetRelativePath: relativePath,
+                    appliedPath: path,
+                    backupPath: backupPath
+                )
+
+                if kind == .lessonRedirect {
+                    let lessonRelativePath = "Lessons/\(file)"
+                    let lessonKey = appliedActionKey(kind: .lessonPromotion, relativePath: lessonRelativePath)
+                    guard byKey[lessonKey] == nil else { continue }
+
+                    let lessonPath = (knowledgeRoot as NSString).appendingPathComponent(lessonRelativePath)
+                    let lessonTitle = loadAppliedKnowledgeTitle(at: lessonPath) ?? title
+                    let lessonAppliedAt = fileTimestamp(at: lessonPath)
+                    let lessonBackupPath = latestBackupPath(for: lessonRelativePath)
+                    byKey[lessonKey] = KnowledgeAppliedActionRecord(
+                        id: KnowledgeAppliedActionRecord.stableID(
+                            kind: .lessonPromotion,
+                            applyTargetRelativePath: lessonRelativePath
+                        ),
+                        appliedAt: lessonAppliedAt,
+                        kind: .lessonPromotion,
+                        title: lessonTitle,
+                        sourceEntityId: nil,
+                        applyTargetRelativePath: lessonRelativePath,
+                        appliedPath: lessonPath,
+                        backupPath: lessonBackupPath
+                    )
+                }
+            }
+        }
+
+        return byKey.values.sorted(by: compareAppliedActions)
     }
 
     func deleteKnowledgeNote(_ note: KnowledgeNoteRecord) throws {
@@ -535,6 +647,89 @@ final class ObsidianExporter {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let stamp = formatter.string(from: Date())
         return (knowledgeDraftsDirectory() as NSString).appendingPathComponent("AppliedBackup/\(stamp)")
+    }
+
+    private func compareAppliedActions(_ lhs: KnowledgeAppliedActionRecord, _ rhs: KnowledgeAppliedActionRecord) -> Bool {
+        if lhs.appliedAt != rhs.appliedAt {
+            return lhs.appliedAt > rhs.appliedAt
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+
+    private func actionVerb(for kind: KnowledgeAppliedActionKind) -> String {
+        switch kind {
+        case .lessonPromotion:
+            return "promoted"
+        case .lessonRedirect:
+            return "redirected"
+        case .redirect:
+            return "consolidated"
+        }
+    }
+
+    private func detectedAppliedActionKind(from markdown: String) -> KnowledgeAppliedActionKind? {
+        if markdown.contains("_Apply-ready lesson draft generated from a safe maintenance action._") {
+            return .lessonPromotion
+        }
+        if markdown.contains("_Redirect stub generated from a safe lesson-promotion action._") {
+            return .lessonRedirect
+        }
+        if markdown.contains("_Redirect stub draft generated from a safe consolidation action._") {
+            return .redirect
+        }
+        return nil
+    }
+
+    private func extractedTitle(from markdown: String) -> String? {
+        for line in markdown.components(separatedBy: .newlines) {
+            if line.hasPrefix("# ") {
+                return String(line.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
+    }
+
+    private func loadAppliedKnowledgeTitle(at path: String) -> String? {
+        guard FileManager.default.fileExists(atPath: path),
+              let markdown = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return nil
+        }
+        return extractedTitle(from: markdown)
+    }
+
+    private func relativeKnowledgePath(for absolutePath: String) -> String {
+        let knowledgeRoot = knowledgeRootDirectory() + "/"
+        if absolutePath.hasPrefix(knowledgeRoot) {
+            return String(absolutePath.dropFirst(knowledgeRoot.count))
+        }
+        return (absolutePath as NSString).lastPathComponent
+    }
+
+    private func fileTimestamp(at path: String) -> String {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let date = attributes?[.modificationDate] as? Date ?? Date()
+        return dateSupport.isoString(from: date)
+    }
+
+    private func latestBackupPath(for relativePath: String) -> String? {
+        let backupRoot = (knowledgeDraftsDirectory() as NSString).appendingPathComponent("AppliedBackup")
+        guard FileManager.default.fileExists(atPath: backupRoot),
+              let directories = try? FileManager.default.contentsOfDirectory(atPath: backupRoot) else {
+            return nil
+        }
+
+        for directory in directories.sorted(by: >) {
+            let candidate = (backupRoot as NSString).appendingPathComponent(directory)
+            let path = (candidate as NSString).appendingPathComponent(relativePath)
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func appliedActionKey(kind: KnowledgeAppliedActionKind, relativePath: String) -> String {
+        "\(kind.rawValue)|\(relativePath)"
     }
 
     private func pruneEmptyDraftDirectories(under root: String) {

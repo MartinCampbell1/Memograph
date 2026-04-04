@@ -262,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let vaultPath = AppSettings().obsidianVaultPath
         obsidianExporter = ObsidianExporter(db: db, vaultPath: vaultPath)
         knowledgePipeline = KnowledgePipeline(db: db)
+        refreshKnowledgeAppliedActionHistory()
         logger.info("Phase 3 components initialized (fusion, summary, export)")
         performKnowledgeMaintenance(reason: "startup", force: true)
     }
@@ -736,15 +737,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .union(applyableArtifacts.compactMap(\.suppressedEntityId))
             settings.knowledgeSuppressedEntityIds = Array(mergedSuppressedIds).sorted()
 
+            _ = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
+            let applyResults = try exporter.applyKnowledgeDraftArtifacts(applyableArtifacts)
+
+            let appliedAt = dateSupport.isoString(from: Date())
+            let newRecords = applyResults.compactMap { buildAppliedActionRecord(from: $0, appliedAt: appliedAt) }
+            settings.knowledgeAppliedActions.append(contentsOf: newRecords)
+            _ = try? exporter.exportKnowledgeAppliedHistory(settings.knowledgeAppliedActions)
+
             let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: exporter)
-            let appliedPaths = try exporter.applyKnowledgeDraftArtifacts(applyableArtifacts)
-            logger.info("Knowledge safe-action apply finished: \(appliedPaths.count) files applied, \(materializedCount) notes materialized")
-            for path in appliedPaths {
-                print(path)
+            logger.info("Knowledge safe-action apply finished: \(applyResults.count) files applied, \(materializedCount) notes materialized")
+            for result in applyResults {
+                print(result.appliedPath)
             }
         } catch {
             logger.error("Knowledge safe-action apply failed: \(error.localizedDescription)")
         }
+    }
+
+    private func refreshKnowledgeAppliedActionHistory() {
+        guard let exporter = obsidianExporter else { return }
+        var settings = AppSettings()
+        let discovered = exporter.discoverAppliedKnowledgeActions(existing: settings.knowledgeAppliedActions)
+        guard discovered != settings.knowledgeAppliedActions else {
+            _ = try? exporter.exportKnowledgeAppliedHistory(discovered)
+            return
+        }
+        settings.knowledgeAppliedActions = discovered
+        _ = try? exporter.exportKnowledgeAppliedHistory(discovered)
+    }
+
+    private func buildAppliedActionRecord(
+        from result: AppliedKnowledgeDraftResult,
+        appliedAt: String
+    ) -> KnowledgeAppliedActionRecord? {
+        guard let applyTargetRelativePath = result.artifact.applyTargetRelativePath else {
+            return nil
+        }
+        let kind: KnowledgeAppliedActionKind
+        switch result.artifact.kind {
+        case .applyReadyLesson:
+            kind = .lessonPromotion
+        case .applyReadyLessonRedirect:
+            kind = .lessonRedirect
+        case .applyReadyRedirect:
+            kind = .redirect
+        default:
+            return nil
+        }
+
+        return KnowledgeAppliedActionRecord(
+            appliedAt: appliedAt,
+            kind: kind,
+            title: result.artifact.title,
+            sourceEntityId: result.artifact.suppressedEntityId,
+            applyTargetRelativePath: applyTargetRelativePath,
+            appliedPath: result.appliedPath,
+            backupPath: result.backupPath
+        )
     }
 
     private func summaryWindowDescriptor(from summary: DailySummaryRecord) -> SummaryWindowDescriptor? {

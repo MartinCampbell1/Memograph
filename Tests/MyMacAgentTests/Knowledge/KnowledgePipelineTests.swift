@@ -209,7 +209,25 @@ struct KnowledgePipelineTests {
         let exporter = ObsidianExporter(db: db, vaultPath: vaultPath, timeZone: utc)
         defer { try? FileManager.default.removeItem(atPath: vaultPath) }
 
-        let pipeline = KnowledgePipeline(db: db, timeZone: utc)
+        let defaults = UserDefaults(suiteName: "test_\(UUID().uuidString)")!
+        var settings = AppSettings(
+            defaults: defaults,
+            credentialsStore: InMemoryCredentialsStore(),
+            legacyCredentialsStore: InMemoryCredentialsStore()
+        )
+        settings.knowledgeAppliedActions = [
+            KnowledgeAppliedActionRecord(
+                appliedAt: "2026-04-04T10:33:00Z",
+                kind: .lessonPromotion,
+                title: "Codex Workflow for AI Founders",
+                sourceEntityId: "topic-codex-workflow",
+                applyTargetRelativePath: "Lessons/codex-workflow-for-ai-founders.md",
+                appliedPath: (vaultPath as NSString).appendingPathComponent("Knowledge/Lessons/codex-workflow-for-ai-founders.md"),
+                backupPath: (vaultPath as NSString).appendingPathComponent("Knowledge/_drafts/AppliedBackup/20260404-103351/Lessons/codex-workflow-for-ai-founders.md")
+            )
+        ]
+
+        let pipeline = KnowledgePipeline(db: db, timeZone: utc, settings: settings)
         _ = try pipeline.syncMaterializedKnowledge(exporter: exporter)
 
         let maintenancePath = (vaultPath as NSString).appendingPathComponent("Knowledge/_maintenance.md")
@@ -221,9 +239,11 @@ struct KnowledgePipelineTests {
         #expect(maintenance.contains("## Review Queue"))
         #expect(maintenance.contains("## Safe Auto-Actions"))
         #expect(maintenance.contains("## Improvement Candidates"))
+        #expect(maintenance.contains("## Recently Applied"))
         #expect(maintenance.contains("## Hotspots"))
         #expect(maintenance.contains("Auto-demoted Broad Lessons"))
         #expect(maintenance.contains("macOS System Audio Capture Guide"))
+        #expect(maintenance.contains("Codex Workflow for AI Founders"))
     }
 
     @Test("Knowledge sync excludes suppressed entities from materialized notes")

@@ -289,6 +289,11 @@ struct AppSettings {
         set { writeList(Array(Set(newValue)).sorted(), forKey: "knowledgeSuppressedEntityIds") }
     }
 
+    var knowledgeAppliedActions: [KnowledgeAppliedActionRecord] {
+        get { readCodableArray(forKey: "knowledgeAppliedActions") }
+        set { writeCodableArray(Array(newValue.suffix(100)), forKey: "knowledgeAppliedActions") }
+    }
+
     var maxCapturesPerSession: Int {
         get {
             let val = defaults.integer(forKey: "maxCapturesPerSession")
@@ -543,5 +548,23 @@ struct AppSettings {
 
     private func writeList(_ values: [String], forKey key: String) {
         defaults.set(values.joined(separator: "\n"), forKey: key)
+    }
+
+    private func readCodableArray<T: Decodable>(forKey key: String) -> [T] {
+        guard let stored = defaults.string(forKey: key),
+              let data = stored.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([T].self, from: data) else {
+            return []
+        }
+        return decoded
+    }
+
+    private func writeCodableArray<T: Encodable>(_ values: [T], forKey key: String) {
+        guard let data = try? JSONEncoder().encode(values),
+              let string = String(data: data, encoding: .utf8) else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        defaults.set(string, forKey: key)
     }
 }

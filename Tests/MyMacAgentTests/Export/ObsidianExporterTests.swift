@@ -403,6 +403,8 @@ struct ObsidianExporterTests {
 
         let written = try exporter.applyKnowledgeDraftArtifacts(artifacts)
         #expect(written.count == 2)
+        #expect(written.contains { $0.artifact.kind == .applyReadyLesson })
+        #expect(written.contains { $0.artifact.kind == .applyReadyRedirect })
 
         let lessonPath = (knowledgeRoot as NSString).appendingPathComponent("Lessons/sqlite-optimization.md")
         #expect(FileManager.default.fileExists(atPath: lessonPath))
@@ -416,5 +418,80 @@ struct ObsidianExporterTests {
         _ = try exporter.syncKnowledgeDraftArtifacts([])
         let backupCandidatesAfterSync = try FileManager.default.subpathsOfDirectory(atPath: draftsRoot)
         #expect(backupCandidatesAfterSync.contains { $0.hasSuffix("Topics/sqlite.md") })
+    }
+
+    @Test("Exports applied knowledge action history note")
+    func exportsAppliedKnowledgeActionHistory() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_kb_applied_history_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        let records = [
+            KnowledgeAppliedActionRecord(
+                appliedAt: "2026-04-04T10:33:00Z",
+                kind: .lessonPromotion,
+                title: "Codex Workflow for AI Founders",
+                sourceEntityId: "topic-codex-workflow",
+                applyTargetRelativePath: "Lessons/codex-workflow-for-ai-founders.md",
+                appliedPath: "/Users/test/vault/Knowledge/Lessons/codex-workflow-for-ai-founders.md",
+                backupPath: "/Users/test/vault/Knowledge/_drafts/AppliedBackup/20260404-103351/Lessons/codex-workflow-for-ai-founders.md"
+            )
+        ]
+
+        let filePath = try exporter.exportKnowledgeAppliedHistory(records)
+        #expect(FileManager.default.fileExists(atPath: filePath))
+        let markdown = try String(contentsOfFile: filePath, encoding: .utf8)
+        #expect(markdown.contains("# Memograph Applied Knowledge Actions"))
+        #expect(markdown.contains("## Recently Applied"))
+        #expect(markdown.contains("Codex Workflow for AI Founders"))
+        #expect(markdown.contains("Backup:"))
+    }
+
+    @Test("Discovers previously applied knowledge actions from the vault")
+    func discoversAppliedKnowledgeActionsFromVault() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_kb_applied_discovery_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        let lessonPath = (vaultDir as NSString).appendingPathComponent("Knowledge/Lessons/codex-workflow-for-ai-founders.md")
+        let topicPath = (vaultDir as NSString).appendingPathComponent("Knowledge/Topics/codex-workflow-for-ai-founders.md")
+        try FileManager.default.createDirectory(atPath: (lessonPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: (topicPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+
+        try """
+        # Codex Workflow for AI Founders
+
+        _Apply-ready lesson draft generated from a safe maintenance action._
+        """.write(toFile: lessonPath, atomically: true, encoding: .utf8)
+
+        try """
+        # Codex Workflow for AI Founders
+
+        _Redirect stub generated from a safe lesson-promotion action._
+        """.write(toFile: topicPath, atomically: true, encoding: .utf8)
+
+        let backupPath = (vaultDir as NSString).appendingPathComponent(
+            "Knowledge/_drafts/AppliedBackup/20260404-103351/Lessons/codex-workflow-for-ai-founders.md"
+        )
+        try FileManager.default.createDirectory(atPath: (backupPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "# Backup\n".write(toFile: backupPath, atomically: true, encoding: .utf8)
+
+        let records = exporter.discoverAppliedKnowledgeActions(existing: [])
+        #expect(records.count == 2)
+        #expect(records.contains {
+            $0.kind == .lessonPromotion && $0.applyTargetRelativePath == "Lessons/codex-workflow-for-ai-founders.md"
+        })
+        #expect(records.contains {
+            $0.kind == .lessonRedirect && $0.applyTargetRelativePath == "Topics/codex-workflow-for-ai-founders.md"
+        })
+        #expect(records.contains {
+            $0.backupPath?.hasSuffix("Lessons/codex-workflow-for-ai-founders.md") == true
+        })
     }
 }
