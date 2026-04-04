@@ -34,6 +34,19 @@ private struct KnowledgeStaleCandidate {
     let reason: String
 }
 
+private struct KnowledgeSafeAction {
+    enum ActionKind {
+        case promoteToLessonDraft
+        case consolidateIntoRoot
+    }
+
+    let kind: ActionKind
+    let source: KnowledgeEntityRecord
+    let target: KnowledgeEntityRecord?
+    let reason: String
+    let score: Int
+}
+
 final class KnowledgeMaintenance {
     private let db: DatabaseManager
     private let dateSupport: LocalDateSupport
@@ -166,6 +179,11 @@ final class KnowledgeMaintenance {
             metrics: metrics,
             materializedEntityIds: materializedEntityIds
         )
+        let safeActions = buildSafeActions(
+            metrics: metrics,
+            reclassifyCandidates: reclassifyCandidates,
+            consolidationCandidates: consolidationCandidates
+        )
 
         markdown += "## Dashboard\n"
         if !topHotspotNames.isEmpty {
@@ -220,6 +238,34 @@ final class KnowledgeMaintenance {
                     markdown += ", only \(hotspot.relationStats.typedEdges) strong relation"
                     if hotspot.relationStats.typedEdges == 1 { markdown += "" } else { markdown += "s" }
                     markdown += "\n"
+                }
+                markdown += "\n"
+            }
+        }
+
+        markdown += "## Safe Auto-Actions\n"
+        if safeActions.isEmpty {
+            markdown += "- No high-confidence auto-actions right now.\n\n"
+        } else {
+            let lessonPromotions = safeActions.filter { $0.kind == .promoteToLessonDraft }
+            let consolidations = safeActions.filter { $0.kind == .consolidateIntoRoot }
+
+            if !lessonPromotions.isEmpty {
+                markdown += "### Draft Lesson Promotions\n"
+                for action in lessonPromotions.prefix(6) {
+                    markdown += "- [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
+                    markdown += " — promote into \(KnowledgeEntityType.lesson.folderName): \(action.reason)\n"
+                }
+                markdown += "\n"
+            }
+
+            if !consolidations.isEmpty {
+                markdown += "### Safe Consolidations\n"
+                for action in consolidations.prefix(6) {
+                    guard let target = action.target else { continue }
+                    markdown += "- [[\(linkTarget(for: action.source))|\(action.source.canonicalName)]]"
+                    markdown += " → [[\(linkTarget(for: target))|\(target.canonicalName)]]"
+                    markdown += " — \(action.reason)\n"
                 }
                 markdown += "\n"
             }
@@ -445,6 +491,72 @@ final class KnowledgeMaintenance {
                 }
                 return lhs.entity.canonicalName.localizedCaseInsensitiveCompare(rhs.entity.canonicalName) == .orderedAscending
             }
+    }
+
+    private func buildSafeActions(
+        metrics: [KnowledgeEntityMetrics],
+        reclassifyCandidates: [KnowledgeReclassifyCandidate],
+        consolidationCandidates: [KnowledgeConsolidationCandidate]
+    ) -> [KnowledgeSafeAction] {
+        let metricIndex = Dictionary(uniqueKeysWithValues: metrics.map { ($0.entity.id, $0) })
+
+        let lessonPromotions = reclassifyCandidates.compactMap { candidate -> KnowledgeSafeAction? in
+            guard let metric = metricIndex[candidate.entity.id] else { return nil }
+            let lowered = candidate.entity.canonicalName.lowercased()
+            let hasStrongLessonSignal = [
+                "guide",
+                "workflow",
+                "playbook",
+                "setup",
+                "optimization",
+                "architecture",
+                "strategy"
+            ].contains { lowered.contains($0) }
+            guard hasStrongLessonSignal else { return nil }
+            guard metric.claimCount >= 2, metric.typedEdgeCount >= 2 else { return nil }
+            return KnowledgeSafeAction(
+                kind: .promoteToLessonDraft,
+                source: candidate.entity,
+                target: nil,
+                reason: "high-confidence lesson-like note with stable repeated evidence",
+                score: candidate.score + metric.typedEdgeCount * 4
+            )
+        }
+
+        let safeConsolidations = consolidationCandidates.compactMap { candidate -> KnowledgeSafeAction? in
+            guard let sourceMetric = metricIndex[candidate.source.id],
+                  let targetMetric = metricIndex[candidate.target.id] else {
+                return nil
+            }
+            let targetClearlyStronger =
+                targetMetric.claimCount >= max(sourceMetric.claimCount * 2, sourceMetric.claimCount + 2) &&
+                targetMetric.typedEdgeCount >= max(sourceMetric.typedEdgeCount, 1)
+            guard targetClearlyStronger else { return nil }
+            return KnowledgeSafeAction(
+                kind: .consolidateIntoRoot,
+                source: candidate.source,
+                target: candidate.target,
+                reason: "strong root note already dominates this topic family",
+                score: candidate.score + targetMetric.claimCount * 3 + targetMetric.typedEdgeCount * 2
+            )
+        }
+
+        return (lessonPromotions + safeConsolidations).sorted { lhs, rhs in
+            if lhs.score != rhs.score {
+                return lhs.score > rhs.score
+            }
+            if lhs.kind != rhs.kind {
+                switch (lhs.kind, rhs.kind) {
+                case (.consolidateIntoRoot, .promoteToLessonDraft):
+                    return true
+                case (.promoteToLessonDraft, .consolidateIntoRoot):
+                    return false
+                default:
+                    break
+                }
+            }
+            return lhs.source.canonicalName.localizedCaseInsensitiveCompare(rhs.source.canonicalName) == .orderedAscending
+        }
     }
 
     private func reclassifyReason(for name: String) -> String? {
