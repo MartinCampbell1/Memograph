@@ -8,6 +8,8 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
     private let mode: AdvisoryBridgeMode
     private let supervisor: AdvisorySidecarSupervisor?
     private let retryAttempts: Int
+    private var settings: AppSettings
+    private let accountSyncQueue = DispatchQueue(label: "com.memograph.advisor.accountSync")
 
     init(
         settings: AppSettings = AppSettings(),
@@ -57,6 +59,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
                 environmentOverrides: effectiveEnvironmentOverrides
             )
         }
+        self.settings = settings
     }
 
     init(
@@ -70,6 +73,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
         self.mode = mode
         self.supervisor = nil
         self.retryAttempts = max(1, retryAttempts)
+        self.settings = AppSettings()
     }
 
     func health(forceRefresh: Bool = false) -> AdvisoryBridgeHealth {
@@ -169,20 +173,24 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
         guard let primaryServer else {
             throw AdvisoryBridgeError.unavailable("Accounts control requires memograph-advisor.")
         }
-        let result = try primaryServer.setPreferredAccount(providerName: providerName, accountName: accountName)
-        // Sync back to AppSettings so it remains the single source of truth
-        var settings = AppSettings()
-        switch providerName.lowercased() {
-        case "claude":
-            settings.advisorySelectedClaudeAccount = accountName
-        case "gemini":
-            settings.advisorySelectedGeminiAccount = accountName
-        case "codex":
-            settings.advisorySelectedCodexAccount = accountName
-        default:
-            break
+        let response = try primaryServer.setPreferredAccount(providerName: providerName, accountName: accountName)
+        accountSyncQueue.sync {
+            self.writePreferredAccount(provider: providerName, accountName: accountName)
         }
-        return result
+        return response
+    }
+
+    /// Queries the sidecar for its current preferred accounts and updates AppSettings
+    /// for any provider where the sidecar's selection differs from the stored preference.
+    func syncPreferredAccountFromSidecar() {
+        guard let snapshot = try? accounts(forceRefresh: false) else { return }
+        accountSyncQueue.sync {
+            for (provider, accountName) in snapshot.preferredAccounts where !accountName.isEmpty {
+                let stored = self.storedPreferredAccount(for: provider)
+                guard stored != accountName else { continue }
+                self.writePreferredAccount(provider: provider, accountName: accountName)
+            }
+        }
     }
 
     func executeRecipe(_ request: AdvisoryRecipeRequest) throws -> AdvisoryBridgeExecution {
@@ -244,19 +252,45 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
 
     /// Called after a re-login action completes. Resets failure state for the
     /// provider, restarts sidecar, and verifies health recovery.
-    /// Returns the post-recovery health status.
+    /// Returns the post-recovery auth check result with per-provider verification.
     @discardableResult
-    func recoverAfterRelogin(provider: String) -> AdvisoryBridgeHealth {
+    func recoverAfterRelogin(provider: String) -> AdvisoryProviderAuthCheckResult {
         // Reset supervisor failure counters so the provider isn't blocked
         supervisor?.recordSuccess()
         restartSidecar()
         // Allow sidecar to restart before checking health
         Thread.sleep(forTimeInterval: 2)
         let recoveredHealth = health(forceRefresh: true)
-        if recoveredHealth.status == "ok" {
+        let providerVerified = isProviderVerified(provider: provider, in: recoveredHealth)
+        if recoveredHealth.status == "ok" || providerVerified {
             supervisor?.recordSuccess()
         }
-        return recoveredHealth
+        return AdvisoryProviderAuthCheckResult(
+            provider: provider,
+            verified: providerVerified,
+            lastVerifiedAt: Date(),
+            health: recoveredHealth
+        )
+    }
+
+    /// Runs a targeted auth check for a specific provider.
+    func checkProviderAuth(provider: String) -> AdvisoryProviderAuthCheckResult {
+        let freshHealth = health(forceRefresh: true)
+        let verified = isProviderVerified(provider: provider, in: freshHealth)
+        return AdvisoryProviderAuthCheckResult(
+            provider: provider,
+            verified: verified,
+            lastVerifiedAt: Date(),
+            health: freshHealth
+        )
+    }
+
+    private func isProviderVerified(provider: String, in health: AdvisoryBridgeHealth) -> Bool {
+        let providerLower = provider.lowercased()
+        if let diagnostic = health.providerStatuses.first(where: { $0.providerName.lowercased() == providerLower }) {
+            return diagnostic.status == "ok"
+        }
+        return health.status == "ok"
     }
 
     static func shutdownAllManagedSidecars() {
@@ -334,6 +368,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
             do {
                 let result = try primaryServer.runRecipe(request)
                 supervisor?.recordSuccess()
+                syncPreferredAccountFromSidecar()
                 let activeHealth = refreshPrimaryHealth(on: primaryServer, fallback: currentHealth)
                 return AdvisoryBridgeExecution(
                     result: result,
@@ -356,6 +391,24 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
                 preparePrimaryRetry(for: status)
                 currentHealth = refreshPrimaryHealth(on: primaryServer, fallback: recoveredHealth)
             }
+        }
+    }
+
+    private func storedPreferredAccount(for provider: String) -> String {
+        switch provider.lowercased() {
+        case "claude": return settings.advisorySelectedClaudeAccount
+        case "gemini": return settings.advisorySelectedGeminiAccount
+        case "codex": return settings.advisorySelectedCodexAccount
+        default: return ""
+        }
+    }
+
+    private func writePreferredAccount(provider: String, accountName: String) {
+        switch provider.lowercased() {
+        case "claude": settings.advisorySelectedClaudeAccount = accountName
+        case "gemini": settings.advisorySelectedGeminiAccount = accountName
+        case "codex": settings.advisorySelectedCodexAccount = accountName
+        default: break
         }
     }
 
@@ -1238,7 +1291,7 @@ final class LocalAdvisoryBridgeStub: AdvisoryBridgeServerProtocol {
             sourcePacketId: request.packet.packetId,
             sourceRecipe: request.recipeName,
             confidence: 0.1,
-            metadataJson: "{\"source\": \"stub\", \"stubFallback\": true, \"ephemeral\": true, \"nonAuthoritative\": true}",
+            metadataJson: "{\"generatedBy\": \"stub:local\", \"ephemeral\": true}",
             language: "ru",
             status: .candidate
         )

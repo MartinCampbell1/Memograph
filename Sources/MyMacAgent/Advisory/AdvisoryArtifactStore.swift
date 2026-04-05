@@ -238,6 +238,10 @@ final class AdvisoryArtifactStore {
         let timestamp = dateSupport.isoString(from: now())
 
         if let existing = try artifact(id: id) {
+            // Don't overwrite a CLI-successful artifact with a failed-generation fallback.
+            if candidateHasCliFailure(effectiveCandidate) && existingHasCliSuccess(existing) {
+                return existing
+            }
             try db.execute("""
                 UPDATE advisory_artifacts
                 SET domain = ?, kind = ?, title = ?, body = ?, thread_id = ?, source_packet_id = ?, source_recipe = ?,
@@ -1088,5 +1092,24 @@ final class AdvisoryArtifactStore {
             .text(dateSupport.isoString(from: now())),
             .text(threadId)
         ])
+    }
+
+    /// Returns true when the candidate's metadataJson indicates CLI generation failed.
+    private func candidateHasCliFailure(_ candidate: AdvisoryArtifactCandidate) -> Bool {
+        guard let json = candidate.metadataJson,
+              let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return dict["cliGenerationFailed"] as? Bool == true
+    }
+
+    /// Returns true when the existing record's metadataJson shows a successful CLI generation.
+    private func existingHasCliSuccess(_ existing: AdvisoryArtifactRecord) -> Bool {
+        guard let json = existing.metadataJson,
+              let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let generatedBy = dict["generatedBy"] as? String
+        else { return false }
+        return generatedBy.hasPrefix("cli:")
     }
 }

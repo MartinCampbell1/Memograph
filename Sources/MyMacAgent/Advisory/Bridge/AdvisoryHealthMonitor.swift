@@ -116,6 +116,44 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Runs the full auth recovery cycle for a provider after re-login.
+    /// The completion is always called on the main queue.
+    func recoverAfterRelogin(
+        provider: String,
+        completion: @escaping @Sendable (Bool, Date) -> Void
+    ) {
+        queue.async { [weak self] in
+            let bridge = AdvisoryBridgeClient(settings: AppSettings())
+            let result = bridge.recoverAfterRelogin(provider: provider)
+            let verified = result.verified
+            let verifiedAt = result.lastVerifiedAt
+            let runtimeSnapshot = bridge.runtimeSnapshot()
+            DispatchQueue.main.async {
+                self?.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
+                completion(verified, verifiedAt)
+            }
+        }
+    }
+
+    /// Runs a fresh auth check for a specific provider.
+    /// The completion is always called on the main queue.
+    func checkProviderAuth(
+        provider: String,
+        completion: @escaping @Sendable (Bool, Date) -> Void
+    ) {
+        queue.async { [weak self] in
+            let bridge = AdvisoryBridgeClient(settings: AppSettings())
+            let result = bridge.checkProviderAuth(provider: provider)
+            let verified = result.verified
+            let verifiedAt = result.lastVerifiedAt
+            let runtimeSnapshot = bridge.runtimeSnapshot()
+            DispatchQueue.main.async {
+                self?.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
+                completion(verified, verifiedAt)
+            }
+        }
+    }
+
     private func publish(_ snapshot: AdvisoryHealthSnapshot) {
         self.snapshot = snapshot
     }

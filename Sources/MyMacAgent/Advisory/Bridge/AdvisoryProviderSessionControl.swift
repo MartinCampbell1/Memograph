@@ -160,8 +160,8 @@ enum AdvisoryProviderSessionControl {
                 }
 
                 if targetRecovered {
-                    let recovered = bridge.recoverAfterRelogin(provider: providerName)
-                    completion(recovered.status == "ok")
+                    let result = bridge.recoverAfterRelogin(provider: providerName)
+                    completion(result.verified)
                     return
                 }
             }

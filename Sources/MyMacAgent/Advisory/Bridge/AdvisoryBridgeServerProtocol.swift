@@ -368,6 +368,13 @@ struct AdvisoryBridgeExecution {
     let primaryFailure: String?
 }
 
+struct AdvisoryProviderAuthCheckResult {
+    let provider: String
+    let verified: Bool
+    let lastVerifiedAt: Date
+    let health: AdvisoryBridgeHealth
+}
+
 enum AdvisoryBridgeError: LocalizedError {
     case unavailable(String)
     case transportFailure(String)

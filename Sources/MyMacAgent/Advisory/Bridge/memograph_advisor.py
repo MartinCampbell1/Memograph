@@ -2189,7 +2189,8 @@ class AdvisoryRuntime:
         continuations = self._suggested_continuations(thread, items, packet.get("salientSessions", []))
 
         # Try provider CLI for richer generation
-        generated_by = "local_heuristic"
+        cli_generation_failed: bool | None = None
+        generated_by = "fallback:heuristic"
         provider_output: str | None = None
         if binding.provider_name:
             context_parts = [
@@ -2209,9 +2210,9 @@ class AdvisoryRuntime:
             )
             provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
             if provider_output:
-                generated_by = "provider_cli"
+                generated_by = f"cli:{binding.provider_name}"
             else:
-                generated_by = "local_heuristic_fallback"
+                cli_generation_failed = True
                 self.provider_diagnostics._record_provider_failure_locked(
                     provider=binding.provider_name,
                     status="cli_generation_failed",
@@ -2269,6 +2270,7 @@ class AdvisoryRuntime:
                     timing_window=timing_window,
                     generated_by=generated_by,
                     provider=binding.provider_name,
+                    cli_generation_failed=cli_generation_failed,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
                 ),
@@ -2339,7 +2341,7 @@ class AdvisoryRuntime:
                         "Старые тихие нити перевести в parked или resolved.",
                     ],
                     pattern_name="Thread Maintenance",
-                    generated_by="local_heuristic",
+                    generated_by="fallback:heuristic",
                     provider=binding.provider_name,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
@@ -2388,7 +2390,7 @@ class AdvisoryRuntime:
             "sourceAnchors": self._source_anchors(note, web_research, calendar, reminder),
             "enrichmentSources": self._enrichment_sources(note, web_research, calendar, reminder),
             "timingWindow": timing_window,
-            "generatedBy": "local_heuristic",
+            "generatedBy": "fallback:heuristic",
             "provider": binding.provider_name,
             "account": binding.account_name,
             "routeReason": binding.route_reason,
@@ -2476,7 +2478,8 @@ class AdvisoryRuntime:
         }
 
         # Try provider CLI for richer generation
-        generated_by = "local_heuristic"
+        tweet_cli_generation_failed: bool | None = None
+        generated_by = "fallback:heuristic"
         provider_output: str | None = None
         if binding.provider_name:
             prompt = (
@@ -2491,9 +2494,9 @@ class AdvisoryRuntime:
                 prompt += f"Voice examples: {' | '.join(voice_examples)}\n"
             provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
             if provider_output:
-                generated_by = "provider_cli"
+                generated_by = f"cli:{binding.provider_name}"
             else:
-                generated_by = "local_heuristic_fallback"
+                tweet_cli_generation_failed = True
                 self.provider_diagnostics._record_provider_failure_locked(
                     provider=binding.provider_name,
                     status="cli_generation_failed",
@@ -2528,6 +2531,8 @@ class AdvisoryRuntime:
 
         metadata["generatedBy"] = generated_by
         metadata["provider"] = binding.provider_name
+        if tweet_cli_generation_failed is not None:
+            metadata["cliGenerationFailed"] = tweet_cli_generation_failed
         metadata["account"] = binding.account_name
         metadata["routeReason"] = binding.route_reason
         return [
@@ -2615,7 +2620,7 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(note, web_research, calendar),
                     enrichment_sources=self._enrichment_sources(note, web_research, calendar),
                     timing_window=timing_window,
-                    generated_by="local_heuristic",
+                    generated_by="fallback:heuristic",
                     provider=binding.provider_name,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
@@ -2648,7 +2653,8 @@ class AdvisoryRuntime:
         ]
 
         # Try provider CLI for richer weekly synthesis
-        generated_by = "local_heuristic"
+        weekly_cli_generation_failed: bool | None = None
+        generated_by = "fallback:heuristic"
         provider_output: str | None = None
         if binding.provider_name:
             thread_titles = [t.get("title", "") for t in thread_rollup[:5]]
@@ -2666,9 +2672,9 @@ class AdvisoryRuntime:
                 prompt += f"Open loops: {', '.join(open_loops)}\n"
             provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
             if provider_output:
-                generated_by = "provider_cli"
+                generated_by = f"cli:{binding.provider_name}"
             else:
-                generated_by = "local_heuristic_fallback"
+                weekly_cli_generation_failed = True
                 self.provider_diagnostics._record_provider_failure_locked(
                     provider=binding.provider_name,
                     status="cli_generation_failed",
@@ -2735,6 +2741,7 @@ class AdvisoryRuntime:
                     timing_window=timing_window,
                     generated_by=generated_by,
                     provider=binding.provider_name,
+                    cli_generation_failed=weekly_cli_generation_failed,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
                 ),
@@ -2804,7 +2811,7 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(rhythm, calendar, reminder),
                     enrichment_sources=self._enrichment_sources(rhythm, calendar, reminder),
                     timing_window=timing_window,
-                    generated_by="local_heuristic",
+                    generated_by="fallback:heuristic",
                     provider=binding.provider_name,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
@@ -2876,7 +2883,7 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(web_research, calendar, reminder),
                     enrichment_sources=self._enrichment_sources(web_research, calendar, reminder),
                     timing_window=timing_window,
-                    generated_by="local_heuristic",
+                    generated_by="fallback:heuristic",
                     provider=binding.provider_name,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
@@ -2939,7 +2946,7 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(rhythm, calendar, reminder),
                     enrichment_sources=self._enrichment_sources(rhythm, calendar, reminder),
                     timing_window=timing_window,
-                    generated_by="local_heuristic",
+                    generated_by="fallback:heuristic",
                     provider=binding.provider_name,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
@@ -3023,7 +3030,7 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(reminder, calendar),
                     enrichment_sources=self._enrichment_sources(reminder, calendar),
                     timing_window=timing_window,
-                    generated_by="local_heuristic",
+                    generated_by="fallback:heuristic",
                     provider=binding.provider_name,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
@@ -3091,7 +3098,7 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(reminder_item, calendar),
                     enrichment_sources=self._enrichment_sources(reminder_item, calendar),
                     timing_window=timing_window,
-                    generated_by="local_heuristic",
+                    generated_by="fallback:heuristic",
                     provider=binding.provider_name,
                     account=binding.account_name,
                     route_reason=binding.route_reason,
@@ -3192,8 +3199,9 @@ class AdvisoryRuntime:
         provider: str | None = None,
         account: str | None = None,
         route_reason: str | None = None,
+        cli_generation_failed: bool | None = None,
     ) -> str:
-        metadata = {
+        metadata: dict[str, object] = {
             "summary": summary,
             "primaryAngle": primary_angle,
             "alternativeAngles": [str(item).strip() for item in (alternative_angles or []) if str(item).strip()],
@@ -3215,6 +3223,8 @@ class AdvisoryRuntime:
             "account": account,
             "routeReason": route_reason,
         }
+        if cli_generation_failed is not None:
+            metadata["cliGenerationFailed"] = cli_generation_failed
         return json.dumps(metadata, ensure_ascii=False)
 
     def _writing_artifact_kind(self, packet: dict[str, Any], thread: dict[str, Any], primary_angle: str) -> str:

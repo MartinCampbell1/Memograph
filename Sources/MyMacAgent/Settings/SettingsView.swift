@@ -169,6 +169,8 @@ struct SettingsView: View {
     @State private var isRefreshingAccounts = false
     @State private var advisoryAccountLabelDrafts: [String: String] = [:]
     @State private var advisoryAccountActionFeedback: [String: String] = [:]
+    @State private var providerAuthVerifications: [String: (verified: Bool, verifiedAt: Date)] = [:]
+    @State private var providerAuthCheckInFlight: Set<String> = []
     @State private var advisoryCLIProfilesPath = ""
     @State private var advisoryProviderProfiles: [String: [AdvisoryCLIAccountProfile]] = [:]
 
@@ -860,12 +862,27 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Refresh") {
+            Button {
+                let provider = pendingTerminalProvider
                 isRefreshingAccounts = true
-                advisoryHealthMonitor.refresh(forceRefresh: true)
-                refreshAdvisoryProviderProfiles()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                providerAuthCheckInFlight.insert(provider)
+                advisoryHealthMonitor.recoverAfterRelogin(provider: provider) { verified, verifiedAt in
+                    providerAuthVerifications[provider] = (verified: verified, verifiedAt: verifiedAt)
+                    providerAuthCheckInFlight.remove(provider)
                     isRefreshingAccounts = false
+                    refreshAdvisoryProviderProfiles()
+                    let outcome = verified ? "Auth verified for \(provider.capitalized)." : "Session still expired for \(provider.capitalized). Try re-login again."
+                    advisoryAccountActionFeedback[provider] = outcome
+                    pendingTerminalProvider = ""
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    if isRefreshingAccounts {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                    }
+                    Text("Run auth check")
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -1461,6 +1478,12 @@ struct SettingsView: View {
                     "Config dir",
                     value: diagnostic.configDirectory ?? "Unknown"
                 )
+                if let authResult = providerAuthVerifications[diagnostic.providerName] {
+                    providerMetric(
+                        "Auth verified",
+                        value: authResult.verified ? "Verified \(formatVerifiedAt(authResult.verifiedAt))" : "Expired \(formatVerifiedAt(authResult.verifiedAt))"
+                    )
+                }
             }
 
             if let selectedProfile = profiles.first(where: { $0.isSelected }) {
@@ -1479,11 +1502,21 @@ struct SettingsView: View {
                 alignment: .leading,
                 spacing: 8
             ) {
-                Button("Run auth check") {
-                    handleProviderSessionAction(.runAuthCheck, diagnostic: diagnostic)
+                Button {
+                    handleRunAuthCheck(for: diagnostic)
+                } label: {
+                    HStack(spacing: 4) {
+                        if providerAuthCheckInFlight.contains(diagnostic.providerName) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.7)
+                        }
+                        Text("Run auth check")
+                    }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(providerAuthCheckInFlight.contains(diagnostic.providerName))
 
                 if diagnostic.supports(.openConfigDir) {
                     Button("Open config dir") {
@@ -1683,6 +1716,27 @@ struct SettingsView: View {
         default:
             return .secondary
         }
+    }
+
+    private func handleRunAuthCheck(for diagnostic: AdvisoryProviderDiagnostic) {
+        let provider = diagnostic.providerName
+        guard !providerAuthCheckInFlight.contains(provider) else { return }
+        providerAuthCheckInFlight.insert(provider)
+        advisoryAccountActionFeedback[provider] = "Running auth check for \(diagnostic.displayName)…"
+        advisoryHealthMonitor.checkProviderAuth(provider: provider) { verified, verifiedAt in
+            providerAuthVerifications[provider] = (verified: verified, verifiedAt: verifiedAt)
+            providerAuthCheckInFlight.remove(provider)
+            let outcome = verified
+                ? "Auth check passed — \(diagnostic.displayName) session is active."
+                : "Auth check failed — \(diagnostic.displayName) session appears expired. Try re-login."
+            advisoryAccountActionFeedback[provider] = outcome
+        }
+    }
+
+    private func formatVerifiedAt(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return "at \(formatter.string(from: date))"
     }
 
     private func handleProviderSessionAction(
