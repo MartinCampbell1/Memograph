@@ -45,8 +45,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusPopover = NSPopover()
     private var timelineWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private let statusItemLength: CGFloat = 28
+    private var statusItemRecoveryAttempts = 0
+    private var promotedVisibilityFallback = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let activationChanged = NSApp.setActivationPolicy(.regular)
+        logger.info("Set activation policy to regular on launch: \(activationChanged)")
         NSApplication.shared.applicationIconImage = AppIconArtwork.makeImage()
 
         if CommandLine.arguments.contains("--render-marketing-assets") {
@@ -104,6 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         logger.info("MyMacAgent launched")
         installStatusItem()
+        scheduleStatusItemVisibilityCheck(reason: "launch", after: 0.5)
+        scheduleStatusItemVisibilityCheck(reason: "launch", after: 2.0)
         let settings = AppSettings()
         let advisorySocketPath = AdvisorySidecarSocketPathResolver.resolve(settings.advisorySidecarSocketPath)
         DispatchQueue.global(qos: .utility).async {
@@ -265,16 +272,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusPopover.animates = true
         statusPopover.contentSize = NSSize(width: 300, height: 420)
 
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.autosaveName = "com.memograph.app.status"
+        let item = NSStatusBar.system.statusItem(withLength: statusItemLength)
         item.isVisible = true
         guard let button = item.button else {
             logger.error("Failed to create menu bar status button")
             return
         }
 
-        button.title = "M"
+        button.image = MemographMenuBarArtwork.makeImage()
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
         button.toolTip = "Memograph"
+        button.setAccessibilityLabel("Memograph")
         button.target = self
         button.action = #selector(toggleStatusPopover(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -282,6 +291,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
         refreshManagedWindowContent()
         logger.info("Installed AppKit status item")
+    }
+
+    private func scheduleStatusItemVisibilityCheck(reason: String, after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.ensureStatusItemVisibility(reason: reason)
+        }
+    }
+
+    private func ensureStatusItemVisibility(reason: String) {
+        guard let button = statusItem?.button else {
+            logger.error("Status item missing during \(reason); rebuilding")
+            rebuildStatusItem(reason: reason)
+            return
+        }
+
+        button.layoutSubtreeIfNeeded()
+        let width = max(button.frame.width, button.bounds.width)
+        let height = max(button.frame.height, button.bounds.height)
+        let isCollapsed = width < 8 || height < 8 || button.window == nil
+
+        guard isCollapsed else { return }
+
+        logger.error("Status item collapsed during \(reason); rebuilding")
+        rebuildStatusItem(reason: reason)
+    }
+
+    private func rebuildStatusItem(reason: String) {
+        if let statusItem {
+            NSStatusBar.system.removeStatusItem(statusItem)
+            self.statusItem = nil
+        }
+
+        statusItemRecoveryAttempts += 1
+        installStatusItem()
+        scheduleStatusItemVisibilityCheck(reason: "rebuild-\(statusItemRecoveryAttempts)", after: 0.5)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            self.presentStartupWindowIfNeeded(force: true, reason: "status item rebuild (\(reason))")
+            self.promoteVisibilityFallbackIfNeeded(reason: reason)
+        }
+    }
+
+    private func promoteVisibilityFallbackIfNeeded(reason: String) {
+        guard !promotedVisibilityFallback else { return }
+        guard let button = statusItem?.button else { return }
+
+        button.layoutSubtreeIfNeeded()
+        let width = max(button.frame.width, button.bounds.width)
+        let height = max(button.frame.height, button.bounds.height)
+        let stillCollapsed = width < 8 || height < 8 || button.window == nil
+
+        guard stillCollapsed else {
+            statusItemRecoveryAttempts = 0
+            return
+        }
+
+        let changed = NSApp.setActivationPolicy(.regular)
+        promotedVisibilityFallback = true
+        logger.error("Promoted app to Dock visibility fallback during \(reason); changed=\(changed)")
+        showSettingsWindow(selectedTab: nil)
     }
 
     private func refreshManagedWindowContent() {
@@ -395,13 +464,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.orderFrontRegardless()
     }
 
-    private func presentStartupWindowIfNeeded() {
+    private func presentStartupWindowIfNeeded(force: Bool = false, reason: String = "startup") {
         guard timelineWindow?.isVisible != true,
-              settingsWindow?.isVisible != true else {
+              settingsWindow?.isVisible != true || force else {
             return
         }
 
-        logger.info("Opening settings window as startup fallback")
+        logger.info("Opening settings window as \(reason) fallback")
         showSettingsWindow(selectedTab: nil)
     }
 
@@ -1621,6 +1690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc
     private func handleApplicationDidBecomeActive() {
+        scheduleStatusItemVisibilityCheck(reason: "activation", after: 0.2)
         runKnowledgeMaintenanceIfDue(reason: "activation")
         Task { @MainActor [weak self] in
             await self?.generatePendingDailySummaries(reason: "activation")
@@ -1629,6 +1699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc
     private func handleSystemDidWake() {
+        scheduleStatusItemVisibilityCheck(reason: "wake", after: 0.5)
         runKnowledgeMaintenanceIfDue(reason: "wake")
         Task { @MainActor [weak self] in
             await self?.generatePendingDailySummaries(reason: "wake")

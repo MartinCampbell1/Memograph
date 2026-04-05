@@ -1,20 +1,8 @@
 import AppKit
 import SwiftUI
 
-struct MemographGlyph: View {
-    private static let image = MemographMenuBarImage.make()
-
-    var body: some View {
-        Image(nsImage: Self.image)
-            .renderingMode(.template)
-            .interpolation(.high)
-            .antialiased(true)
-            .accessibilityLabel("Memograph")
-    }
-}
-
-private enum MemographMenuBarImage {
-    static func make() -> NSImage {
+enum MemographMenuBarArtwork {
+    static func makeImage() -> NSImage {
         let size = NSSize(width: 18, height: 14)
         let image = NSImage(size: size)
         image.lockFocus()
@@ -55,5 +43,17 @@ private enum MemographMenuBarImage {
         let barPath = NSBezierPath(roundedRect: barRect, xRadius: rowHeight / 2, yRadius: rowHeight / 2)
         NSColor.labelColor.setFill()
         barPath.fill()
+    }
+}
+
+struct MemographGlyph: View {
+    private static let image = MemographMenuBarArtwork.makeImage()
+
+    var body: some View {
+        Image(nsImage: Self.image)
+            .renderingMode(.template)
+            .interpolation(.high)
+            .antialiased(true)
+            .accessibilityLabel("Memograph")
     }
 }
