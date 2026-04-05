@@ -182,6 +182,48 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
         !isNominal
     }
 
+    /// Summary of the sidecar runtime health tier (dead / starting / degraded / ready).
+    var runtimeStatusSummary: String {
+        switch effectiveStatus {
+        case "ready":
+            return "Runtime: ready"
+        case "stub_only":
+            return "Runtime: stub only"
+        case "starting":
+            return "Runtime: starting"
+        case "backoff":
+            return "Runtime: backing off"
+        case "timeout":
+            return "Runtime: timed out"
+        case "transport_failure":
+            return "Runtime: transport failure"
+        case "fallback":
+            return "Runtime: degraded (fallback)"
+        default:
+            return "Runtime: \(effectiveStatus.replacingOccurrences(of: "_", with: " "))"
+        }
+    }
+
+    /// Summary of the best available provider health tier (none / degraded / ready).
+    var providerStatusSummary: String {
+        let statuses = bridgeHealth.providerStatuses
+        if statuses.isEmpty {
+            return "Provider: none configured"
+        }
+        if let active = bridgeHealth.activeProviderName, !active.isEmpty {
+            return "Provider: \(active) active"
+        }
+        let hasReady = statuses.contains { $0.status == "ok" }
+        if hasReady {
+            return "Provider: available"
+        }
+        let hasDegraded = statuses.contains { $0.status == "session_expired" || $0.status == "session_missing" }
+        if hasDegraded {
+            return "Provider: session needed"
+        }
+        return "Provider: unavailable"
+    }
+
     var title: String {
         switch effectiveStatus {
         case "ready":

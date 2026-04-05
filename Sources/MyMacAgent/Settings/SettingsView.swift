@@ -566,11 +566,12 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(advisoryHealthMonitor.snapshot.statusTitle)
                             .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
-                        ForEach(advisoryHealthMonitor.snapshot.statusLines.prefix(4), id: \.self) { line in
-                            Text(line)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(advisoryHealthMonitor.snapshot.runtimeSnapshot.runtimeStatusSummary)
+                            .font(.caption)
+                            .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
+                        Text(advisoryHealthMonitor.snapshot.runtimeSnapshot.providerStatusSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -694,11 +695,12 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(advisoryHealthMonitor.snapshot.statusTitle)
                         .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
-                    ForEach(advisoryHealthMonitor.snapshot.statusLines.prefix(4), id: \.self) { line in
-                        Text(line)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(advisoryHealthMonitor.snapshot.runtimeSnapshot.runtimeStatusSummary)
+                        .font(.caption)
+                        .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
+                    Text(advisoryHealthMonitor.snapshot.runtimeSnapshot.providerStatusSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 HStack(spacing: 8) {
