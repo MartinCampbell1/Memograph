@@ -2235,16 +2235,10 @@ private enum UDSJSONRPCTransport {
             }
         }
 
-        // Validate socket file exists and is fresh before attempting connect
+        // Validate socket file exists before attempting connect
         let fm = FileManager.default
         guard fm.fileExists(atPath: socketPath) else {
             throw AdvisoryBridgeError.unavailable("Advisory sidecar socket not found at \(socketPath)")
-        }
-        if let attrs = try? fm.attributesOfItem(atPath: socketPath),
-           let modDate = attrs[.modificationDate] as? Date,
-           Date().timeIntervalSince(modDate) > 60 {
-            try? fm.removeItem(atPath: socketPath)
-            throw AdvisoryBridgeError.unavailable("Advisory sidecar socket at \(socketPath) is stale (not modified in 60s), removed.")
         }
 
         // Set non-blocking for connect with timeout
