@@ -13,7 +13,8 @@ final class AudioCaptureEngine: @unchecked Sendable {
     private var segmentTimer: Timer?
     private var statePollTimer: Timer?
     private var pendingStopWorkItem: DispatchWorkItem?
-    private let segmentDuration: TimeInterval
+    private let minimumSegmentDuration: TimeInterval
+    private let maximumSegmentDuration: TimeInterval
     private let audioDir: String
     private let transcriber: AudioTranscriber
     private let sessionManager: SessionManager
@@ -21,14 +22,20 @@ final class AudioCaptureEngine: @unchecked Sendable {
     private var isMonitoring = false
     private var isCapturing = false
     private var currentSegmentStartedAt: Date?
+    private var lastSpeechActivityAt: Date?
     private var inputDeviceID: AudioDeviceID = 0
     private let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
+    private let speechActivityThreshold: Float = 0.01
+    private let recentSpeechWindow: TimeInterval = 2.5
+    private let adaptiveSegmentStep: TimeInterval = 5.0
 
     init(transcriber: AudioTranscriber, sessionManager: SessionManager,
-         segmentDuration: TimeInterval = 300, audioDir: String? = nil) {
+         segmentDuration: TimeInterval = 75, audioDir: String? = nil) {
         self.transcriber = transcriber
         self.sessionManager = sessionManager
-        self.segmentDuration = segmentDuration
+        let clampedDuration = max(60, min(segmentDuration, 90))
+        self.minimumSegmentDuration = min(60, clampedDuration)
+        self.maximumSegmentDuration = clampedDuration
         if let dir = audioDir {
             self.audioDir = dir
         } else {
@@ -151,6 +158,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
 
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
                 guard let self, let file = self.currentFile else { return }
+                self.noteSpeechActivityIfNeeded(buffer)
                 try? file.write(from: buffer)
             }
 
@@ -158,9 +166,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
             try audioEngine.start()
             isCapturing = true
 
-            segmentTimer = Timer.scheduledTimer(withTimeInterval: segmentDuration, repeats: true) { [weak self] _ in
-                self?.rotateSegment()
-            }
+            scheduleSegmentEvaluationTimer(after: minimumSegmentDuration)
 
             logger.info("AudioCapture: another app is using mic — recording started")
         } catch {
@@ -203,6 +209,7 @@ final class AudioCaptureEngine: @unchecked Sendable {
             currentFile = try AVAudioFile(forWriting: URL(fileURLWithPath: path), settings: fmt.settings)
             currentFilePath = path
             currentSegmentStartedAt = Date()
+            lastSpeechActivityAt = nil
         } catch {
             logger.error("AudioCapture: failed to create file: \(error.localizedDescription)")
         }
@@ -218,6 +225,59 @@ final class AudioCaptureEngine: @unchecked Sendable {
         if let path = oldPath {
             queueTranscription(path: path, segmentStartedAt: segmentStart, segmentEndedAt: segmentEnd)
         }
+        scheduleSegmentEvaluationTimer(after: minimumSegmentDuration)
+    }
+
+    private func scheduleSegmentEvaluationTimer(after delay: TimeInterval) {
+        segmentTimer?.invalidate()
+        segmentTimer = Timer.scheduledTimer(withTimeInterval: max(1, delay), repeats: false) { [weak self] _ in
+            self?.evaluateSegmentRotation()
+        }
+    }
+
+    private func evaluateSegmentRotation() {
+        guard isCapturing, let segmentStart = currentSegmentStartedAt else { return }
+
+        let now = Date()
+        let elapsed = now.timeIntervalSince(segmentStart)
+        let hasRecentSpeech = lastSpeechActivityAt.map {
+            now.timeIntervalSince($0) <= recentSpeechWindow
+        } ?? false
+
+        if elapsed >= maximumSegmentDuration || (elapsed >= minimumSegmentDuration && hasRecentSpeech) {
+            rotateSegment()
+            return
+        }
+
+        let remaining = max(1, maximumSegmentDuration - elapsed)
+        scheduleSegmentEvaluationTimer(after: min(adaptiveSegmentStep, remaining))
+    }
+
+    private func noteSpeechActivityIfNeeded(_ buffer: AVAudioPCMBuffer) {
+        guard peakAmplitude(in: buffer) >= speechActivityThreshold else { return }
+        lastSpeechActivityAt = Date()
+    }
+
+    private func peakAmplitude(in buffer: AVAudioPCMBuffer) -> Float {
+        if let channelData = buffer.floatChannelData {
+            let frameLength = Int(buffer.frameLength)
+            var peak: Float = 0
+            for index in 0..<frameLength {
+                peak = max(peak, abs(channelData[0][index]))
+            }
+            return peak
+        }
+
+        if let channelData = buffer.int16ChannelData {
+            let frameLength = Int(buffer.frameLength)
+            var peak: Float = 0
+            for index in 0..<frameLength {
+                peak = max(peak, Float(abs(channelData[0][index])) / Float(Int16.max))
+            }
+            return peak
+        }
+
+        return 0
     }
 
     private func queueTranscription(path: String, segmentStartedAt: Date, segmentEndedAt: Date) {

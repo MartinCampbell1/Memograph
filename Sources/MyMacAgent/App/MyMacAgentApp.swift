@@ -8,13 +8,16 @@ struct MyMacAgentApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarPopover(permissionsManager: permissionsManager)
+            MenuBarPopover(
+                permissionsManager: permissionsManager,
+                db: appDelegate.databaseManager
+            )
         } label: {
             MemographGlyph()
         }
         .menuBarExtraStyle(.window)
 
-        Window("Timeline", id: "timeline") {
+        WindowGroup("Timeline", id: "timeline") {
             if let db = appDelegate.databaseManager {
                 TimelineView(db: db)
             } else {
@@ -24,6 +27,12 @@ struct MyMacAgentApp: App {
 
         Window("Settings", id: "settings") {
             SettingsView()
+        }
+        .defaultSize(width: 920, height: 760)
+        .windowResizability(.contentSize)
+
+        Window("Accounts & Sessions", id: "accounts") {
+            SettingsView(initialTab: 6)
         }
         .defaultSize(width: 920, height: 760)
         .windowResizability(.contentSize)

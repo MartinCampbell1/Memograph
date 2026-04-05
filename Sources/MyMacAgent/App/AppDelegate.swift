@@ -32,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var retentionTimer: Timer?
     private var autoSummaryTimer: Timer?
     private var knowledgeMaintenanceTimer: Timer?
+    private let knowledgeMaintenanceQueue = DispatchQueue(label: "memograph.knowledge.maintenance", qos: .utility)
+    private let knowledgeMaintenanceLock = NSLock()
+    private var knowledgeMaintenanceInFlight = false
     private var captureHashTracker = CaptureHashTracker()
     private let captureGate = CaptureGate(maxConcurrent: 1)
     private var privacyGuard = PrivacyGuard.fromSettings()
@@ -94,6 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         logger.info("MyMacAgent launched")
+        let settings = AppSettings()
+        let advisorySocketPath = AdvisorySidecarSocketPathResolver.resolve(settings.advisorySidecarSocketPath)
+        DispatchQueue.global(qos: .utility).async {
+            AdvisoryBridgeClient.cleanupDetachedSidecars(keepingSocketPath: advisorySocketPath)
+        }
         registerObservers()
         initializeDatabase()
         initializeMonitors()
@@ -101,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         initializePhase3()
         initializePhase4()
         initializePhase5()
+
+        DispatchQueue.main.async { [weak self] in
+            NSApp.activate(ignoringOtherApps: true)
+            self?.restorePrimaryWindows()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -118,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         idleDetector?.stop()
         audioCaptureEngine?.stop()
         systemAudioEngine?.stop()
+        AdvisoryBridgeClient.shutdownAllManagedSidecars()
         if let sessionId = sessionManager?.currentSessionId {
             try? sessionManager?.endSession(sessionId)
         }
@@ -214,7 +228,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 V002_AudioTranscripts.migration,
                 V003_PerformanceIndexes.migration,
                 V004_AudioTranscriptDurability.migration,
-                V005_KnowledgeGraph.migration
+                V005_KnowledgeGraph.migration,
+                V006_AdvisoryThreads.migration,
+                V007_AdvisoryArtifacts.migration,
+                V008_AdvisoryRuns.migration,
+                V009_AttentionMarketMetadata.migration,
+                V010_ThreadIntelligenceMetadata.migration,
+                V011_AdvisoryArtifactMetadata.migration
             ])
             try runner.runPending()
             databaseManager = db
@@ -1268,9 +1288,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func drainPendingAudioTranscriptions(reason: String) async {
         guard let transcriber = audioTranscriber else { return }
+        let snapshot = transcriber.currentHealthSnapshot()
+
+        if reason == "startup",
+           snapshot.pendingJobs >= 25 || snapshot.failedJobs >= 10 || snapshot.pendingSystemJobs >= 10 {
+            logger.info(
+                "Skipping startup audio drain due to backlog: pending=\(snapshot.pendingJobs) failed=\(snapshot.failedJobs) system=\(snapshot.pendingSystemJobs)"
+            )
+            return
+        }
 
         do {
-            let drained = try await transcriber.drainQueuedTranscriptions()
+            let drained = try await transcriber.drainQueuedTranscriptions(limit: 1)
             if drained > 0 {
                 logger.info("Drained \(drained) queued audio transcription job(s) during \(reason, privacy: .public)")
             }
@@ -1472,23 +1501,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performKnowledgeMaintenance(reason: String, force: Bool) {
-        guard let knowledgePipeline else { return }
         if !force {
             runKnowledgeMaintenanceIfDue(reason: reason)
             return
         }
-        do {
-            let materializedCount = try knowledgePipeline.syncMaterializedKnowledge(exporter: obsidianExporter)
-            var settings = AppSettings()
-            settings.lastKnowledgeMaintenanceAt = dateSupport.isoString(from: Date())
-            if materializedCount > 0 {
-                logger.info("Knowledge maintenance sync completed during \(reason, privacy: .public): \(materializedCount) notes")
-            } else {
-                logger.info("Knowledge maintenance sync completed during \(reason, privacy: .public): no materialized changes")
-            }
-        } catch {
-            logger.error("Knowledge maintenance sync failed during \(reason): \(error.localizedDescription)")
+
+        guard let db = databaseManager else { return }
+        guard beginKnowledgeMaintenance() else {
+            logger.info("Knowledge maintenance already in flight, skipping \(reason, privacy: .public)")
+            return
         }
+
+        let vaultPath = AppSettings().obsidianVaultPath
+        let timeZone = dateSupport.timeZone
+        knowledgeMaintenanceQueue.async { [weak self] in
+            let exporter = ObsidianExporter(db: db, vaultPath: vaultPath, timeZone: timeZone)
+            let pipeline = KnowledgePipeline(db: db, timeZone: timeZone)
+
+            do {
+                let materializedCount = try pipeline.syncMaterializedKnowledge(exporter: exporter)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    var settings = AppSettings()
+                    settings.lastKnowledgeMaintenanceAt = self.dateSupport.isoString(from: Date())
+                    if materializedCount > 0 {
+                        self.logger.info("Knowledge maintenance sync completed during \(reason, privacy: .public): \(materializedCount) notes")
+                    } else {
+                        self.logger.info("Knowledge maintenance sync completed during \(reason, privacy: .public): no materialized changes")
+                    }
+                    self.finishKnowledgeMaintenance()
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.logger.error("Knowledge maintenance sync failed during \(reason): \(error.localizedDescription)")
+                    self.finishKnowledgeMaintenance()
+                }
+            }
+        }
+    }
+
+    private func beginKnowledgeMaintenance() -> Bool {
+        knowledgeMaintenanceLock.lock()
+        defer { knowledgeMaintenanceLock.unlock() }
+        guard !knowledgeMaintenanceInFlight else { return false }
+        knowledgeMaintenanceInFlight = true
+        return true
+    }
+
+    private func finishKnowledgeMaintenance() {
+        knowledgeMaintenanceLock.lock()
+        knowledgeMaintenanceInFlight = false
+        knowledgeMaintenanceLock.unlock()
         scheduleKnowledgeMaintenanceTimer()
     }
 }

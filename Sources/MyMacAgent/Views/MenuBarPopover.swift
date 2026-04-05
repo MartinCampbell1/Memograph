@@ -2,8 +2,16 @@ import SwiftUI
 
 struct MenuBarPopover: View {
     @ObservedObject var permissionsManager: PermissionsManager
+    let db: DatabaseManager?
+    @ObservedObject private var audioHealthMonitor = AudioHealthMonitor.shared
+    @ObservedObject private var advisoryHealthMonitor = AdvisoryHealthMonitor.shared
     @Environment(\.openWindow) private var openWindow
     @State private var isPaused = false
+    @State private var resumeArtifact: AdvisoryArtifactRecord?
+    @State private var resumeThread: AdvisoryThreadRecord?
+    @State private var resumeSurfaceLoading = false
+    @State private var resumeSurfaceLoadedAt: Date?
+    @State private var resumeSurfaceToken = UUID()
 
     private enum RuntimeStatus {
         case paused
@@ -84,6 +92,89 @@ struct MenuBarPopover: View {
                 }
             }
 
+            if !audioHealthMonitor.snapshot.statusLines.isEmpty,
+               (audioHealthMonitor.snapshot.pendingJobs > 0
+                || audioHealthMonitor.snapshot.cloudTranscriptionDelayed
+                || audioHealthMonitor.snapshot.systemAudioThrottled) {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(audioHealthMonitor.snapshot.statusLines.prefix(3), id: \.self) { line in
+                        Text(line)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if advisoryHealthMonitor.snapshot.isDegraded {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(advisoryHealthMonitor.snapshot.statusTitle)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    ForEach(advisoryHealthMonitor.snapshot.statusLines.prefix(2), id: \.self) { line in
+                        Text(line)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    AdvisoryProviderDiagnosticsView(
+                        providerStatuses: advisoryHealthMonitor.snapshot.runtimeSnapshot.bridgeHealth.providerStatuses,
+                        activeProviderName: advisoryHealthMonitor.snapshot.runtimeSnapshot.bridgeHealth.activeProviderName,
+                        checkedAt: advisoryHealthMonitor.snapshot.runtimeSnapshot.bridgeHealth.checkedAt,
+                        compact: true
+                    )
+                    Button("Accounts & Sessions") {
+                        openAccounts()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+
+            if let resumeArtifact {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Resume Me")
+                        .font(.caption.weight(.semibold))
+                    Text(resumeThread?.displayTitle ?? resumeArtifact.title)
+                        .font(.subheadline.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(AdvisorySupport.cleanedSnippet(resumeArtifact.body, maxLength: 160))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let quickAction = resumeArtifact.quickActions.first {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Следующий мягкий шаг")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Text(quickAction.detail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Button("Open Resume Me") {
+                        openTimeline()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            } else if resumeSurfaceLoading {
+                Divider()
+
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading Resume Me…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Divider()
 
             Button(isPaused ? "Resume Tracking" : "Pause Tracking") {
@@ -95,13 +186,16 @@ struct MenuBarPopover: View {
             }
 
             Button("Open Timeline") {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "timeline")
+                openTimeline()
             }
 
             Button("Settings") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "settings")
+            }
+
+            Button("Accounts & Sessions") {
+                openAccounts()
             }
 
             Divider()
@@ -115,6 +209,12 @@ struct MenuBarPopover: View {
         .onAppear {
             permissionsManager.checkAll()
             isPaused = AppSettings().globalPause
+            advisoryHealthMonitor.startIfNeeded()
+            advisoryHealthMonitor.refresh()
+            loadResumeSurfaceIfNeeded()
+        }
+        .onDisappear {
+            resumeSurfaceToken = UUID()
         }
     }
 
@@ -132,6 +232,52 @@ struct MenuBarPopover: View {
         }
 
         return reasons.isEmpty ? .running : .limited(reasons)
+    }
+
+    private func openTimeline() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "timeline")
+    }
+
+    private func openAccounts() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "accounts")
+    }
+
+    private func loadResumeSurfaceIfNeeded(force: Bool = false) {
+        guard let db else {
+            resumeArtifact = nil
+            resumeThread = nil
+            resumeSurfaceLoading = false
+            resumeSurfaceLoadedAt = nil
+            return
+        }
+
+        guard !resumeSurfaceLoading else { return }
+        if !force,
+           let resumeSurfaceLoadedAt,
+           Date().timeIntervalSince(resumeSurfaceLoadedAt) < 45,
+           resumeArtifact != nil {
+            return
+        }
+        resumeSurfaceLoading = true
+        let requestToken = UUID()
+        resumeSurfaceToken = requestToken
+
+        let database = db
+        DispatchQueue.global(qos: .utility).async {
+            let engine = AdvisoryEngine(db: database)
+            let artifact = try? engine.latestResumeArtifactCached()
+            let thread = try? engine.thread(for: artifact?.threadId)
+
+            DispatchQueue.main.async {
+                guard resumeSurfaceToken == requestToken else { return }
+                resumeArtifact = artifact
+                resumeThread = thread
+                resumeSurfaceLoading = false
+                resumeSurfaceLoadedAt = Date()
+            }
+        }
     }
 }
 

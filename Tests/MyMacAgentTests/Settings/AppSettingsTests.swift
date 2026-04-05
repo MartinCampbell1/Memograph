@@ -27,6 +27,48 @@ struct AppSettingsTests {
         #expect(settings.audioSystemModel == "gpt-4o-mini-transcribe")
         #expect(settings.audioTranscriptionAPIKey.isEmpty)
         #expect(settings.maxCapturesPerSession == 500)
+        #expect(settings.advisoryEnabled)
+        #expect(settings.advisoryAccessProfile == .deepContext)
+        #expect(settings.advisoryProactivityMode == .ambient)
+        #expect(settings.advisoryBridgeMode == .preferSidecar)
+        #expect(settings.advisorySidecarAutoStart)
+        #expect(settings.advisorySidecarSocketPath.contains("memograph-advisor.sock"))
+        #expect(settings.advisorySidecarTimeoutSeconds == 20)
+        #expect(settings.advisorySidecarHealthCheckIntervalSeconds == 30)
+        #expect(settings.advisorySidecarMaxConsecutiveFailures == 3)
+        #expect(settings.advisorySidecarProviderOrder == ["claude", "gemini", "codex"])
+        #expect(settings.advisorySidecarProviderProbeTimeoutSeconds == 6)
+        #expect(settings.advisorySidecarRetryAttempts == 2)
+        #expect(settings.advisorySidecarProviderCooldownSeconds == 60)
+        #expect(settings.advisoryCLIProfilesPath.contains(".cli-profiles"))
+        #expect(settings.advisorySelectedClaudeAccount.isEmpty)
+        #expect(settings.advisorySelectedGeminiAccount.isEmpty)
+        #expect(settings.advisorySelectedCodexAccount.isEmpty)
+        #expect(settings.advisoryDailyAttentionBudget == 6)
+        #expect(settings.advisoryMinGapMinutes == 45)
+        #expect(settings.advisoryPerThreadCooldownHours == 6)
+        #expect(settings.advisoryEnrichmentPhase == .phase1Memograph)
+        #expect(settings.advisoryCalendarEnrichmentEnabled)
+        #expect(settings.advisoryRemindersEnrichmentEnabled)
+        #expect(settings.advisoryWebResearchEnrichmentEnabled)
+        #expect(settings.advisoryWearableEnrichmentEnabled)
+        #expect(settings.advisoryEnrichmentMaxItemsPerSource == 3)
+        #expect(settings.advisoryCalendarLookaheadHours == 18)
+        #expect(settings.advisoryReminderHorizonDays == 7)
+        #expect(settings.advisoryWebResearchLookbackDays == 3)
+        #expect(settings.advisoryPreferredLanguage == "ru")
+        #expect(settings.advisoryWritingStyle == "concise_reflective")
+        #expect(settings.advisoryTwitterVoiceExamples.isEmpty)
+        #expect(settings.advisoryAvoidTopics.isEmpty)
+        #expect(settings.advisoryContentPersonaDescription.contains("Grounded builder voice"))
+        #expect(settings.advisoryEnabledDomains == AdvisoryDomain.allCases)
+        #expect(settings.guidanceProfile.enabledDomains == AdvisoryDomain.allCases)
+        #expect(settings.guidanceProfile.enrichmentPhase == .phase1Memograph)
+        #expect(settings.guidanceProfile.enabledEnrichmentSources == [.notes])
+        #expect(settings.guidanceProfile.attentionMarketMode == "multi_polar_attention_market")
+        #expect(settings.guidanceProfile.preferredAngles == ["observation", "question", "lesson_learned", "mini_framework"])
+        #expect(settings.guidanceProfile.contentPersonaDescription.contains("Grounded builder voice"))
+        #expect(!settings.guidanceProfile.allowProvocation)
     }
 
     @Test("Set and get values")
@@ -44,6 +86,45 @@ struct AppSettingsTests {
         settings.audioSystemModel = "gpt-4o-mini-transcribe"
         settings.knowledgeMaintenanceIntervalHours = 12
         settings.lastKnowledgeMaintenanceAt = "2026-04-03T12:00:00Z"
+        settings.advisoryEnabled = false
+        settings.advisoryAccessProfile = .balanced
+        settings.advisoryProactivityMode = .manualOnly
+        settings.advisoryBridgeMode = .requireSidecar
+        settings.advisorySidecarAutoStart = false
+        settings.advisorySidecarSocketPath = "/tmp/memograph-test.sock"
+        settings.advisorySidecarTimeoutSeconds = 12
+        settings.advisorySidecarHealthCheckIntervalSeconds = 15
+        settings.advisorySidecarMaxConsecutiveFailures = 5
+        settings.advisorySidecarProviderOrder = ["gemini", "codex"]
+        settings.advisorySidecarProviderProbeTimeoutSeconds = 9
+        settings.advisorySidecarRetryAttempts = 4
+        settings.advisorySidecarProviderCooldownSeconds = 90
+        settings.advisoryCLIProfilesPath = "/Users/test/.cli-profiles"
+        settings.advisorySelectedClaudeAccount = "acc2"
+        settings.advisorySelectedGeminiAccount = "acc3"
+        settings.advisorySelectedCodexAccount = "acc1"
+        settings.advisoryDailyAttentionBudget = 4
+        settings.advisoryMinGapMinutes = 30
+        settings.advisoryPerThreadCooldownHours = 8
+        settings.advisoryAllowScreenshotEscalation = false
+        settings.advisoryAllowMCPEnrichment = true
+        settings.advisoryEnrichmentPhase = .phase2ReadOnly
+        settings.advisoryCalendarEnrichmentEnabled = false
+        settings.advisoryRemindersEnrichmentEnabled = true
+        settings.advisoryWebResearchEnrichmentEnabled = false
+        settings.advisoryWearableEnrichmentEnabled = false
+        settings.advisoryEnrichmentMaxItemsPerSource = 5
+        settings.advisoryCalendarLookaheadHours = 12
+        settings.advisoryReminderHorizonDays = 4
+        settings.advisoryWebResearchLookbackDays = 2
+        settings.advisoryEnabledDomains = [.continuity, .research, .decisions]
+        settings.advisoryPreferredLanguage = "ru"
+        settings.advisoryWritingStyle = "compressed"
+        settings.advisoryTwitterVoiceExamples = ["Short grounded post", "Concrete observation thread"]
+        settings.advisoryPreferredAngles = ["contrarian_take", "mini_framework"]
+        settings.advisoryAvoidTopics = ["growth hacks"]
+        settings.advisoryContentPersonaDescription = "Builder with sharp angles."
+        settings.advisoryAllowProvocation = true
         settings.knowledgeSuppressedEntityIds = ["entity-2", "entity-1", "entity-1"]
         settings.knowledgeAppliedActions = [
             KnowledgeAppliedActionRecord(
@@ -99,6 +180,45 @@ struct AppSettingsTests {
         #expect(settings2.audioSystemModel == "gpt-4o-mini-transcribe")
         #expect(settings2.knowledgeMaintenanceIntervalHours == 12)
         #expect(settings2.lastKnowledgeMaintenanceAt == "2026-04-03T12:00:00Z")
+        #expect(!settings2.advisoryEnabled)
+        #expect(settings2.advisoryAccessProfile == .balanced)
+        #expect(settings2.advisoryProactivityMode == .manualOnly)
+        #expect(settings2.advisoryBridgeMode == .requireSidecar)
+        #expect(!settings2.advisorySidecarAutoStart)
+        #expect(settings2.advisorySidecarSocketPath == "/tmp/memograph-test.sock")
+        #expect(settings2.advisorySidecarTimeoutSeconds == 12)
+        #expect(settings2.advisorySidecarHealthCheckIntervalSeconds == 15)
+        #expect(settings2.advisorySidecarMaxConsecutiveFailures == 5)
+        #expect(settings2.advisorySidecarProviderOrder == ["gemini", "codex"])
+        #expect(settings2.advisorySidecarProviderProbeTimeoutSeconds == 9)
+        #expect(settings2.advisorySidecarRetryAttempts == 4)
+        #expect(settings2.advisorySidecarProviderCooldownSeconds == 90)
+        #expect(settings2.advisoryCLIProfilesPath == "/Users/test/.cli-profiles")
+        #expect(settings2.advisorySelectedClaudeAccount == "acc2")
+        #expect(settings2.advisorySelectedGeminiAccount == "acc3")
+        #expect(settings2.advisorySelectedCodexAccount == "acc1")
+        #expect(settings2.advisoryDailyAttentionBudget == 4)
+        #expect(settings2.advisoryMinGapMinutes == 30)
+        #expect(settings2.advisoryPerThreadCooldownHours == 8)
+        #expect(!settings2.advisoryAllowScreenshotEscalation)
+        #expect(settings2.advisoryAllowMCPEnrichment)
+        #expect(settings2.advisoryEnrichmentPhase == .phase2ReadOnly)
+        #expect(!settings2.advisoryCalendarEnrichmentEnabled)
+        #expect(settings2.advisoryRemindersEnrichmentEnabled)
+        #expect(!settings2.advisoryWebResearchEnrichmentEnabled)
+        #expect(!settings2.advisoryWearableEnrichmentEnabled)
+        #expect(settings2.advisoryEnrichmentMaxItemsPerSource == 5)
+        #expect(settings2.advisoryCalendarLookaheadHours == 12)
+        #expect(settings2.advisoryReminderHorizonDays == 4)
+        #expect(settings2.advisoryWebResearchLookbackDays == 2)
+        #expect(settings2.advisoryEnabledDomains == [.continuity, .research, .decisions])
+        #expect(settings2.guidanceProfile.enabledEnrichmentSources == [.notes, .reminders])
+        #expect(settings2.advisoryWritingStyle == "compressed")
+        #expect(settings2.advisoryTwitterVoiceExamples == ["Short grounded post", "Concrete observation thread"])
+        #expect(settings2.advisoryPreferredAngles == ["contrarian_take", "mini_framework"])
+        #expect(settings2.advisoryAvoidTopics == ["growth hacks"])
+        #expect(settings2.advisoryContentPersonaDescription == "Builder with sharp angles.")
+        #expect(settings2.advisoryAllowProvocation)
         #expect(settings2.knowledgeSuppressedEntityIds == ["entity-1", "entity-2"])
         #expect(settings2.knowledgeAppliedActions.count == 1)
         #expect(settings2.knowledgeAppliedActions.first?.kind == .lessonPromotion)

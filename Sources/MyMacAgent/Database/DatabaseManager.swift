@@ -39,6 +39,7 @@ final class DatabaseManager: @unchecked Sendable {
             throw DatabaseError.openFailed(msg)
         }
         try execute("PRAGMA journal_mode=WAL")
+        try execute("PRAGMA busy_timeout = 5000")
         try execute("PRAGMA foreign_keys=ON")
         logger.info("Database opened at \(path)")
     }

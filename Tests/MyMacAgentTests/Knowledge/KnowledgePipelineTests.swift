@@ -594,7 +594,7 @@ struct KnowledgePipelineTests {
         let workflowBoard = artifacts.draftArtifacts.first { $0.relativePath == "_index.md" }?.markdown ?? ""
         #expect(workflowBoard.contains("## Рекомендуемые следующие шаги"))
         #expect(workflowBoard.contains("Применить: перенести [[Knowledge/Topics/codex-workflow-for-ai-founders|Codex Workflow for AI Founders]] в `Lessons`."))
-        #expect(workflowBoard.contains("Ревью [Средний]: [[Knowledge/Tools/old-utility|Old Utility]] — не обновлялась уже 2284"))
+        #expect(workflowBoard.contains("Ревью [Средний]: [[Knowledge/Tools/old-utility|Old Utility]] — не обновлялась уже"))
     }
 
     @Test("Knowledge maintenance suppresses already applied promotions and consolidations")

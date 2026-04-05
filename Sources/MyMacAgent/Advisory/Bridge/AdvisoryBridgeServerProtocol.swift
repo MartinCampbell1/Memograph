@@ -1,0 +1,357 @@
+import Foundation
+
+enum AdvisoryProviderSessionAction: String, Codable, CaseIterable, Identifiable {
+    case runAuthCheck = "run_auth_check"
+    case login
+    case relogin
+    case logout
+    case addAccount = "add_account"
+    case switchAccount = "switch_account"
+    case openConfigDir = "open_config_dir"
+    case openCLI = "open_cli"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .runAuthCheck:
+            return "Run auth check"
+        case .login:
+            return "Login"
+        case .relogin:
+            return "Re-login"
+        case .logout:
+            return "Logout"
+        case .addAccount:
+            return "Add account"
+        case .switchAccount:
+            return "Switch account"
+        case .openConfigDir:
+            return "Open config dir"
+        case .openCLI:
+            return "Open CLI"
+        }
+    }
+}
+
+struct AdvisoryProviderDiagnostic: Codable, Equatable, Identifiable {
+    let providerName: String
+    let status: String
+    let detail: String?
+    let binaryPresent: Bool
+    let sessionDetected: Bool
+    let priority: Int
+    let cooldownRemainingSeconds: Int?
+    let accountIdentity: String?
+    let accountDetail: String?
+    let configDirectory: String?
+    let supportedActions: [AdvisoryProviderSessionAction]
+    let failureCount: Int?
+    let runnable: Bool?
+    let lastCheckedAt: String?
+
+    init(
+        providerName: String,
+        status: String,
+        detail: String?,
+        binaryPresent: Bool,
+        sessionDetected: Bool,
+        priority: Int,
+        cooldownRemainingSeconds: Int? = nil,
+        accountIdentity: String? = nil,
+        accountDetail: String? = nil,
+        configDirectory: String? = nil,
+        supportedActions: [AdvisoryProviderSessionAction] = [],
+        failureCount: Int? = nil,
+        runnable: Bool? = nil,
+        lastCheckedAt: String? = nil
+    ) {
+        self.providerName = providerName
+        self.status = status
+        self.detail = detail
+        self.binaryPresent = binaryPresent
+        self.sessionDetected = sessionDetected
+        self.priority = priority
+        self.cooldownRemainingSeconds = cooldownRemainingSeconds
+        self.accountIdentity = accountIdentity
+        self.accountDetail = accountDetail
+        self.configDirectory = configDirectory
+        self.supportedActions = supportedActions
+        self.failureCount = failureCount
+        self.runnable = runnable
+        self.lastCheckedAt = lastCheckedAt
+    }
+
+    var id: String { providerName }
+
+    var displayName: String {
+        providerName.capitalized
+    }
+
+    var statusLabel: String {
+        switch status {
+        case "ok":
+            return "ready"
+        case "session_expired":
+            return "session expired"
+        case "session_missing":
+            return "session missing"
+        case "binary_missing":
+            return "binary missing"
+        case "cooldown":
+            return "cooling down"
+        case "not_checked":
+            return "not checked"
+        default:
+            return status.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    func supports(_ action: AdvisoryProviderSessionAction) -> Bool {
+        supportedActions.contains(action)
+    }
+}
+
+struct AdvisoryBridgeHealth: Codable, Equatable {
+    let runtimeName: String
+    let status: String
+    let providerName: String
+    let transport: String
+    let statusDetail: String?
+    let lastError: String?
+    let recommendedAction: String?
+    let activeProviderName: String?
+    let providerOrder: [String]
+    let availableProviders: [String]
+    let providerStatuses: [AdvisoryProviderDiagnostic]
+    let checkedAt: String?
+
+    init(
+        runtimeName: String,
+        status: String,
+        providerName: String,
+        transport: String,
+        statusDetail: String? = nil,
+        lastError: String? = nil,
+        recommendedAction: String? = nil,
+        activeProviderName: String? = nil,
+        providerOrder: [String] = [],
+        availableProviders: [String] = [],
+        providerStatuses: [AdvisoryProviderDiagnostic] = [],
+        checkedAt: String? = nil
+    ) {
+        self.runtimeName = runtimeName
+        self.status = status
+        self.providerName = providerName
+        self.transport = transport
+        self.statusDetail = statusDetail
+        self.lastError = lastError
+        self.recommendedAction = recommendedAction
+        self.activeProviderName = activeProviderName
+        self.providerOrder = providerOrder
+        self.availableProviders = availableProviders
+        self.providerStatuses = providerStatuses
+        self.checkedAt = checkedAt
+    }
+}
+
+struct AdvisoryBridgeRuntimeSnapshot: Equatable {
+    let mode: AdvisoryBridgeMode
+    let bridgeHealth: AdvisoryBridgeHealth
+    let effectiveStatus: String
+    let fallbackActive: Bool
+    let supervisorStatus: String?
+    let consecutiveFailures: Int
+    let autoStartEnabled: Bool
+    let socketPresent: Bool
+    let lastError: String?
+    let recommendedAction: String?
+    let updatedAt: Date
+
+    var isNominal: Bool {
+        effectiveStatus == "ready" || effectiveStatus == "stub_only"
+    }
+
+    var isDegraded: Bool {
+        !isNominal
+    }
+
+    var title: String {
+        switch effectiveStatus {
+        case "ready":
+            return "Advisory sidecar ready"
+        case "stub_only":
+            return "Advisory stub only"
+        case "session_expired":
+            return "Advisory provider session expired"
+        case "no_provider":
+            return "Advisory has no provider"
+        case "timeout":
+            return "Advisory sidecar timed out"
+        case "transport_failure":
+            return "Advisory transport failed"
+        case "fallback":
+            return "Advisory degraded"
+        case "starting":
+            return "Advisory sidecar starting"
+        case "backoff":
+            return "Advisory sidecar backing off"
+        default:
+            return "Advisory limited"
+        }
+    }
+
+    var providerStatusLines: [String] {
+        bridgeHealth.providerStatuses
+            .sorted { $0.priority < $1.priority }
+            .map { diagnostic in
+                let prefix = bridgeHealth.activeProviderName == diagnostic.providerName ? "selected" : diagnostic.statusLabel
+                if let detail = diagnostic.detail, !detail.isEmpty {
+                    return "\(diagnostic.displayName): \(prefix) · \(detail)"
+                }
+                return "\(diagnostic.displayName): \(prefix)"
+            }
+    }
+
+    var statusLines: [String] {
+        var lines: [String] = []
+        switch effectiveStatus {
+        case "ready":
+            lines.append("advisor: sidecar ready")
+        case "stub_only":
+            lines.append("advisor: local stub only")
+        case "session_expired":
+            lines.append("advisor: provider session expired, работает degraded path")
+        case "no_provider":
+            lines.append("advisor: sidecar без доступного provider")
+        case "timeout":
+            lines.append("advisor: sidecar timed out, advisory ограничен")
+        case "transport_failure":
+            lines.append("advisor: transport failure, advisory ограничен")
+        case "fallback":
+            lines.append("advisor: sidecar недоступен, работает fallback")
+        case "starting":
+            lines.append("advisor: sidecar запускается")
+        case "backoff":
+            lines.append("advisor: sidecar ушёл в backoff")
+        default:
+            lines.append("advisor: advisory временно ограничен")
+        }
+
+        if fallbackActive {
+            lines.append("advisor fallback active")
+        }
+        if let supervisorStatus, !supervisorStatus.isEmpty, supervisorStatus != effectiveStatus {
+            lines.append("supervisor: \(supervisorStatus)")
+        }
+        if bridgeHealth.providerName != "local_stub" {
+            lines.append("provider: \(bridgeHealth.providerName)")
+        }
+        if let activeProviderName = bridgeHealth.activeProviderName, !activeProviderName.isEmpty {
+            lines.append("active provider: \(activeProviderName)")
+        }
+        if !bridgeHealth.availableProviders.isEmpty {
+            lines.append("available providers: \(bridgeHealth.availableProviders.joined(separator: ", "))")
+        } else if bridgeHealth.providerStatuses.contains(where: { $0.binaryPresent || $0.sessionDetected }) {
+            let unavailable = bridgeHealth.providerStatuses
+                .sorted { $0.priority < $1.priority }
+                .prefix(2)
+                .map { "\($0.providerName): \($0.statusLabel)" }
+            if !unavailable.isEmpty {
+                lines.append("providers: \(unavailable.joined(separator: " · "))")
+            }
+        }
+        if consecutiveFailures > 0 {
+            lines.append("sidecar failures: \(consecutiveFailures)")
+        }
+        if let lastError, !lastError.isEmpty {
+            lines.append("advisor error: \(lastError)")
+        }
+        if let recommendedAction, !recommendedAction.isEmpty {
+            lines.append(recommendedAction)
+        }
+        return lines
+    }
+}
+
+struct AdvisoryRecipeRequest: Codable {
+    let runId: String
+    let recipeName: String
+    let packet: AdvisoryPacket
+    let accessLevel: AdvisoryAccessProfile
+    let timeoutSeconds: Int
+}
+
+struct AdvisoryRecipeResult: Codable {
+    let runId: String
+    let artifactProposals: [AdvisoryArtifactCandidate]
+    let continuityProposals: [ContinuityItemCandidate]
+}
+
+struct AdvisoryBridgeExecution {
+    let result: AdvisoryRecipeResult
+    let activeHealth: AdvisoryBridgeHealth
+    let attemptedPrimaryHealth: AdvisoryBridgeHealth?
+    let usedFallback: Bool
+    let primaryFailure: String?
+}
+
+enum AdvisoryBridgeError: LocalizedError {
+    case unavailable(String)
+    case transportFailure(String)
+    case invalidResponse(String)
+    case sidecarFailure(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unavailable(message),
+             let .transportFailure(message),
+             let .invalidResponse(message),
+             let .sidecarFailure(message):
+            return message
+        }
+    }
+}
+
+protocol AdvisoryBridgeServerProtocol {
+    func health() -> AdvisoryBridgeHealth
+    func refreshHealth() -> AdvisoryBridgeHealth
+    func accounts(forceRefresh: Bool) throws -> AdvisoryProviderAccountsSnapshot
+    func openLogin(providerName: String) throws -> AdvisoryProviderAccountActionResponse
+    func importCurrentSession(providerName: String, accountName: String?) throws -> AdvisoryProviderAccountActionResponse
+    func reauthorize(providerName: String, accountName: String) throws -> AdvisoryProviderAccountActionResponse
+    func setAccountLabel(providerName: String, accountName: String, label: String) throws -> AdvisoryProviderAccountActionResponse
+    func setPreferredAccount(providerName: String, accountName: String) throws -> AdvisoryProviderAccountActionResponse
+    func runRecipe(_ request: AdvisoryRecipeRequest) throws -> AdvisoryRecipeResult
+    func cancelRun(runId: String)
+}
+
+extension AdvisoryBridgeServerProtocol {
+    func refreshHealth() -> AdvisoryBridgeHealth {
+        health()
+    }
+
+    func accounts(forceRefresh _: Bool) throws -> AdvisoryProviderAccountsSnapshot {
+        .empty
+    }
+
+    func openLogin(providerName _: String) throws -> AdvisoryProviderAccountActionResponse {
+        throw AdvisoryBridgeError.unavailable("Accounts control requires memograph-advisor.")
+    }
+
+    func importCurrentSession(providerName _: String, accountName _: String?) throws -> AdvisoryProviderAccountActionResponse {
+        throw AdvisoryBridgeError.unavailable("Accounts control requires memograph-advisor.")
+    }
+
+    func reauthorize(providerName _: String, accountName _: String) throws -> AdvisoryProviderAccountActionResponse {
+        throw AdvisoryBridgeError.unavailable("Accounts control requires memograph-advisor.")
+    }
+
+    func setAccountLabel(providerName _: String, accountName _: String, label _: String) throws -> AdvisoryProviderAccountActionResponse {
+        throw AdvisoryBridgeError.unavailable("Accounts control requires memograph-advisor.")
+    }
+
+    func setPreferredAccount(providerName _: String, accountName _: String) throws -> AdvisoryProviderAccountActionResponse {
+        throw AdvisoryBridgeError.unavailable("Accounts control requires memograph-advisor.")
+    }
+}

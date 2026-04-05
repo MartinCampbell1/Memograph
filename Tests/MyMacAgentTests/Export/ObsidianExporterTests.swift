@@ -17,6 +17,23 @@ struct ObsidianExporterTests {
         return (db, path)
     }
 
+    private func makeAdvisoryDB() throws -> (DatabaseManager, String) {
+        let path = NSTemporaryDirectory() + "test_advisory_\(UUID().uuidString).db"
+        let db = try DatabaseManager(path: path)
+        let runner = MigrationRunner(db: db, migrations: [
+            V001_InitialSchema.migration,
+            V005_KnowledgeGraph.migration,
+            V006_AdvisoryThreads.migration,
+            V007_AdvisoryArtifacts.migration,
+            V008_AdvisoryRuns.migration,
+            V009_AttentionMarketMetadata.migration,
+            V010_ThreadIntelligenceMetadata.migration,
+            V011_AdvisoryArtifactMetadata.migration
+        ])
+        try runner.runPending()
+        return (db, path)
+    }
+
     @Test("Renders daily note markdown")
     func rendersDailyNote() throws {
         let (db, path) = try makeDB()
@@ -129,6 +146,153 @@ struct ObsidianExporterTests {
         let content = try String(contentsOfFile: filePath, encoding: .utf8)
         #expect(content.contains("# Дневной лог — 2026-04-02"))
         #expect(filePath.contains("/Daily/2026-04-02_"))
+    }
+
+    @Test("Exports advisory thread notes into Obsidian thread folder")
+    func exportsAdvisoryThreadNote() throws {
+        let (db, path) = try makeAdvisoryDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let vaultDir = NSTemporaryDirectory() + "test_thread_vault_\(UUID().uuidString)/"
+        defer { try? FileManager.default.removeItem(atPath: vaultDir) }
+
+        try db.execute("""
+            INSERT INTO advisory_threads
+                (id, title, slug, kind, status, confidence, user_pinned, user_title_override, parent_thread_id,
+                 first_seen_at, last_active_at, total_active_minutes, last_artifact_at, importance_score,
+                 source, summary, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("thread-parent"), .text("Advisory surface"), .text("advisory-surface"), .text("project"), .text("active"), .real(0.84), .integer(1), .text("Нить: advisory surface"), .null, .text("2026-04-02T08:00:00Z"), .text("2026-04-04T09:30:00Z"), .integer(135), .text("2026-04-04T09:35:00Z"), .real(0.78), .text("manual"), .text("Parent thread summary"), .text("2026-04-02T08:00:00Z"), .text("2026-04-04T09:30:00Z")
+        ])
+        try db.execute("""
+            INSERT INTO advisory_threads
+                (id, title, slug, kind, status, confidence, user_pinned, user_title_override, parent_thread_id,
+                 first_seen_at, last_active_at, total_active_minutes, last_artifact_at, importance_score,
+                 source, summary, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("thread-child"), .text("Inspector polish"), .text("inspector-polish"), .text("theme"), .text("stalled"), .real(0.63), .integer(0), .null, .text("thread-parent"), .text("2026-04-03T08:00:00Z"), .text("2026-04-04T08:45:00Z"), .integer(35), .null, .real(0.42), .text("manual"), .text("Child thread summary"), .text("2026-04-03T08:00:00Z"), .text("2026-04-04T08:45:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO continuity_items
+                (id, thread_id, kind, title, body, status, confidence, source_packet_id, created_at, updated_at, resolved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("cont-1"),
+            .text("thread-parent"),
+            .text("open_loop"),
+            .text("Finish inspector copy"),
+            .text("Keep the thread detail readable in Timeline."),
+            .text("open"),
+            .real(0.72),
+            .null,
+            .text("2026-04-04T09:00:00Z"),
+            .text("2026-04-04T09:00:00Z"),
+            .null
+        ])
+
+        try db.execute("""
+            INSERT INTO advisory_thread_evidence
+                (id, thread_id, evidence_kind, evidence_ref, weight, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("ev-1"),
+            .text("thread-parent"),
+            .text("summary"),
+            .text("summary:2026-04-04"),
+            .real(1.0),
+            .text("2026-04-04T09:20:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO advisory_packets
+                (id, packet_version, kind, trigger_kind, payload_json, language, access_level_granted, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("packet-1"),
+            .text("v2.reflection.1"),
+            .text("reflection"),
+            .text("morning_resume"),
+            .text("{}"),
+            .text("ru"),
+            .text("deep_context"),
+            .text("2026-04-04T09:30:00Z")
+        ])
+
+        try db.execute("""
+            INSERT INTO advisory_artifacts
+                (id, domain, kind, title, body, thread_id, source_packet_id, source_recipe, confidence,
+                 why_now, evidence_json, language, status, market_score, created_at, surfaced_at, expires_at,
+                 attention_vector_json, market_context_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("artifact-1"),
+            .text("continuity"),
+            .text("resume_card"),
+            .text("Resume advisory"),
+            .text("Вернуться к advisory surface и дожать inspector."),
+            .text("thread-parent"),
+            .text("packet-1"),
+            .text("continuity_resume"),
+            .real(0.86),
+            .text("Strong continuity signal"),
+            .text(#"["summary:2026-04-04"]"#),
+            .text("ru"),
+            .text("surfaced"),
+            .real(0.83),
+            .text("2026-04-04T09:35:00Z"),
+            .text("2026-04-04T09:35:00Z"),
+            .null,
+            .null,
+            .null
+        ])
+
+        let store = AdvisoryArtifactStore(db: db, timeZone: utc)
+        let parentThread = try store.thread(id: "thread-parent")
+        let detail = AdvisoryThreadDetailSnapshot(
+            thread: try #require(parentThread),
+            parentThread: nil,
+            childThreads: try store.childThreads(parentThreadId: "thread-parent"),
+            continuityItems: try store.continuityItemsForThread(threadId: "thread-parent"),
+            artifacts: try store.artifactsForThread("thread-parent"),
+            evidence: try store.threadEvidence(threadId: "thread-parent"),
+            maintenanceProposals: [
+                AdvisoryThreadMaintenanceProposal(
+                    id: "proposal-1",
+                    kind: .splitIntoSubthread,
+                    title: "Вынести sub-thread: Provider routing policy",
+                    rationale: "Отдельный routing concern уже стал самостоятельным return point.",
+                    confidence: 0.78,
+                    targetThreadId: nil,
+                    targetThreadTitle: nil,
+                    suggestedStatus: nil,
+                    suggestedTitle: "Provider routing policy",
+                    suggestedSummary: "Sub-thread for provider routing decisions.",
+                    suggestedKind: .question,
+                    sourceContinuityItemId: nil
+                )
+            ]
+        )
+
+        let exporter = ObsidianExporter(db: db, vaultPath: vaultDir, timeZone: utc)
+        let filePath = try exporter.exportAdvisoryThread(detail)
+        let content = try String(contentsOfFile: filePath, encoding: .utf8)
+
+        #expect(FileManager.default.fileExists(atPath: filePath))
+        #expect(filePath.contains("/Knowledge/Threads/advisory-surface.md"))
+        #expect(content.contains("# Нить — Нить: advisory surface"))
+        #expect(content.contains("## Open Loops"))
+        #expect(content.contains("Finish inspector copy"))
+        #expect(content.contains("## Child Threads"))
+        #expect(content.contains("Inspector polish"))
+        #expect(content.contains("## Maintenance"))
+        #expect(content.contains("Provider routing policy"))
+        #expect(content.contains("## Recent Advisory Artifacts"))
+        #expect(content.contains("Resume advisory"))
+        #expect(content.contains("## Evidence"))
+        #expect(content.contains("summary:2026-04-04"))
     }
 
     @Test("Generates timeline from sessions")

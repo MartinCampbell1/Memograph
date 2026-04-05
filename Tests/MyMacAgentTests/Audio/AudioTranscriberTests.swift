@@ -194,8 +194,9 @@ struct AudioTranscriberTests {
             db: db,
             timeZone: utc,
             settingsProvider: settingsProvider,
-            uploadTransport: { request, body in
-                recorder.append(String(decoding: body, as: UTF8.self))
+            uploadTransport: { request, bodyFileURL in
+                let body = try String(decoding: Data(contentsOf: bodyFileURL), as: UTF8.self)
+                recorder.append(body)
                 let response = HTTPURLResponse(
                     url: request.url!,
                     statusCode: 200,
@@ -269,8 +270,9 @@ struct AudioTranscriberTests {
             db: db,
             timeZone: utc,
             settingsProvider: settingsProvider,
-            uploadTransport: { request, body in
-                recorder.set(String(decoding: body, as: UTF8.self))
+            uploadTransport: { request, bodyFileURL in
+                let body = try String(decoding: Data(contentsOf: bodyFileURL), as: UTF8.self)
+                recorder.set(body)
                 let response = HTTPURLResponse(
                     url: request.url!,
                     statusCode: 200,
@@ -297,5 +299,359 @@ struct AudioTranscriberTests {
         let drained = try await transcriber.drainQueuedTranscriptions(limit: 1)
         #expect(drained == 1)
         #expect(recorder.lastBody.contains("gpt-4o-mini-transcribe"))
+    }
+
+    @Test("Queued transcription deduplicates identical segment jobs")
+    func queuedTranscriptionDeduplicatesIdenticalSegments() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let audioPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("dedupe-audio-\(UUID().uuidString).wav")
+        try Data("fake audio".utf8).write(to: URL(fileURLWithPath: audioPath))
+        defer { try? FileManager.default.removeItem(atPath: audioPath) }
+
+        let transcriber = AudioTranscriber(db: db, timeZone: utc)
+        let startedAt = ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z")!
+        let endedAt = ISO8601DateFormatter().date(from: "2026-04-02T10:01:00Z")!
+
+        try transcriber.enqueueTranscriptionJob(
+            path: audioPath,
+            sessionId: nil,
+            source: "system",
+            segmentStartedAt: startedAt,
+            segmentEndedAt: endedAt
+        )
+        try transcriber.enqueueTranscriptionJob(
+            path: audioPath,
+            sessionId: nil,
+            source: "system",
+            segmentStartedAt: startedAt,
+            segmentEndedAt: endedAt
+        )
+
+        let rows = try db.query("""
+            SELECT entity_id, status
+            FROM sync_queue
+            WHERE job_type = ?
+        """, params: [.text("audio_transcription")])
+
+        #expect(rows.count == 1)
+        #expect(rows[0]["entity_id"]?.textValue?.contains("2026-04-02T10:00:00Z") == true)
+        #expect(rows[0]["status"]?.textValue == "pending")
+    }
+
+    @Test("Missing queued segment becomes terminal instead of retrying forever")
+    func missingQueuedSegmentIsTerminal() async throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let audioPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("missing-audio-\(UUID().uuidString).wav")
+        let transcriber = AudioTranscriber(db: db, timeZone: utc)
+
+        try transcriber.enqueueTranscriptionJob(
+            path: audioPath,
+            sessionId: nil,
+            source: "system",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:01:00Z")!
+        )
+
+        let drained = try await transcriber.drainQueuedTranscriptions(limit: 1)
+        #expect(drained == 0)
+
+        let rows = try db.query("""
+            SELECT status, retry_count, last_error
+            FROM sync_queue
+            WHERE job_type = ?
+        """, params: [.text("audio_transcription")])
+        #expect(rows.count == 1)
+        #expect(rows[0]["status"]?.textValue == "done")
+        #expect(rows[0]["retry_count"]?.intValue == 0)
+        #expect(rows[0]["last_error"]?.textValue?.contains("Queued audio segment missing") == true)
+    }
+
+    @Test("Microphone jobs are drained before system audio jobs")
+    func microphoneJobsHavePriority() async throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let micPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("priority-mic-\(UUID().uuidString).wav")
+        let systemPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("priority-system-\(UUID().uuidString).wav")
+        try Data("mic".utf8).write(to: URL(fileURLWithPath: micPath))
+        try Data("system".utf8).write(to: URL(fileURLWithPath: systemPath))
+        defer {
+            try? FileManager.default.removeItem(atPath: micPath)
+            try? FileManager.default.removeItem(atPath: systemPath)
+        }
+
+        let suiteName = "test_\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = InMemoryCredentialsStore()
+        var settings = AppSettings(defaults: defaults, credentialsStore: store)
+        settings.audioTranscriptionProvider = .openAI
+        settings.audioTranscriptionBaseURL = "https://api.openai.com/v1"
+        settings.audioTranscriptionAPIKey = "sk-audio-test"
+        let settingsProvider: @Sendable () -> AppSettings = {
+            AppSettings(defaults: UserDefaults(suiteName: suiteName)!, credentialsStore: store)
+        }
+
+        let transcriber = AudioTranscriber(
+            db: db,
+            timeZone: utc,
+            settingsProvider: settingsProvider,
+            uploadTransport: { request, bodyFileURL in
+                let body = try String(decoding: Data(contentsOf: bodyFileURL), as: UTF8.self)
+                let text = body.contains("priority-mic") ? "Mic first" : "System first"
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                let data = try JSONSerialization.data(withJSONObject: [
+                    "text": text,
+                    "language": "en",
+                    "duration": 8.0
+                ])
+                return (data, response)
+            }
+        )
+
+        try transcriber.enqueueTranscriptionJob(
+            path: systemPath,
+            sessionId: nil,
+            source: "system",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:08Z")!
+        )
+        try transcriber.enqueueTranscriptionJob(
+            path: micPath,
+            sessionId: nil,
+            source: "microphone",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:10Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:18Z")!
+        )
+
+        let drained = try await transcriber.drainQueuedTranscriptions(limit: 1)
+        #expect(drained == 1)
+
+        let rows = try db.query("""
+            SELECT transcript, source
+            FROM audio_transcripts
+        """)
+        #expect(rows.count == 1)
+        #expect(rows[0]["transcript"]?.textValue == "Mic first")
+        #expect(rows[0]["source"]?.textValue == "microphone")
+    }
+
+    @Test("Concurrent drain calls still run a single active transcription")
+    func concurrentDrainCallsAreSerialized() async throws {
+        final class ConcurrencyProbe: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var active = 0
+            private(set) var maxActive = 0
+
+            func begin() {
+                lock.lock()
+                active += 1
+                maxActive = max(maxActive, active)
+                lock.unlock()
+            }
+
+            func end() {
+                lock.lock()
+                active -= 1
+                lock.unlock()
+            }
+        }
+
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let suiteName = "test_\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = InMemoryCredentialsStore()
+        var settings = AppSettings(defaults: defaults, credentialsStore: store)
+        settings.audioTranscriptionProvider = .openAI
+        settings.audioTranscriptionBaseURL = "https://api.openai.com/v1"
+        settings.audioTranscriptionAPIKey = "sk-audio-test"
+        let settingsProvider: @Sendable () -> AppSettings = {
+            AppSettings(defaults: UserDefaults(suiteName: suiteName)!, credentialsStore: store)
+        }
+
+        let firstPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("serial-one-\(UUID().uuidString).wav")
+        let secondPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("serial-two-\(UUID().uuidString).wav")
+        try Data("one".utf8).write(to: URL(fileURLWithPath: firstPath))
+        try Data("two".utf8).write(to: URL(fileURLWithPath: secondPath))
+        defer {
+            try? FileManager.default.removeItem(atPath: firstPath)
+            try? FileManager.default.removeItem(atPath: secondPath)
+        }
+
+        let probe = ConcurrencyProbe()
+        let transcriber = AudioTranscriber(
+            db: db,
+            timeZone: utc,
+            settingsProvider: settingsProvider,
+            uploadTransport: { request, _ in
+                probe.begin()
+                defer { probe.end() }
+                try await Task.sleep(for: .milliseconds(150))
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                let data = try JSONSerialization.data(withJSONObject: [
+                    "text": "Serialized",
+                    "language": "en",
+                    "duration": 5.0
+                ])
+                return (data, response)
+            }
+        )
+
+        try transcriber.enqueueTranscriptionJob(
+            path: firstPath,
+            sessionId: nil,
+            source: "system",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:05Z")!
+        )
+        try transcriber.enqueueTranscriptionJob(
+            path: secondPath,
+            sessionId: nil,
+            source: "system",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:10Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:15Z")!
+        )
+
+        let firstDrain = Task { try await transcriber.drainQueuedTranscriptions(limit: 1) }
+        try await Task.sleep(for: .milliseconds(20))
+        let secondDrain = Task { try await transcriber.drainQueuedTranscriptions(limit: 1) }
+
+        let results = try await [firstDrain.value, secondDrain.value].sorted()
+        #expect(results == [0, 1])
+        #expect(probe.maxActive == 1)
+    }
+
+    @Test("Health snapshot reflects queue depth and system throttle state")
+    func healthSnapshotReflectsQueueAndThrottle() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let micPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("health-mic-\(UUID().uuidString).wav")
+        let systemPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("health-system-\(UUID().uuidString).wav")
+        try Data("mic".utf8).write(to: URL(fileURLWithPath: micPath))
+        try Data("system".utf8).write(to: URL(fileURLWithPath: systemPath))
+        defer {
+            try? FileManager.default.removeItem(atPath: micPath)
+            try? FileManager.default.removeItem(atPath: systemPath)
+        }
+
+        let transcriber = AudioTranscriber(db: db, timeZone: utc)
+        try transcriber.enqueueTranscriptionJob(
+            path: micPath,
+            sessionId: nil,
+            source: "microphone",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:08Z")!
+        )
+        try transcriber.enqueueTranscriptionJob(
+            path: systemPath,
+            sessionId: nil,
+            source: "system",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:01:00Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:01:08Z")!
+        )
+        transcriber.setSystemAudioThrottled(true, reason: "audio queue backlog", cooldown: 45)
+
+        let snapshot = transcriber.currentHealthSnapshot()
+        #expect(snapshot.pendingJobs == 2)
+        #expect(snapshot.pendingMicrophoneJobs == 1)
+        #expect(snapshot.pendingSystemJobs == 1)
+        #expect(snapshot.cloudTranscriptionDelayed)
+        #expect(snapshot.systemAudioThrottled)
+        #expect(snapshot.systemAudioThrottleReason == "audio queue backlog")
+    }
+
+    @Test("System audio throttle decision prefers microphone work")
+    func systemAudioThrottleDecisionPrefersMicrophone() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let micPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("throttle-mic-\(UUID().uuidString).wav")
+        try Data("mic".utf8).write(to: URL(fileURLWithPath: micPath))
+        defer { try? FileManager.default.removeItem(atPath: micPath) }
+
+        let transcriber = AudioTranscriber(db: db, timeZone: utc)
+        try transcriber.enqueueTranscriptionJob(
+            path: micPath,
+            sessionId: nil,
+            source: "microphone",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:08Z")!
+        )
+
+        let decision = transcriber.systemAudioThrottleDecision()
+        #expect(decision.shouldThrottle)
+        #expect(decision.reason == "microphone priority")
+    }
+
+    @Test("Network failures are reflected in audio health telemetry")
+    func networkFailuresAppearInHealthTelemetry() async throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let suiteName = "test_\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = InMemoryCredentialsStore()
+        var settings = AppSettings(defaults: defaults, credentialsStore: store)
+        settings.audioTranscriptionProvider = .openAI
+        settings.audioTranscriptionBaseURL = "https://api.openai.com/v1"
+        settings.audioTranscriptionAPIKey = "sk-audio-test"
+        let settingsProvider: @Sendable () -> AppSettings = {
+            AppSettings(defaults: UserDefaults(suiteName: suiteName)!, credentialsStore: store)
+        }
+
+        let audioPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("network-failure-\(UUID().uuidString).wav")
+        try Data("fake audio".utf8).write(to: URL(fileURLWithPath: audioPath))
+        defer { try? FileManager.default.removeItem(atPath: audioPath) }
+
+        let transcriber = AudioTranscriber(
+            db: db,
+            timeZone: utc,
+            settingsProvider: settingsProvider,
+            uploadTransport: { _, _ in
+                throw URLError(.timedOut)
+            }
+        )
+
+        try transcriber.enqueueTranscriptionJob(
+            path: audioPath,
+            sessionId: nil,
+            source: "microphone",
+            segmentStartedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:00Z")!,
+            segmentEndedAt: ISO8601DateFormatter().date(from: "2026-04-02T10:00:08Z")!
+        )
+
+        let drained = try await transcriber.drainQueuedTranscriptions(limit: 1)
+        #expect(drained == 0)
+
+        let snapshot = transcriber.currentHealthSnapshot()
+        #expect(snapshot.networkFailureCount == 1)
+        #expect(snapshot.consecutiveCloudFailures == 1)
+        #expect(snapshot.lastError?.isEmpty == false)
     }
 }

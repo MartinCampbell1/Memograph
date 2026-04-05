@@ -514,6 +514,379 @@ struct AppSettings {
         set { defaults.set(newValue, forKey: Self.experimentalAudioOptInConfirmedKey) }
     }
 
+    // MARK: - Advisory
+
+    var advisoryEnabled: Bool {
+        get {
+            if defaults.object(forKey: "advisoryEnabled") == nil {
+                return true
+            }
+            return defaults.bool(forKey: "advisoryEnabled")
+        }
+        set { defaults.set(newValue, forKey: "advisoryEnabled") }
+    }
+
+    var advisoryAccessProfile: AdvisoryAccessProfile {
+        get {
+            AdvisoryAccessProfile(
+                rawValue: defaults.string(forKey: "advisoryAccessProfile") ?? ""
+            ) ?? .deepContext
+        }
+        set { defaults.set(newValue.rawValue, forKey: "advisoryAccessProfile") }
+    }
+
+    var advisoryProactivityMode: AdvisoryProactivityMode {
+        get {
+            AdvisoryProactivityMode(
+                rawValue: defaults.string(forKey: "advisoryProactivityMode") ?? ""
+            ) ?? .ambient
+        }
+        set { defaults.set(newValue.rawValue, forKey: "advisoryProactivityMode") }
+    }
+
+    var advisoryBridgeMode: AdvisoryBridgeMode {
+        get {
+            AdvisoryBridgeMode(
+                rawValue: defaults.string(forKey: "advisoryBridgeMode") ?? ""
+            ) ?? .preferSidecar
+        }
+        set { defaults.set(newValue.rawValue, forKey: "advisoryBridgeMode") }
+    }
+
+    var advisorySidecarAutoStart: Bool {
+        get {
+            if defaults.object(forKey: "advisorySidecarAutoStart") == nil {
+                return true
+            }
+            return defaults.bool(forKey: "advisorySidecarAutoStart")
+        }
+        set { defaults.set(newValue, forKey: "advisorySidecarAutoStart") }
+    }
+
+    var advisorySidecarSocketPath: String {
+        get {
+            defaults.string(forKey: "advisorySidecarSocketPath")
+                ?? ((dataDirectoryPath as NSString).appendingPathComponent("advisory/memograph-advisor.sock"))
+        }
+        set { defaults.set(newValue, forKey: "advisorySidecarSocketPath") }
+    }
+
+    var advisorySidecarTimeoutSeconds: Int {
+        get {
+            let value = defaults.integer(forKey: "advisorySidecarTimeoutSeconds")
+            return value > 0 ? value : 20
+        }
+        set { defaults.set(newValue, forKey: "advisorySidecarTimeoutSeconds") }
+    }
+
+    var advisorySidecarHealthCheckIntervalSeconds: Int {
+        get {
+            let value = defaults.integer(forKey: "advisorySidecarHealthCheckIntervalSeconds")
+            return value > 0 ? value : 30
+        }
+        set { defaults.set(newValue, forKey: "advisorySidecarHealthCheckIntervalSeconds") }
+    }
+
+    var advisorySidecarMaxConsecutiveFailures: Int {
+        get {
+            let value = defaults.integer(forKey: "advisorySidecarMaxConsecutiveFailures")
+            return value > 0 ? value : 3
+        }
+        set { defaults.set(newValue, forKey: "advisorySidecarMaxConsecutiveFailures") }
+    }
+
+    var advisorySidecarProviderOrder: [String] {
+        get { readList(forKey: "advisorySidecarProviderOrder", defaultValue: ["claude", "gemini", "codex"]) }
+        set { writeList(newValue, forKey: "advisorySidecarProviderOrder") }
+    }
+
+    var advisorySidecarProviderProbeTimeoutSeconds: Int {
+        get {
+            let value = defaults.integer(forKey: "advisorySidecarProviderProbeTimeoutSeconds")
+            return value > 0 ? value : 6
+        }
+        set { defaults.set(newValue, forKey: "advisorySidecarProviderProbeTimeoutSeconds") }
+    }
+
+    var advisorySidecarRetryAttempts: Int {
+        get {
+            let value = defaults.integer(forKey: "advisorySidecarRetryAttempts")
+            return value > 0 ? value : 2
+        }
+        set { defaults.set(newValue, forKey: "advisorySidecarRetryAttempts") }
+    }
+
+    var advisorySidecarProviderCooldownSeconds: Int {
+        get {
+            let value = defaults.integer(forKey: "advisorySidecarProviderCooldownSeconds")
+            return value > 0 ? value : 60
+        }
+        set { defaults.set(newValue, forKey: "advisorySidecarProviderCooldownSeconds") }
+    }
+
+    var advisoryCLIProfilesPath: String {
+        get {
+            defaults.string(forKey: "advisoryCLIProfilesPath")
+                ?? ((NSHomeDirectory() as NSString).appendingPathComponent(".cli-profiles"))
+        }
+        set { defaults.set(newValue, forKey: "advisoryCLIProfilesPath") }
+    }
+
+    var advisorySelectedClaudeAccount: String {
+        get { defaults.string(forKey: "advisorySelectedClaudeAccount") ?? "" }
+        set { defaults.set(newValue, forKey: "advisorySelectedClaudeAccount") }
+    }
+
+    var advisorySelectedGeminiAccount: String {
+        get { defaults.string(forKey: "advisorySelectedGeminiAccount") ?? "" }
+        set { defaults.set(newValue, forKey: "advisorySelectedGeminiAccount") }
+    }
+
+    var advisorySelectedCodexAccount: String {
+        get { defaults.string(forKey: "advisorySelectedCodexAccount") ?? "" }
+        set { defaults.set(newValue, forKey: "advisorySelectedCodexAccount") }
+    }
+
+    var advisoryDailyAttentionBudget: Int {
+        get {
+            let value = defaults.integer(forKey: "advisoryDailyAttentionBudget")
+            return value > 0 ? value : 6
+        }
+        set { defaults.set(newValue, forKey: "advisoryDailyAttentionBudget") }
+    }
+
+    var advisoryMinGapMinutes: Int {
+        get {
+            let value = defaults.integer(forKey: "advisoryMinGapMinutes")
+            return value > 0 ? value : 45
+        }
+        set { defaults.set(newValue, forKey: "advisoryMinGapMinutes") }
+    }
+
+    var advisoryPerThreadCooldownHours: Int {
+        get {
+            let value = defaults.integer(forKey: "advisoryPerThreadCooldownHours")
+            return value > 0 ? value : 6
+        }
+        set { defaults.set(newValue, forKey: "advisoryPerThreadCooldownHours") }
+    }
+
+    var advisoryAllowScreenshotEscalation: Bool {
+        get {
+            if defaults.object(forKey: "advisoryAllowScreenshotEscalation") == nil {
+                return true
+            }
+            return defaults.bool(forKey: "advisoryAllowScreenshotEscalation")
+        }
+        set { defaults.set(newValue, forKey: "advisoryAllowScreenshotEscalation") }
+    }
+
+    var advisoryAllowMCPEnrichment: Bool {
+        get { defaults.bool(forKey: "advisoryAllowMCPEnrichment") }
+        set { defaults.set(newValue, forKey: "advisoryAllowMCPEnrichment") }
+    }
+
+    var advisoryEnrichmentPhase: AdvisoryEnrichmentPhase {
+        get {
+            AdvisoryEnrichmentPhase(
+                rawValue: defaults.string(forKey: "advisoryEnrichmentPhase") ?? ""
+            ) ?? .phase1Memograph
+        }
+        set { defaults.set(newValue.rawValue, forKey: "advisoryEnrichmentPhase") }
+    }
+
+    var advisoryCalendarEnrichmentEnabled: Bool {
+        get {
+            if defaults.object(forKey: "advisoryCalendarEnrichmentEnabled") == nil {
+                return true
+            }
+            return defaults.bool(forKey: "advisoryCalendarEnrichmentEnabled")
+        }
+        set { defaults.set(newValue, forKey: "advisoryCalendarEnrichmentEnabled") }
+    }
+
+    var advisoryRemindersEnrichmentEnabled: Bool {
+        get {
+            if defaults.object(forKey: "advisoryRemindersEnrichmentEnabled") == nil {
+                return true
+            }
+            return defaults.bool(forKey: "advisoryRemindersEnrichmentEnabled")
+        }
+        set { defaults.set(newValue, forKey: "advisoryRemindersEnrichmentEnabled") }
+    }
+
+    var advisoryWebResearchEnrichmentEnabled: Bool {
+        get {
+            if defaults.object(forKey: "advisoryWebResearchEnrichmentEnabled") == nil {
+                return true
+            }
+            return defaults.bool(forKey: "advisoryWebResearchEnrichmentEnabled")
+        }
+        set { defaults.set(newValue, forKey: "advisoryWebResearchEnrichmentEnabled") }
+    }
+
+    var advisoryWearableEnrichmentEnabled: Bool {
+        get {
+            if defaults.object(forKey: "advisoryWearableEnrichmentEnabled") == nil {
+                return true
+            }
+            return defaults.bool(forKey: "advisoryWearableEnrichmentEnabled")
+        }
+        set { defaults.set(newValue, forKey: "advisoryWearableEnrichmentEnabled") }
+    }
+
+    var advisoryEnrichmentMaxItemsPerSource: Int {
+        get {
+            let value = defaults.integer(forKey: "advisoryEnrichmentMaxItemsPerSource")
+            return value > 0 ? value : 3
+        }
+        set { defaults.set(newValue, forKey: "advisoryEnrichmentMaxItemsPerSource") }
+    }
+
+    var advisoryCalendarLookaheadHours: Int {
+        get {
+            let value = defaults.integer(forKey: "advisoryCalendarLookaheadHours")
+            return value > 0 ? value : 18
+        }
+        set { defaults.set(newValue, forKey: "advisoryCalendarLookaheadHours") }
+    }
+
+    var advisoryReminderHorizonDays: Int {
+        get {
+            let value = defaults.integer(forKey: "advisoryReminderHorizonDays")
+            return value > 0 ? value : 7
+        }
+        set { defaults.set(newValue, forKey: "advisoryReminderHorizonDays") }
+    }
+
+    var advisoryWebResearchLookbackDays: Int {
+        get {
+            let value = defaults.integer(forKey: "advisoryWebResearchLookbackDays")
+            return value > 0 ? value : 3
+        }
+        set { defaults.set(newValue, forKey: "advisoryWebResearchLookbackDays") }
+    }
+
+    var advisoryEnabledDomains: [AdvisoryDomain] {
+        get {
+            let stored = readList(forKey: "advisoryEnabledDomains", defaultValue: AdvisoryDomain.allCases.map(\.rawValue))
+            let domains = stored.compactMap(AdvisoryDomain.init(rawValue:))
+            return domains.isEmpty ? AdvisoryDomain.allCases : domains
+        }
+        set {
+            let rawValues = newValue.isEmpty ? AdvisoryDomain.allCases.map(\.rawValue) : newValue.map(\.rawValue)
+            writeList(rawValues, forKey: "advisoryEnabledDomains")
+        }
+    }
+
+    var advisoryPreferredLanguage: String {
+        get { defaults.string(forKey: "advisoryPreferredLanguage") ?? "ru" }
+        set { defaults.set(newValue, forKey: "advisoryPreferredLanguage") }
+    }
+
+    var advisoryWritingStyle: String {
+        get { defaults.string(forKey: "advisoryWritingStyle") ?? "concise_reflective" }
+        set { defaults.set(newValue, forKey: "advisoryWritingStyle") }
+    }
+
+    var advisoryTwitterVoiceExamples: [String] {
+        get { readList(forKey: "advisoryTwitterVoiceExamples", defaultValue: []) }
+        set { writeList(newValue, forKey: "advisoryTwitterVoiceExamples") }
+    }
+
+    var advisoryPreferredAngles: [String] {
+        get { readList(forKey: "advisoryPreferredAngles", defaultValue: ["observation", "question", "lesson_learned", "mini_framework"]) }
+        set { writeList(newValue, forKey: "advisoryPreferredAngles") }
+    }
+
+    var advisoryAvoidTopics: [String] {
+        get { readList(forKey: "advisoryAvoidTopics", defaultValue: []) }
+        set { writeList(newValue, forKey: "advisoryAvoidTopics") }
+    }
+
+    var advisoryContentPersonaDescription: String {
+        get {
+            defaults.string(forKey: "advisoryContentPersonaDescription")
+                ?? "Grounded builder voice. Specific, observant, compact, and evidence-led."
+        }
+        set { defaults.set(newValue, forKey: "advisoryContentPersonaDescription") }
+    }
+
+    var advisoryAllowProvocation: Bool {
+        get { defaults.bool(forKey: "advisoryAllowProvocation") }
+        set { defaults.set(newValue, forKey: "advisoryAllowProvocation") }
+    }
+
+    var guidanceProfile: GuidanceProfile {
+        GuidanceProfile(
+            language: advisoryPreferredLanguage,
+            toneMode: "non_directive",
+            assertivenessLevel: 0.35,
+            allowProactiveAdvice: advisoryEnabled && advisoryProactivityMode == .ambient,
+            proactivityMode: advisoryProactivityMode,
+            dailyAttentionBudget: advisoryDailyAttentionBudget,
+            hardDailyCap: 10,
+            minGapMinutes: advisoryMinGapMinutes,
+            perThreadCooldownHours: advisoryPerThreadCooldownHours,
+            perKindFatigueCooldownHours: 3,
+            writingStyle: advisoryWritingStyle,
+            allowScreenshotEscalation: advisoryAllowScreenshotEscalation,
+            allowExternalCLIProviders: networkAllowed,
+            allowMCPEnrichment: advisoryAllowMCPEnrichment,
+            enrichmentPhase: advisoryEnrichmentPhase,
+            enabledEnrichmentSources: advisoryEnabledEnrichmentSources(
+                phase: advisoryEnrichmentPhase,
+                allowMCP: advisoryAllowMCPEnrichment
+            ),
+            enabledDomains: advisoryEnabledDomains,
+            attentionMarketMode: "multi_polar_attention_market",
+            twitterVoiceExamples: advisoryTwitterVoiceExamples,
+            preferredAngles: advisoryPreferredAngles,
+            avoidTopics: advisoryAvoidTopics,
+            contentPersonaDescription: advisoryContentPersonaDescription,
+            allowProvocation: advisoryAllowProvocation
+        )
+    }
+
+    private func advisoryEnabledEnrichmentSources(
+        phase: AdvisoryEnrichmentPhase,
+        allowMCP: Bool
+    ) -> [AdvisoryEnrichmentSource] {
+        AdvisoryEnrichmentSource.allCases.filter {
+            advisoryEnrichmentSourceEnabled($0, phase: phase, allowMCP: allowMCP)
+        }
+    }
+
+    func advisoryEnrichmentSourceEnabled(
+        _ source: AdvisoryEnrichmentSource,
+        phase: AdvisoryEnrichmentPhase? = nil,
+        allowMCP: Bool? = nil
+    ) -> Bool {
+        if source == .notes {
+            return true
+        }
+        let effectiveAllowMCP = allowMCP ?? advisoryAllowMCPEnrichment
+        guard effectiveAllowMCP else {
+            return false
+        }
+        let effectivePhase = phase ?? advisoryEnrichmentPhase
+        guard effectivePhase.supports(source) else {
+            return false
+        }
+        switch source {
+        case .notes:
+            return true
+        case .calendar:
+            return advisoryCalendarEnrichmentEnabled
+        case .reminders:
+            return advisoryRemindersEnrichmentEnabled
+        case .webResearch:
+            return advisoryWebResearchEnrichmentEnabled
+        case .wearable:
+            return advisoryWearableEnrichmentEnabled
+        }
+    }
+
     // MARK: - Prompts (editable by user)
 
     static let defaultSystemPrompt = """

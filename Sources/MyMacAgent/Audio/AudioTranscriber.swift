@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import os
 
@@ -15,7 +16,15 @@ struct AudioTranscript {
 }
 
 final class AudioTranscriber: @unchecked Sendable {
-    typealias UploadTransport = @Sendable (URLRequest, Data) async throws -> (Data, URLResponse)
+    typealias UploadTransport = @Sendable (URLRequest, URL) async throws -> (Data, URLResponse)
+
+    private final class LegacyExportSessionBox: @unchecked Sendable {
+        let session: AVAssetExportSession
+
+        init(session: AVAssetExportSession) {
+            self.session = session
+        }
+    }
 
     private struct QueuedTranscriptionPayload: Codable {
         let path: String
@@ -35,8 +44,24 @@ final class AudioTranscriber: @unchecked Sendable {
     private let now: () -> Date
     private let settingsProvider: @Sendable () -> AppSettings
     private let uploadTransport: UploadTransport
+    private let healthMonitor: AudioHealthMonitor
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let drainStateQueue = DispatchQueue(label: "com.memograph.audio-transcriber.drain-state")
+    private var isDrainingQueue = false
+    private let telemetryQueue = DispatchQueue(label: "com.memograph.audio-transcriber.telemetry")
+    private var lastUploadSizeBytes: Int64?
+    private var lastTranscriptionLatencyMs: Int?
+    private var lastRetryCount: Int = 0
+    private var networkFailureCount: Int = 0
+    private var consecutiveCloudFailures: Int = 0
+    private var recentCloudFailureDates: [Date] = []
+    private var currentRunningSource: String?
+    private var currentRunningJob: String?
+    private var systemAudioThrottled = false
+    private var systemAudioThrottleReason: String?
+    private var systemAudioThrottleUntil = Date.distantPast
+    private var lastErrorDescription: String?
 
     init(db: DatabaseManager,
          venvPath: String = "",
@@ -45,14 +70,16 @@ final class AudioTranscriber: @unchecked Sendable {
          timeZone: TimeZone = .autoupdatingCurrent,
          settingsProvider: @escaping @Sendable () -> AppSettings = { AppSettings() },
          uploadTransport: UploadTransport? = nil,
+         healthMonitor: AudioHealthMonitor = .shared,
          now: @escaping () -> Date = Date.init) {
         self.db = db
         self.runtimeStatusOverride = runtimeStatus
         self.dateSupport = LocalDateSupport(timeZone: timeZone)
         self.settingsProvider = settingsProvider
-        self.uploadTransport = uploadTransport ?? { request, body in
-            try await URLSession.shared.upload(for: request, from: body)
+        self.uploadTransport = uploadTransport ?? { request, fileURL in
+            try await Self.uploadRequest(request, fromFile: fileURL)
         }
+        self.healthMonitor = healthMonitor
         self.now = now
 
         if venvPath.isEmpty {
@@ -98,6 +125,11 @@ final class AudioTranscriber: @unchecked Sendable {
             CREATE INDEX IF NOT EXISTS idx_audio_transcripts_segment_window
             ON audio_transcripts(segment_started_at, segment_ended_at)
         """)
+        try db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sync_queue_audio_entity
+            ON sync_queue(job_type, entity_id)
+        """)
+        publishHealthSnapshot()
     }
 
     func transcribeFile(audioPath: String, language: String? = nil, source: String? = nil) async throws -> AudioTranscript {
@@ -190,56 +222,106 @@ final class AudioTranscriber: @unchecked Sendable {
         }
 
         let nowString = dateSupport.isoString(from: now())
+        let entityID = makeQueueEntityID(
+            path: path,
+            source: source,
+            segmentStartedAt: payload.segmentStartedAt,
+            segmentEndedAt: payload.segmentEndedAt
+        )
         let existing = try db.query("""
-            SELECT id
+            SELECT id, status
             FROM sync_queue
-            WHERE job_type = ? AND entity_id = ?
-              AND status IN ('pending', 'running', 'failed')
-            ORDER BY id DESC
+            WHERE job_type = ?
+              AND (
+                entity_id = ?
+                OR entity_id = ?
+              )
+            ORDER BY
+              CASE status
+                WHEN 'done' THEN 0
+                WHEN 'running' THEN 1
+                WHEN 'pending' THEN 2
+                WHEN 'failed' THEN 3
+                ELSE 4
+              END,
+              id DESC
             LIMIT 1
-        """, params: [.text("audio_transcription"), .text(path)])
+        """, params: [
+            .text("audio_transcription"),
+            .text(entityID),
+            .text(path)
+        ])
 
         if let row = existing.first,
-           let id = row["id"]?.intValue {
-            try db.execute("""
-                UPDATE sync_queue
-                SET payload_json = ?, status = 'pending', retry_count = 0,
-                    scheduled_at = ?, started_at = NULL, finished_at = NULL, last_error = NULL
-                WHERE id = ?
-            """, params: [
-                .text(payloadJson),
-                .text(nowString),
-                .integer(id)
-            ])
+           let id = row["id"]?.intValue,
+           let status = row["status"]?.textValue {
+            switch status {
+            case "done", "pending", "running":
+                publishHealthSnapshot()
+                return
+            case "failed":
+                try db.execute("""
+                    UPDATE sync_queue
+                    SET entity_id = ?, payload_json = ?, status = 'pending', retry_count = 0,
+                        scheduled_at = ?, started_at = NULL, finished_at = NULL, last_error = NULL
+                    WHERE id = ?
+                """, params: [
+                    .text(entityID),
+                    .text(payloadJson),
+                    .text(nowString),
+                    .integer(id)
+                ])
+            default:
+                return
+            }
         } else {
             try db.execute("""
                 INSERT INTO sync_queue (job_type, entity_id, payload_json, status, retry_count, scheduled_at)
                 VALUES (?, ?, ?, 'pending', 0, ?)
             """, params: [
                 .text("audio_transcription"),
-                .text(path),
+                .text(entityID),
                 .text(payloadJson),
                 .text(nowString)
             ])
         }
+
+        publishHealthSnapshot()
     }
 
     @discardableResult
-    func drainQueuedTranscriptions(limit: Int = 4) async throws -> Int {
+    func drainQueuedTranscriptions(limit: Int = 1) async throws -> Int {
+        guard beginDrainIfNeeded() else {
+            logger.debug("AudioTranscriber: queue drain skipped because another drain is active")
+            return 0
+        }
+        defer { finishDrain() }
+
         let nowDate = now()
         let nowString = dateSupport.isoString(from: nowDate)
         let rows = try db.query("""
-            SELECT id, payload_json, retry_count
+            SELECT id, payload_json, retry_count, status
             FROM sync_queue
             WHERE job_type = ?
               AND status IN ('pending', 'failed')
               AND (scheduled_at IS NULL OR scheduled_at <= ?)
-            ORDER BY id
+            ORDER BY
+              CASE
+                WHEN entity_id LIKE 'audio:microphone:%'
+                  OR payload_json LIKE '%"source":"microphone"%'
+                THEN 0
+                ELSE 1
+              END,
+              CASE status
+                WHEN 'pending' THEN 0
+                ELSE 1
+              END,
+              id
             LIMIT ?
         """, params: [
             .text("audio_transcription"),
             .text(nowString),
-            .integer(Int64(limit))
+            .integer(Int64(max(limit, 1)))
         ])
 
         var completed = 0
@@ -252,6 +334,8 @@ final class AudioTranscriber: @unchecked Sendable {
                 SET status = 'running', started_at = ?, last_error = NULL
                 WHERE id = ?
             """, params: [.text(nowString), .integer(id)])
+            setCurrentRunningJob(from: row["payload_json"]?.textValue)
+            publishHealthSnapshot()
 
             do {
                 guard let payloadJson = row["payload_json"]?.textValue,
@@ -268,6 +352,25 @@ final class AudioTranscriber: @unchecked Sendable {
                     WHERE id = ?
                 """, params: [.text(nowString), .text(nowString), .integer(id)])
                 completed += 1
+                telemetryQueue.sync {
+                    lastRetryCount = retryCount
+                    lastErrorDescription = nil
+                }
+            } catch let error as AudioError where error.isTerminalQueueFailure {
+                try db.execute("""
+                    UPDATE sync_queue
+                    SET status = 'done', finished_at = ?, started_at = COALESCE(started_at, ?), last_error = ?
+                    WHERE id = ?
+                """, params: [
+                    .text(nowString),
+                    .text(nowString),
+                    .text(error.localizedDescription),
+                    .integer(id)
+                ])
+                telemetryQueue.sync {
+                    lastRetryCount = retryCount
+                    lastErrorDescription = error.localizedDescription
+                }
             } catch {
                 let nextRetry = dateSupport.isoString(
                     from: nowDate.addingTimeInterval(retryDelay(for: retryCount + 1))
@@ -283,7 +386,14 @@ final class AudioTranscriber: @unchecked Sendable {
                     .text(error.localizedDescription),
                     .integer(id)
                 ])
+                telemetryQueue.sync {
+                    lastRetryCount = retryCount + 1
+                    lastErrorDescription = error.localizedDescription
+                }
             }
+
+            clearCurrentRunningJob()
+            publishHealthSnapshot()
         }
 
         return completed
@@ -351,7 +461,7 @@ final class AudioTranscriber: @unchecked Sendable {
 
     private func transcribeQueuedSegment(_ payload: QueuedTranscriptionPayload) async throws {
         guard FileManager.default.fileExists(atPath: payload.path) else {
-            throw AudioError.transcriptionFailed("Queued audio segment missing at \(payload.path)")
+            throw AudioError.missingQueuedSegment(payload.path)
         }
 
         let result = try await transcribeFile(
@@ -386,6 +496,30 @@ final class AudioTranscriber: @unchecked Sendable {
     private func retryDelay(for retryCount: Int) -> TimeInterval {
         let boundedRetryCount = min(max(retryCount, 1), 6)
         return Double(1 << boundedRetryCount) * 60
+    }
+
+    private func makeQueueEntityID(
+        path: String,
+        source: String,
+        segmentStartedAt: String,
+        segmentEndedAt: String
+    ) -> String {
+        "audio:\(source):\(segmentStartedAt):\(segmentEndedAt):\(path)"
+    }
+
+    private func beginDrainIfNeeded() -> Bool {
+        drainStateQueue.sync {
+            guard !isDrainingQueue else { return false }
+            isDrainingQueue = true
+            return true
+        }
+    }
+
+    private func finishDrain() {
+        drainStateQueue.sync {
+            isDrainingQueue = false
+        }
+        publishHealthSnapshot()
     }
 
     private func transcribeViaLocalWhisper(
@@ -429,7 +563,7 @@ final class AudioTranscriber: @unchecked Sendable {
         environment: AudioCloudRuntimeEnvironment
     ) async throws -> AudioTranscript {
         let fileURL = URL(fileURLWithPath: audioPath)
-        let audioData = try Data(contentsOf: fileURL)
+        let uploadAudioURL = await prepareUploadAudioFileIfNeeded(fileURL, source: source)
         let modelName = modelName(for: source, environment: environment)
         let boundary = "Boundary-\(UUID().uuidString)"
 
@@ -439,31 +573,73 @@ final class AudioTranscriber: @unchecked Sendable {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 300
 
-        let body = buildMultipartBody(
+        let bodyFileURL = try buildMultipartBodyFile(
             boundary: boundary,
-            audioData: audioData,
-            fileName: fileURL.lastPathComponent,
-            mimeType: mimeType(for: fileURL.pathExtension),
+            audioFileURL: uploadAudioURL,
+            fileName: uploadAudioURL.lastPathComponent,
+            mimeType: mimeType(for: uploadAudioURL.pathExtension),
             modelName: modelName,
             language: language
         )
+        defer {
+            try? FileManager.default.removeItem(at: bodyFileURL)
+            if uploadAudioURL != fileURL {
+                try? FileManager.default.removeItem(at: uploadAudioURL)
+            }
+        }
 
-        let (data, response) = try await uploadTransport(request, body)
+        let uploadSizeBytes = fileSize(at: bodyFileURL)
+        let latencyStart = Date()
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await uploadTransport(request, bodyFileURL)
+        } catch {
+            recordCloudAttemptFailure(error, uploadSizeBytes: uploadSizeBytes, startedAt: latencyStart)
+            throw error
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw AudioError.transcriptionFailed("Invalid HTTP response from audio transcription API")
+            let error = AudioError.transcriptionFailed("Invalid HTTP response from audio transcription API")
+            recordCloudAttemptFailure(error, uploadSizeBytes: uploadSizeBytes, startedAt: latencyStart)
+            throw error
         }
 
         guard httpResponse.statusCode == 200 else {
             let bodyText = String(data: data, encoding: .utf8) ?? ""
-            throw AudioError.transcriptionFailed("HTTP \(httpResponse.statusCode): \(bodyText)")
+            let error = AudioError.transcriptionFailed("HTTP \(httpResponse.statusCode): \(bodyText)")
+            recordCloudAttemptFailure(error, uploadSizeBytes: uploadSizeBytes, startedAt: latencyStart)
+            throw error
         }
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AudioError.transcriptionFailed("Failed to parse cloud transcription output")
+            let error = AudioError.transcriptionFailed("Failed to parse cloud transcription output")
+            recordCloudAttemptFailure(error, uploadSizeBytes: uploadSizeBytes, startedAt: latencyStart)
+            throw error
         }
 
+        recordCloudAttemptSuccess(uploadSizeBytes: uploadSizeBytes, startedAt: latencyStart)
         logger.info("AudioTranscriber: cloud transcription ok for \(source ?? "audio", privacy: .public) using \(modelName, privacy: .public)")
         return try parseTranscriptResponse(json, fallbackLanguage: language)
+    }
+
+    private func prepareUploadAudioFileIfNeeded(_ sourceURL: URL, source: String?) async -> URL {
+        guard shouldCompressBeforeUpload(source: source, pathExtension: sourceURL.pathExtension) else {
+            return sourceURL
+        }
+
+        do {
+            let compressedURL = try await transcodeAudioForUpload(sourceURL)
+            let sourceSize = fileSize(at: sourceURL)
+            let compressedSize = fileSize(at: compressedURL)
+            logger.info(
+                "AudioTranscriber: compressed microphone upload from \(sourceSize) bytes to \(compressedSize) bytes"
+            )
+            return compressedURL
+        } catch {
+            logger.error(
+                "AudioTranscriber: microphone upload compression failed, falling back to original file: \(error.localizedDescription)"
+            )
+            return sourceURL
+        }
     }
 
     private func parseTranscriptResponse(
@@ -525,42 +701,364 @@ final class AudioTranscriber: @unchecked Sendable {
         }
     }
 
-    private func buildMultipartBody(
+    private func shouldCompressBeforeUpload(source: String?, pathExtension: String) -> Bool {
+        guard source == "microphone" else { return false }
+        switch pathExtension.lowercased() {
+        case "wav", "caf", "aif", "aiff":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func transcodeAudioForUpload(_ sourceURL: URL) async throws -> URL {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("memograph-audio-upload-\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+        let asset = AVURLAsset(url: sourceURL)
+
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            throw AudioError.transcriptionFailed("No compatible export session for audio compression")
+        }
+
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .m4a
+        exportSession.shouldOptimizeForNetworkUse = true
+
+        if #available(macOS 15.0, *) {
+            try await exportSession.export(to: outputURL, as: .m4a)
+        } else {
+            let box = LegacyExportSessionBox(session: exportSession)
+            try await withCheckedThrowingContinuation { continuation in
+                box.session.exportAsynchronously {
+                    switch box.session.status {
+                    case .completed:
+                        continuation.resume(returning: ())
+                    case .failed:
+                        continuation.resume(
+                            throwing: box.session.error
+                                ?? AudioError.transcriptionFailed("Audio compression failed")
+                        )
+                    case .cancelled:
+                        continuation.resume(
+                            throwing: AudioError.transcriptionFailed("Audio compression was cancelled")
+                        )
+                    default:
+                        continuation.resume(
+                            throwing: AudioError.transcriptionFailed("Audio compression ended in unexpected state")
+                        )
+                    }
+                }
+            }
+        }
+
+        return outputURL
+    }
+
+    private func fileSize(at url: URL) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    func currentHealthSnapshot() -> AudioHealthSnapshot {
+        buildHealthSnapshot()
+    }
+
+    func systemAudioThrottleDecision(now: Date = Date()) -> SystemAudioThrottleDecision {
+        let snapshot = buildHealthSnapshot(now: now)
+
+        if snapshot.currentRunningSource == "microphone" || snapshot.pendingMicrophoneJobs > 0 {
+            return SystemAudioThrottleDecision(
+                shouldThrottle: true,
+                reason: "microphone priority",
+                cooldown: 30
+            )
+        }
+
+        if snapshot.pendingJobs + snapshot.runningJobs >= 4 || snapshot.pendingSystemJobs >= 3 {
+            return SystemAudioThrottleDecision(
+                shouldThrottle: true,
+                reason: "audio queue backlog",
+                cooldown: 45
+            )
+        }
+
+        if recentCloudFailureCount(within: 15 * 60, now: now) >= 3 || snapshot.consecutiveCloudFailures >= 2 {
+            return SystemAudioThrottleDecision(
+                shouldThrottle: true,
+                reason: "recent cloud failures",
+                cooldown: 90
+            )
+        }
+
+        return .allow
+    }
+
+    func setSystemAudioThrottled(_ throttled: Bool, reason: String? = nil, cooldown: TimeInterval = 0) {
+        let changed = telemetryQueue.sync { () -> Bool in
+            let normalizedReason = throttled ? reason : nil
+            let nextUntil = throttled ? now().addingTimeInterval(cooldown) : .distantPast
+            let didChange = systemAudioThrottled != throttled
+                || systemAudioThrottleReason != normalizedReason
+                || (throttled && abs(systemAudioThrottleUntil.timeIntervalSince(nextUntil)) > 1)
+
+            systemAudioThrottled = throttled
+            systemAudioThrottleReason = normalizedReason
+            systemAudioThrottleUntil = nextUntil
+            return didChange
+        }
+        guard changed else { return }
+        publishHealthSnapshot()
+    }
+
+    private func setCurrentRunningJob(from payloadJson: String?) {
+        telemetryQueue.sync {
+            guard let payloadJson,
+                  let payloadData = payloadJson.data(using: .utf8),
+                  let payload = try? decoder.decode(QueuedTranscriptionPayload.self, from: payloadData) else {
+                currentRunningSource = nil
+                currentRunningJob = nil
+                return
+            }
+            currentRunningSource = payload.source
+            currentRunningJob = payload.path
+        }
+    }
+
+    private func clearCurrentRunningJob() {
+        telemetryQueue.sync {
+            currentRunningSource = nil
+            currentRunningJob = nil
+        }
+    }
+
+    private func recordCloudAttemptSuccess(uploadSizeBytes: Int64, startedAt: Date) {
+        let latencyMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        telemetryQueue.sync {
+            lastUploadSizeBytes = uploadSizeBytes
+            lastTranscriptionLatencyMs = latencyMs
+            consecutiveCloudFailures = 0
+        }
+        logger.info("AudioTranscriber: upload size \(uploadSizeBytes) bytes, latency \(latencyMs) ms")
+        publishHealthSnapshot()
+    }
+
+    private func recordCloudAttemptFailure(
+        _ error: Error,
+        uploadSizeBytes: Int64,
+        startedAt: Date
+    ) {
+        let latencyMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        telemetryQueue.sync {
+            lastUploadSizeBytes = uploadSizeBytes
+            lastTranscriptionLatencyMs = latencyMs
+            consecutiveCloudFailures += 1
+            lastErrorDescription = error.localizedDescription
+            if Self.isLikelyNetworkFailure(error) {
+                networkFailureCount += 1
+                recentCloudFailureDates.append(now())
+                recentCloudFailureDates = recentCloudFailureDates.filter {
+                    now().timeIntervalSince($0) <= 15 * 60
+                }
+            }
+        }
+        logger.error("AudioTranscriber: cloud failure after \(latencyMs) ms, upload \(uploadSizeBytes) bytes: \(error.localizedDescription)")
+        publishHealthSnapshot()
+    }
+
+    private func recentCloudFailureCount(within window: TimeInterval, now: Date) -> Int {
+        telemetryQueue.sync {
+            recentCloudFailureDates.filter { now.timeIntervalSince($0) <= window }.count
+        }
+    }
+
+    private func publishHealthSnapshot() {
+        let snapshot = buildHealthSnapshot()
+        Task { @MainActor [healthMonitor] in
+            healthMonitor.publish(snapshot)
+        }
+    }
+
+    private func buildHealthSnapshot(now: Date? = nil) -> AudioHealthSnapshot {
+        let referenceDate = now ?? self.now()
+        let rows = (try? db.query("""
+            SELECT status, entity_id, payload_json, retry_count, last_error
+            FROM sync_queue
+            WHERE job_type = ?
+              AND status IN ('pending', 'running', 'failed')
+        """, params: [.text("audio_transcription")])) ?? []
+
+        var pendingJobs = 0
+        var runningJobs = 0
+        var failedJobs = 0
+        var pendingMicrophoneJobs = 0
+        var pendingSystemJobs = 0
+
+        for row in rows {
+            let status = row["status"]?.textValue ?? ""
+            let source = queuedSource(entityID: row["entity_id"]?.textValue, payloadJson: row["payload_json"]?.textValue)
+
+            switch status {
+            case "pending":
+                pendingJobs += 1
+                if source == "microphone" {
+                    pendingMicrophoneJobs += 1
+                } else if source == "system" {
+                    pendingSystemJobs += 1
+                }
+            case "running":
+                runningJobs += 1
+            case "failed":
+                failedJobs += 1
+            default:
+                break
+            }
+        }
+
+        let telemetry = telemetryQueue.sync { () -> (
+            Int64?, Int?, Int, Int, Int, String?, String?, Bool, String?, Date, String?
+        ) in
+            if systemAudioThrottled, referenceDate >= systemAudioThrottleUntil {
+                systemAudioThrottled = false
+                systemAudioThrottleReason = nil
+                systemAudioThrottleUntil = .distantPast
+            }
+
+            return (
+                lastUploadSizeBytes,
+                lastTranscriptionLatencyMs,
+                lastRetryCount,
+                networkFailureCount,
+                consecutiveCloudFailures,
+                currentRunningSource,
+                currentRunningJob,
+                systemAudioThrottled,
+                systemAudioThrottleReason,
+                systemAudioThrottleUntil,
+                lastErrorDescription
+            )
+        }
+
+        return AudioHealthSnapshot(
+            pendingJobs: pendingJobs,
+            runningJobs: runningJobs,
+            failedJobs: failedJobs,
+            pendingMicrophoneJobs: pendingMicrophoneJobs,
+            pendingSystemJobs: pendingSystemJobs,
+            currentRunningSource: telemetry.5,
+            currentRunningJob: telemetry.6,
+            lastUploadSizeBytes: telemetry.0,
+            lastTranscriptionLatencyMs: telemetry.1,
+            lastRetryCount: telemetry.2,
+            networkFailureCount: telemetry.3,
+            consecutiveCloudFailures: telemetry.4,
+            cloudTranscriptionDelayed: pendingJobs > 0 || failedJobs > 0,
+            systemAudioThrottled: telemetry.7,
+            systemAudioThrottleReason: telemetry.8,
+            lastError: telemetry.10,
+            updatedAt: referenceDate
+        )
+    }
+
+    private func queuedSource(entityID: String?, payloadJson: String?) -> String? {
+        if let entityID, entityID.hasPrefix("audio:microphone:") {
+            return "microphone"
+        }
+        if let entityID, entityID.hasPrefix("audio:system:") {
+            return "system"
+        }
+        guard let payloadJson,
+              let payloadData = payloadJson.data(using: .utf8),
+              let payload = try? decoder.decode(QueuedTranscriptionPayload.self, from: payloadData) else {
+            return nil
+        }
+        return payload.source
+    }
+
+    private static func isLikelyNetworkFailure(_ error: Error) -> Bool {
+        if error is URLError {
+            return true
+        }
+
+        if let audioError = error as? AudioError,
+           case .transcriptionFailed(let message) = audioError {
+            return message.hasPrefix("HTTP 5")
+                || message.contains("timed out")
+                || message.contains("network")
+                || message.contains("offline")
+                || message.contains("cannot connect")
+        }
+
+        return false
+    }
+
+    private static func uploadRequest(_ request: URLRequest, fromFile fileURL: URL) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            let task = URLSession.shared.uploadTask(with: request, fromFile: fileURL) { data, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let data, let response else {
+                    continuation.resume(throwing: AudioError.transcriptionFailed("Missing upload response"))
+                    return
+                }
+                continuation.resume(returning: (data, response))
+            }
+            task.resume()
+        }
+    }
+
+    private func buildMultipartBodyFile(
         boundary: String,
-        audioData: Data,
+        audioFileURL: URL,
         fileName: String,
         mimeType: String,
         modelName: String,
         language: String?
-    ) -> Data {
-        var body = Data()
+    ) throws -> URL {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("memograph-audio-upload-\(UUID().uuidString).multipart")
+        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
 
-        func append(_ string: String) {
-            body.append(Data(string.utf8))
+        let writer = try FileHandle(forWritingTo: tempURL)
+        defer { try? writer.close() }
+
+        func append(_ string: String) throws {
+            try writer.write(contentsOf: Data(string.utf8))
         }
 
-        append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
-        append("\(modelName)\r\n")
+        try append("--\(boundary)\r\n")
+        try append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+        try append("\(modelName)\r\n")
 
         if let language, !language.isEmpty {
-            append("--\(boundary)\r\n")
-            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
-            append("\(language)\r\n")
+            try append("--\(boundary)\r\n")
+            try append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            try append("\(language)\r\n")
         }
 
-        append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
-        append("json\r\n")
+        try append("--\(boundary)\r\n")
+        try append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
+        try append("json\r\n")
 
-        append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
-        append("Content-Type: \(mimeType)\r\n\r\n")
-        body.append(audioData)
-        append("\r\n")
-        append("--\(boundary)--\r\n")
+        try append("--\(boundary)\r\n")
+        try append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
+        try append("Content-Type: \(mimeType)\r\n\r\n")
 
-        return body
+        let reader = try FileHandle(forReadingFrom: audioFileURL)
+        defer { try? reader.close() }
+        while true {
+            let chunk = try reader.read(upToCount: 256 * 1024) ?? Data()
+            if chunk.isEmpty {
+                break
+            }
+            try writer.write(contentsOf: chunk)
+        }
+
+        try append("\r\n")
+        try append("--\(boundary)--\r\n")
+        return tempURL
     }
 }
 
@@ -568,13 +1066,24 @@ enum AudioError: Error, LocalizedError {
     case missingAPIKey(String)
     case pythonNotFound(String)
     case scriptNotFound(String)
+    case missingQueuedSegment(String)
     case transcriptionFailed(String)
+
+    var isTerminalQueueFailure: Bool {
+        switch self {
+        case .missingQueuedSegment:
+            return true
+        case .missingAPIKey, .pythonNotFound, .scriptNotFound, .transcriptionFailed:
+            return false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
         case .missingAPIKey(let message): return "Missing API key: \(message)"
         case .pythonNotFound(let p): return "Python runtime not found: \(p)"
         case .scriptNotFound(let p): return "Whisper script not found at \(p)"
+        case .missingQueuedSegment(let path): return "Queued audio segment missing at \(path)"
         case .transcriptionFailed(let m): return "Transcription failed: \(m)"
         }
     }

@@ -41,6 +41,33 @@ struct SettingsPreviewState {
     let audioPythonCommand: String
     let audioModelName: String
     let audioRuntimeStatus: String
+    let advisoryBridgeMode: AdvisoryBridgeMode
+    let advisoryAllowMCPEnrichment: Bool
+    let advisoryEnrichmentPhase: AdvisoryEnrichmentPhase
+    let advisoryCalendarEnrichmentEnabled: Bool
+    let advisoryRemindersEnrichmentEnabled: Bool
+    let advisoryWebResearchEnrichmentEnabled: Bool
+    let advisoryWearableEnrichmentEnabled: Bool
+    let advisoryEnrichmentMaxItemsPerSource: String
+    let advisoryCalendarLookaheadHours: String
+    let advisoryReminderHorizonDays: String
+    let advisoryWebResearchLookbackDays: String
+    let advisoryPreferredLanguage: String
+    let advisoryWritingStyle: String
+    let advisoryTwitterVoiceExamples: String
+    let advisoryPreferredAngles: String
+    let advisoryAvoidTopics: String
+    let advisoryContentPersonaDescription: String
+    let advisoryAllowProvocation: Bool
+    let advisorySidecarAutoStart: Bool
+    let advisorySidecarSocketPath: String
+    let advisorySidecarTimeoutSeconds: String
+    let advisorySidecarHealthCheckIntervalSeconds: String
+    let advisorySidecarMaxConsecutiveFailures: String
+    let advisorySidecarProviderOrder: String
+    let advisorySidecarProviderProbeTimeoutSeconds: String
+    let advisorySidecarRetryAttempts: String
+    let advisorySidecarProviderCooldownSeconds: String
     let systemPrompt: String
     let userPromptSuffix: String
     let screenRecordingGranted: Bool
@@ -87,6 +114,33 @@ struct SettingsPreviewState {
         audioPythonCommand: ".venv/bin/python",
         audioModelName: "mlx-community/whisper-large-v3-turbo",
         audioRuntimeStatus: "Готово (облако: mic gpt-4o-transcribe, system gpt-4o-mini-transcribe)",
+        advisoryBridgeMode: .preferSidecar,
+        advisoryAllowMCPEnrichment: true,
+        advisoryEnrichmentPhase: .phase2ReadOnly,
+        advisoryCalendarEnrichmentEnabled: true,
+        advisoryRemindersEnrichmentEnabled: true,
+        advisoryWebResearchEnrichmentEnabled: true,
+        advisoryWearableEnrichmentEnabled: true,
+        advisoryEnrichmentMaxItemsPerSource: "3",
+        advisoryCalendarLookaheadHours: "18",
+        advisoryReminderHorizonDays: "7",
+        advisoryWebResearchLookbackDays: "3",
+        advisoryPreferredLanguage: "ru",
+        advisoryWritingStyle: "concise_reflective",
+        advisoryTwitterVoiceExamples: "Short grounded post\nBuilder note with one sharp line",
+        advisoryPreferredAngles: "observation\nquestion\nlesson_learned\nmini_framework",
+        advisoryAvoidTopics: "hot takes for the sake of it",
+        advisoryContentPersonaDescription: "Grounded builder voice. Specific, observant, compact, and evidence-led.",
+        advisoryAllowProvocation: false,
+        advisorySidecarAutoStart: true,
+        advisorySidecarSocketPath: "~/Library/Application Support/MyMacAgent/advisory/memograph-advisor.sock",
+        advisorySidecarTimeoutSeconds: "20",
+        advisorySidecarHealthCheckIntervalSeconds: "30",
+        advisorySidecarMaxConsecutiveFailures: "3",
+        advisorySidecarProviderOrder: "claude\ngemini\ncodex",
+        advisorySidecarProviderProbeTimeoutSeconds: "6",
+        advisorySidecarRetryAttempts: "2",
+        advisorySidecarProviderCooldownSeconds: "60",
         systemPrompt: AppSettings.defaultSystemPrompt,
         userPromptSuffix: AppSettings.defaultUserPromptSuffix,
         screenRecordingGranted: true,
@@ -97,11 +151,20 @@ struct SettingsPreviewState {
 
 struct SettingsView: View {
     @StateObject private var permissionsManager = PermissionsManager()
+    @ObservedObject private var audioHealthMonitor = AudioHealthMonitor.shared
+    @ObservedObject private var advisoryHealthMonitor = AdvisoryHealthMonitor.shared
     private let previewState: SettingsPreviewState?
 
     @State private var selectedTab = 0
     @State private var saved = false
     @State private var showDeleteDataAlert = false
+    @State private var advisoryAccountsSnapshot = AdvisoryProviderAccountsSnapshot.empty
+    @State private var advisoryAccountsBusyKey = ""
+    @State private var advisoryAccountGlobalFeedback = ""
+    @State private var advisoryAccountLabelDrafts: [String: String] = [:]
+    @State private var advisoryAccountActionFeedback: [String: String] = [:]
+    @State private var advisoryCLIProfilesPath = ""
+    @State private var advisoryProviderProfiles: [String: [AdvisoryCLIAccountProfile]] = [:]
 
     @State private var operatingMode: AppOperatingMode = .localOnly
     @State private var externalProviderName = ""
@@ -147,6 +210,33 @@ struct SettingsView: View {
     @State private var audioPythonCommand = ""
     @State private var audioModelName = ""
     @State private var audioRuntimeStatus = ""
+    @State private var advisoryBridgeMode: AdvisoryBridgeMode = .preferSidecar
+    @State private var advisoryAllowMCPEnrichment = false
+    @State private var advisoryEnrichmentPhase: AdvisoryEnrichmentPhase = .phase1Memograph
+    @State private var advisoryCalendarEnrichmentEnabled = true
+    @State private var advisoryRemindersEnrichmentEnabled = true
+    @State private var advisoryWebResearchEnrichmentEnabled = true
+    @State private var advisoryWearableEnrichmentEnabled = true
+    @State private var advisoryEnrichmentMaxItemsPerSource = ""
+    @State private var advisoryCalendarLookaheadHours = ""
+    @State private var advisoryReminderHorizonDays = ""
+    @State private var advisoryWebResearchLookbackDays = ""
+    @State private var advisoryPreferredLanguage = ""
+    @State private var advisoryWritingStyle = ""
+    @State private var advisoryTwitterVoiceExamples = ""
+    @State private var advisoryPreferredAngles = ""
+    @State private var advisoryAvoidTopics = ""
+    @State private var advisoryContentPersonaDescription = ""
+    @State private var advisoryAllowProvocation = false
+    @State private var advisorySidecarAutoStart = true
+    @State private var advisorySidecarSocketPath = ""
+    @State private var advisorySidecarTimeoutSeconds = ""
+    @State private var advisorySidecarHealthCheckIntervalSeconds = ""
+    @State private var advisorySidecarMaxConsecutiveFailures = ""
+    @State private var advisorySidecarProviderOrder = ""
+    @State private var advisorySidecarProviderProbeTimeoutSeconds = ""
+    @State private var advisorySidecarRetryAttempts = ""
+    @State private var advisorySidecarProviderCooldownSeconds = ""
 
     @State private var systemPrompt = ""
     @State private var userPromptSuffix = ""
@@ -165,6 +255,10 @@ struct SettingsView: View {
             providersTab
                 .tabItem { Label("Providers", systemImage: "network") }
                 .tag(1)
+
+            accountsTab
+                .tabItem { Label("Accounts", systemImage: "person.crop.circle") }
+                .tag(6)
 
             captureTab
                 .tabItem { Label("Capture", systemImage: "camera") }
@@ -185,12 +279,15 @@ struct SettingsView: View {
         .padding(20)
         .frame(minWidth: 700, minHeight: 680)
         .onAppear {
+            advisoryHealthMonitor.startIfNeeded()
+            advisoryHealthMonitor.refresh()
             if let previewState {
                 applyPreviewState(previewState)
             } else {
                 loadSettings()
                 permissionsManager.checkAll()
             }
+            refreshAdvisoryProviderProfiles()
         }
         .alert("Delete all local data?", isPresented: $showDeleteDataAlert) {
             Button("Delete", role: .destructive) { deleteAllData() }
@@ -362,7 +459,275 @@ struct SettingsView: View {
                 }
             }
 
+            settingsCard("Advisory Sidecar", subtitle: "Advisory recipes run through external sidecar execution. Memograph core continues working even when the sidecar is degraded.") {
+                settingRow("Bridge mode") {
+                    Picker("Advisory bridge mode", selection: $advisoryBridgeMode) {
+                        ForEach(AdvisoryBridgeMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+
+                toggleRow("Read-only external enrichment", help: "Allows advisory to read staged calendar, reminders, and browser-derived research context when available.", isOn: $advisoryAllowMCPEnrichment)
+
+                settingRow("Enrichment phase", help: "Phase 1 keeps advisory on Memograph-derived notes only. Phase 2 and 3 prepare staged external enrichers.") {
+                    Picker("Advisory enrichment phase", selection: $advisoryEnrichmentPhase) {
+                        ForEach(AdvisoryEnrichmentPhase.allCases) { phase in
+                            Text(enrichmentPhaseLabel(phase)).tag(phase)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("External enrichment sources")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(AdvisoryEnrichmentSource.allCases.filter { $0 != .notes }) { source in
+                        toggleRow(
+                            source.label,
+                            help: "\(source.rolloutDescription) Starts in \(source.minimumPhase.label).",
+                            isOn: enrichmentSourceBinding(for: source)
+                        )
+                    }
+                }
+
+                settingRow("Items per source", help: "Upper bound for embedded enrichment fragments from each source.") {
+                    inlineNumberField("3", text: $advisoryEnrichmentMaxItemsPerSource)
+                }
+
+                settingRow("Calendar lookahead", help: "How far ahead advisory may look in local calendar context.") {
+                    inlineNumberField("18", text: $advisoryCalendarLookaheadHours, suffix: "hours")
+                }
+
+                settingRow("Reminder horizon", help: "How far ahead advisory may look for active reminders.") {
+                    inlineNumberField("7", text: $advisoryReminderHorizonDays, suffix: "days")
+                }
+
+                settingRow("Web lookback", help: "How many days of browser context can seed staged web enrichment.") {
+                    inlineNumberField("3", text: $advisoryWebResearchLookbackDays, suffix: "days")
+                }
+
+                toggleRow("Auto-start sidecar", help: "Memograph may try to launch memograph-advisor when the socket is missing.", isOn: $advisorySidecarAutoStart)
+
+                settingRow("Socket path") {
+                    TextField("/path/to/memograph-advisor.sock", text: $advisorySidecarSocketPath)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                settingRow("Request timeout") {
+                    inlineNumberField("20", text: $advisorySidecarTimeoutSeconds, suffix: "sec")
+                }
+
+                settingRow("Health check") {
+                    inlineNumberField("30", text: $advisorySidecarHealthCheckIntervalSeconds, suffix: "sec")
+                }
+
+                settingRow("Failure budget") {
+                    inlineNumberField("3", text: $advisorySidecarMaxConsecutiveFailures)
+                }
+
+                settingRow("Provider probe timeout") {
+                    inlineNumberField("6", text: $advisorySidecarProviderProbeTimeoutSeconds, suffix: "sec")
+                }
+
+                settingRow("Recipe retries", help: "How many primary sidecar attempts Memograph will allow before falling back or surfacing failure.") {
+                    inlineNumberField("2", text: $advisorySidecarRetryAttempts)
+                }
+
+                settingRow("Provider cooldown", help: "How long a provider stays out of rotation after transient sidecar/provider failures.") {
+                    inlineNumberField("60", text: $advisorySidecarProviderCooldownSeconds, suffix: "sec")
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Provider order")
+                        .font(.subheadline.weight(.semibold))
+                    listEditor(text: $advisorySidecarProviderOrder)
+                        .frame(minHeight: 90)
+                    Text("One provider per line. This controls sidecar probe/routing preference for Claude, Gemini, Codex.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                settingRow("Runtime status") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(advisoryHealthMonitor.snapshot.statusTitle)
+                            .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
+                        ForEach(advisoryHealthMonitor.snapshot.statusLines.prefix(4), id: \.self) { line in
+                            Text(line)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if !advisoryHealthMonitor.snapshot.runtimeSnapshot.bridgeHealth.providerStatuses.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Provider diagnostics")
+                            .font(.subheadline.weight(.semibold))
+                        AdvisoryProviderDiagnosticsView(
+                            providerStatuses: advisoryHealthMonitor.snapshot.runtimeSnapshot.bridgeHealth.providerStatuses,
+                            activeProviderName: advisoryHealthMonitor.snapshot.runtimeSnapshot.bridgeHealth.activeProviderName,
+                            checkedAt: advisoryHealthMonitor.snapshot.runtimeSnapshot.bridgeHealth.checkedAt
+                        )
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Button("Refresh status") {
+                        advisoryHealthMonitor.refresh()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Restart sidecar") {
+                        advisoryHealthMonitor.restartSidecar()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Stop sidecar") {
+                        advisoryHealthMonitor.stopSidecar()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+
+            settingsCard("Writing Persona", subtitle: "Tweet and note seeds stay grounded in your own style instead of sounding like generic AI copy.") {
+                settingRow("Language", help: "Default language for advisory artifacts. Canonical product and model names stay in English.") {
+                    TextField("ru", text: $advisoryPreferredLanguage)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                settingRow("Writing style", help: "High-level bias for writing seeds and social nudges.") {
+                    TextField("concise_reflective", text: $advisoryWritingStyle)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                toggleRow("Allow provocation", help: "Keeps sharper takes available for writing seeds when explicitly wanted.", isOn: $advisoryAllowProvocation)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Persona description")
+                        .font(.subheadline.weight(.semibold))
+                    TextEditor(text: $advisoryContentPersonaDescription)
+                        .frame(minHeight: 90)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.gray.opacity(0.2))
+                        )
+                    Text("Опиши voice коротко: grounded, compact, non-performative, evidence-led.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Preferred angles")
+                        .font(.subheadline.weight(.semibold))
+                    listEditor(text: $advisoryPreferredAngles)
+                    Text("One per line: observation, contrarian_take, question, mini_framework, lesson_learned, provocation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Voice examples")
+                        .font(.subheadline.weight(.semibold))
+                    listEditor(text: $advisoryTwitterVoiceExamples)
+                    Text("Short examples of writing you want seeds to echo.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Avoid topics")
+                        .font(.subheadline.weight(.semibold))
+                    listEditor(text: $advisoryAvoidTopics)
+                    Text("Topics or postures advisory should actively avoid in writing suggestions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             saveButton
+        }
+    }
+
+    private var accountsTab: some View {
+        settingsScroll {
+            settingsCard(
+                "Accounts & Sessions",
+                subtitle: "Control plane for advisory CLI providers. Profiles are stored in the same isolated account tree used by multi-agent."
+            ) {
+                let runtimeSnapshot = advisoryHealthMonitor.snapshot.runtimeSnapshot
+
+                settingRow("Profiles dir", help: "Shared CLI profile store reused from multi-agent.") {
+                    HStack(spacing: 8) {
+                        TextField("~/.cli-profiles", text: $advisoryCLIProfilesPath)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Open") {
+                            openFolder(path: advisoryCLIProfilesPath)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(advisoryHealthMonitor.snapshot.statusTitle)
+                        .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
+                    ForEach(advisoryHealthMonitor.snapshot.statusLines.prefix(4), id: \.self) { line in
+                        Text(line)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Button("Run full auth check") {
+                        advisoryHealthMonitor.refresh(forceRefresh: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Restart sidecar") {
+                        advisoryHealthMonitor.restartSidecar()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Stop sidecar") {
+                        advisoryHealthMonitor.stopSidecar()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button("Reload profiles") {
+                        refreshAdvisoryProviderProfiles()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                if runtimeSnapshot.bridgeHealth.providerStatuses.isEmpty {
+                    Text("Provider sessions are not available yet. Switch advisory bridge mode away from stub-only and run an auth check.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(runtimeSnapshot.bridgeHealth.providerStatuses.sorted { $0.priority < $1.priority }) { diagnostic in
+                            providerSessionCard(
+                                diagnostic,
+                                activeProviderName: runtimeSnapshot.bridgeHealth.activeProviderName,
+                                checkedAt: diagnostic.lastCheckedAt ?? runtimeSnapshot.bridgeHealth.checkedAt
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -512,6 +877,15 @@ struct SettingsView: View {
                 }
             }
 
+            settingsCard("Runtime Health", subtitle: "Очередь, задержки и throttling помогают быстро понять, почему аудио сейчас отстаёт.") {
+                ForEach(audioHealthMonitor.snapshot.statusLines, id: \.self) { line in
+                    Text(line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
             settingsCard("How It Works") {
                 Text(audioTranscriptionProvider == .openAI
                      ? "Микрофон уходит в более качественную модель, а системный звук можно отправлять в более дешёвую. Это снимает нагрузку с твоего Mac, но требует сетевого API-ключа."
@@ -628,6 +1002,34 @@ struct SettingsView: View {
         audioPythonCommand = settings.audioPythonCommand
         audioModelName = settings.audioModelName
         audioRuntimeStatus = AudioRuntimeResolver.resolve(settings: settings).description
+        advisoryBridgeMode = settings.advisoryBridgeMode
+        advisoryAllowMCPEnrichment = settings.advisoryAllowMCPEnrichment
+        advisoryEnrichmentPhase = settings.advisoryEnrichmentPhase
+        advisoryCalendarEnrichmentEnabled = settings.advisoryCalendarEnrichmentEnabled
+        advisoryRemindersEnrichmentEnabled = settings.advisoryRemindersEnrichmentEnabled
+        advisoryWebResearchEnrichmentEnabled = settings.advisoryWebResearchEnrichmentEnabled
+        advisoryWearableEnrichmentEnabled = settings.advisoryWearableEnrichmentEnabled
+        advisoryEnrichmentMaxItemsPerSource = String(settings.advisoryEnrichmentMaxItemsPerSource)
+        advisoryCalendarLookaheadHours = String(settings.advisoryCalendarLookaheadHours)
+        advisoryReminderHorizonDays = String(settings.advisoryReminderHorizonDays)
+        advisoryWebResearchLookbackDays = String(settings.advisoryWebResearchLookbackDays)
+        advisoryPreferredLanguage = settings.advisoryPreferredLanguage
+        advisoryWritingStyle = settings.advisoryWritingStyle
+        advisoryTwitterVoiceExamples = settings.advisoryTwitterVoiceExamples.joined(separator: "\n")
+        advisoryPreferredAngles = settings.advisoryPreferredAngles.joined(separator: "\n")
+        advisoryAvoidTopics = settings.advisoryAvoidTopics.joined(separator: "\n")
+        advisoryContentPersonaDescription = settings.advisoryContentPersonaDescription
+        advisoryAllowProvocation = settings.advisoryAllowProvocation
+        advisorySidecarAutoStart = settings.advisorySidecarAutoStart
+        advisorySidecarSocketPath = settings.advisorySidecarSocketPath
+        advisorySidecarTimeoutSeconds = String(settings.advisorySidecarTimeoutSeconds)
+        advisorySidecarHealthCheckIntervalSeconds = String(settings.advisorySidecarHealthCheckIntervalSeconds)
+        advisorySidecarMaxConsecutiveFailures = String(settings.advisorySidecarMaxConsecutiveFailures)
+        advisorySidecarProviderOrder = settings.advisorySidecarProviderOrder.joined(separator: "\n")
+        advisorySidecarProviderProbeTimeoutSeconds = String(settings.advisorySidecarProviderProbeTimeoutSeconds)
+        advisorySidecarRetryAttempts = String(settings.advisorySidecarRetryAttempts)
+        advisorySidecarProviderCooldownSeconds = String(settings.advisorySidecarProviderCooldownSeconds)
+        advisoryCLIProfilesPath = settings.advisoryCLIProfilesPath
 
         systemPrompt = settings.systemPrompt
         userPromptSuffix = settings.userPromptSuffix
@@ -675,6 +1077,34 @@ struct SettingsView: View {
         audioPythonCommand = preview.audioPythonCommand
         audioModelName = preview.audioModelName
         audioRuntimeStatus = preview.audioRuntimeStatus
+        advisoryBridgeMode = preview.advisoryBridgeMode
+        advisoryAllowMCPEnrichment = preview.advisoryAllowMCPEnrichment
+        advisoryEnrichmentPhase = preview.advisoryEnrichmentPhase
+        advisoryCalendarEnrichmentEnabled = preview.advisoryCalendarEnrichmentEnabled
+        advisoryRemindersEnrichmentEnabled = preview.advisoryRemindersEnrichmentEnabled
+        advisoryWebResearchEnrichmentEnabled = preview.advisoryWebResearchEnrichmentEnabled
+        advisoryWearableEnrichmentEnabled = preview.advisoryWearableEnrichmentEnabled
+        advisoryEnrichmentMaxItemsPerSource = preview.advisoryEnrichmentMaxItemsPerSource
+        advisoryCalendarLookaheadHours = preview.advisoryCalendarLookaheadHours
+        advisoryReminderHorizonDays = preview.advisoryReminderHorizonDays
+        advisoryWebResearchLookbackDays = preview.advisoryWebResearchLookbackDays
+        advisoryPreferredLanguage = preview.advisoryPreferredLanguage
+        advisoryWritingStyle = preview.advisoryWritingStyle
+        advisoryTwitterVoiceExamples = preview.advisoryTwitterVoiceExamples
+        advisoryPreferredAngles = preview.advisoryPreferredAngles
+        advisoryAvoidTopics = preview.advisoryAvoidTopics
+        advisoryContentPersonaDescription = preview.advisoryContentPersonaDescription
+        advisoryAllowProvocation = preview.advisoryAllowProvocation
+        advisorySidecarAutoStart = preview.advisorySidecarAutoStart
+        advisorySidecarSocketPath = preview.advisorySidecarSocketPath
+        advisorySidecarTimeoutSeconds = preview.advisorySidecarTimeoutSeconds
+        advisorySidecarHealthCheckIntervalSeconds = preview.advisorySidecarHealthCheckIntervalSeconds
+        advisorySidecarMaxConsecutiveFailures = preview.advisorySidecarMaxConsecutiveFailures
+        advisorySidecarProviderOrder = preview.advisorySidecarProviderOrder
+        advisorySidecarProviderProbeTimeoutSeconds = preview.advisorySidecarProviderProbeTimeoutSeconds
+        advisorySidecarRetryAttempts = preview.advisorySidecarRetryAttempts
+        advisorySidecarProviderCooldownSeconds = preview.advisorySidecarProviderCooldownSeconds
+        advisoryCLIProfilesPath = AdvisoryCLIProfilesStore.defaultProfilesPath
         systemPrompt = preview.systemPrompt
         userPromptSuffix = preview.userPromptSuffix
         permissionsManager.setPreviewStatus(
@@ -730,17 +1160,496 @@ struct SettingsView: View {
         settings.audioSystemModel = audioSystemModel
         settings.audioPythonCommand = audioPythonCommand
         settings.audioModelName = audioModelName
+        settings.advisoryBridgeMode = advisoryBridgeMode
+        settings.advisoryAllowMCPEnrichment = advisoryAllowMCPEnrichment
+        settings.advisoryEnrichmentPhase = advisoryEnrichmentPhase
+        settings.advisoryCalendarEnrichmentEnabled = advisoryCalendarEnrichmentEnabled
+        settings.advisoryRemindersEnrichmentEnabled = advisoryRemindersEnrichmentEnabled
+        settings.advisoryWebResearchEnrichmentEnabled = advisoryWebResearchEnrichmentEnabled
+        settings.advisoryWearableEnrichmentEnabled = advisoryWearableEnrichmentEnabled
+        settings.advisoryEnrichmentMaxItemsPerSource = Int(advisoryEnrichmentMaxItemsPerSource) ?? 3
+        settings.advisoryCalendarLookaheadHours = Int(advisoryCalendarLookaheadHours) ?? 18
+        settings.advisoryReminderHorizonDays = Int(advisoryReminderHorizonDays) ?? 7
+        settings.advisoryWebResearchLookbackDays = Int(advisoryWebResearchLookbackDays) ?? 3
+        settings.advisoryPreferredLanguage = advisoryPreferredLanguage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "ru"
+            : advisoryPreferredLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.advisoryWritingStyle = advisoryWritingStyle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "concise_reflective"
+            : advisoryWritingStyle.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.advisoryTwitterVoiceExamples = splitLines(advisoryTwitterVoiceExamples)
+        settings.advisoryPreferredAngles = splitLines(advisoryPreferredAngles)
+        settings.advisoryAvoidTopics = splitLines(advisoryAvoidTopics)
+        settings.advisoryContentPersonaDescription = advisoryContentPersonaDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Grounded builder voice. Specific, observant, compact, and evidence-led."
+            : advisoryContentPersonaDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.advisoryAllowProvocation = advisoryAllowProvocation
+        settings.advisorySidecarAutoStart = advisorySidecarAutoStart
+        settings.advisorySidecarSocketPath = advisorySidecarSocketPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.advisorySidecarTimeoutSeconds = Int(advisorySidecarTimeoutSeconds) ?? 20
+        settings.advisorySidecarHealthCheckIntervalSeconds = Int(advisorySidecarHealthCheckIntervalSeconds) ?? 30
+        settings.advisorySidecarMaxConsecutiveFailures = Int(advisorySidecarMaxConsecutiveFailures) ?? 3
+        settings.advisorySidecarProviderOrder = splitLines(advisorySidecarProviderOrder)
+        settings.advisorySidecarProviderProbeTimeoutSeconds = Int(advisorySidecarProviderProbeTimeoutSeconds) ?? 6
+        settings.advisorySidecarRetryAttempts = Int(advisorySidecarRetryAttempts) ?? 2
+        settings.advisorySidecarProviderCooldownSeconds = Int(advisorySidecarProviderCooldownSeconds) ?? 60
+        settings.advisoryCLIProfilesPath = advisoryCLIProfilesPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? AdvisoryCLIProfilesStore.defaultProfilesPath
+            : advisoryCLIProfilesPath.trimmingCharacters(in: .whitespacesAndNewlines)
 
         settings.systemPrompt = systemPrompt
         settings.userPromptSuffix = userPromptSuffix
 
         audioRuntimeStatus = AudioRuntimeResolver.resolve(settings: settings).description
+        advisoryHealthMonitor.refresh()
+        refreshAdvisoryProviderProfiles()
         NotificationCenter.default.post(name: .settingsDidChange, object: nil)
 
         saved = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             saved = false
         }
+    }
+
+    private func enrichmentPhaseLabel(_ phase: AdvisoryEnrichmentPhase) -> String {
+        switch phase {
+        case .phase1Memograph:
+            return "Phase 1: Memograph"
+        case .phase2ReadOnly:
+            return "Phase 2: Read-only"
+        case .phase3Expanded:
+            return "Phase 3: Expanded"
+        }
+    }
+
+    private func enrichmentSourceBinding(
+        for source: AdvisoryEnrichmentSource
+    ) -> Binding<Bool> {
+        switch source {
+        case .notes:
+            return .constant(true)
+        case .calendar:
+            return $advisoryCalendarEnrichmentEnabled
+        case .reminders:
+            return $advisoryRemindersEnrichmentEnabled
+        case .webResearch:
+            return $advisoryWebResearchEnrichmentEnabled
+        case .wearable:
+            return $advisoryWearableEnrichmentEnabled
+        }
+    }
+
+    private func providerSessionCard(
+        _ diagnostic: AdvisoryProviderDiagnostic,
+        activeProviderName: String?,
+        checkedAt: String?
+    ) -> some View {
+        let profiles = advisoryProviderProfiles[diagnostic.providerName.lowercased()] ?? []
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(diagnostic.displayName)
+                            .font(.headline)
+                        if activeProviderName == diagnostic.providerName {
+                            Text("Selected")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.green.opacity(0.14)))
+                        }
+                    }
+                    Text(providerIdentityLine(for: diagnostic))
+                        .font(.subheadline.weight(.medium))
+                    if let accountDetail = diagnostic.accountDetail, !accountDetail.isEmpty {
+                        Text(accountDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Text(diagnostic.statusLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(providerStatusColor(for: diagnostic))
+            }
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(minimum: 120), spacing: 12, alignment: .leading),
+                    GridItem(.flexible(minimum: 120), spacing: 12, alignment: .leading)
+                ],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                providerMetric("Health", value: diagnostic.statusLabel)
+                providerMetric("Last probe", value: checkedAt ?? "Not checked yet")
+                providerMetric("Binary", value: diagnostic.binaryPresent ? "Present" : "Missing")
+                providerMetric("Session", value: diagnostic.sessionDetected ? "Detected" : "Missing")
+                providerMetric(
+                    "Cooldown",
+                    value: diagnostic.cooldownRemainingSeconds.map { "\($0)s" } ?? "None"
+                )
+                providerMetric(
+                    "Runnable",
+                    value: diagnostic.runnable == true ? "Yes" : "No"
+                )
+                providerMetric(
+                    "Failures",
+                    value: diagnostic.failureCount.map(String.init) ?? "0"
+                )
+                providerMetric(
+                    "Config dir",
+                    value: diagnostic.configDirectory ?? "Unknown"
+                )
+            }
+
+            if let selectedProfile = profiles.first(where: { $0.isSelected }) {
+                providerMetric("Selected account", value: "\(selectedProfile.accountName) · \(selectedProfile.displayName)")
+            }
+
+            if let detail = diagnostic.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 130), spacing: 8)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                Button("Run auth check") {
+                    handleProviderSessionAction(.runAuthCheck, diagnostic: diagnostic)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                if diagnostic.supports(.openConfigDir) {
+                    Button("Open config dir") {
+                        handleProviderSessionAction(.openConfigDir, diagnostic: diagnostic)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                Button("Import current session") {
+                    handleImportProviderSession(diagnostic.providerName)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Add account") {
+                    handleAddProviderAccount(diagnostic.providerName)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                let primaryAction = AdvisoryProviderSessionControl.preferredInteractiveAction(for: diagnostic)
+
+                if let primaryAction {
+                    Button(primaryAction.label) {
+                        handleProviderSessionAction(primaryAction, diagnostic: diagnostic)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+
+                if diagnostic.supports(.logout) {
+                    Button("Logout") {
+                        handleProviderSessionAction(.logout, diagnostic: diagnostic)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                if diagnostic.supports(.openCLI), primaryAction != .openCLI {
+                    Button("Open CLI") {
+                        handleProviderSessionAction(.openCLI, diagnostic: diagnostic)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+
+            if profiles.isEmpty {
+                Text("No isolated accounts yet. Import your current CLI session or add a fresh account profile for \(diagnostic.displayName).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Saved accounts")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(profiles) { profile in
+                        providerAccountRow(profile)
+                    }
+                }
+            }
+
+            if let feedback = advisoryAccountActionFeedback[diagnostic.providerName], !feedback.isEmpty {
+                Text(feedback)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.primary.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func providerAccountRow(_ profile: AdvisoryCLIAccountProfile) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text(profile.accountName)
+                            .font(.caption.weight(.semibold))
+                        if profile.isSelected {
+                            Text("In use")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+                        }
+                    }
+                    Text(profile.displayName)
+                        .font(.caption)
+                    if !profile.identityHint.isEmpty, profile.identityHint != profile.displayName {
+                        Text(profile.identityHint)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Text(profile.sessionDetected ? "session detected" : "session missing")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(profile.sessionDetected ? .green : .orange)
+            }
+
+            HStack(spacing: 8) {
+                if profile.isSelected {
+                    Button("Selected") {}
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(true)
+                } else {
+                    Button("Use this account") {
+                        handleSwitchProviderAccount(profile)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+
+                Button("Re-login") {
+                    handleReauthorizeProviderAccount(profile)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Open folder") {
+                    openFolder(path: profile.path)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.025))
+        )
+    }
+
+    private func providerMetric(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func providerIdentityLine(for diagnostic: AdvisoryProviderDiagnostic) -> String {
+        if let identity = diagnostic.accountIdentity, !identity.isEmpty {
+            return identity
+        }
+        if diagnostic.sessionDetected {
+            return "Session detected, but account identity is not exposed by the CLI."
+        }
+        return "No active session detected."
+    }
+
+    private func providerStatusColor(for diagnostic: AdvisoryProviderDiagnostic) -> Color {
+        switch diagnostic.status {
+        case "ok":
+            return .green
+        case "session_expired", "session_missing", "cooldown":
+            return .orange
+        case "timeout":
+            return .yellow
+        default:
+            return .secondary
+        }
+    }
+
+    private func handleProviderSessionAction(
+        _ action: AdvisoryProviderSessionAction,
+        diagnostic: AdvisoryProviderDiagnostic
+    ) {
+        guard let plan = AdvisoryProviderSessionControl.plan(for: diagnostic, action: action) else {
+            advisoryAccountActionFeedback[diagnostic.providerName] = "This action is not supported by the current \(diagnostic.displayName) CLI."
+            return
+        }
+
+        switch plan.kind {
+        case .refreshOnly:
+            advisoryAccountActionFeedback[diagnostic.providerName] = plan.guidance
+            advisoryHealthMonitor.refresh(forceRefresh: true)
+        case .openDirectory:
+            do {
+                try AdvisoryProviderSessionControl.launch(plan)
+                advisoryAccountActionFeedback[diagnostic.providerName] = plan.guidance
+            } catch {
+                advisoryAccountActionFeedback[diagnostic.providerName] = error.localizedDescription
+            }
+        case .terminalCommand:
+            do {
+                try AdvisoryProviderSessionControl.launch(plan)
+                advisoryAccountActionFeedback[diagnostic.providerName] = plan.guidance
+                scheduleAdvisoryHealthRefresh()
+            } catch {
+                advisoryAccountActionFeedback[diagnostic.providerName] = error.localizedDescription
+            }
+        }
+    }
+
+    private func scheduleAdvisoryHealthRefresh() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            advisoryHealthMonitor.refresh(forceRefresh: true)
+        }
+    }
+
+    private func refreshAdvisoryProviderProfiles() {
+        advisoryCLIProfilesPath = normalizedProfilesPath()
+        advisoryProviderProfiles = AdvisoryCLIProfilesStore.discoverProfiles(
+            profilesPath: advisoryCLIProfilesPath,
+            selectedAccounts: AdvisoryCLIProfilesStore.selectedAccounts()
+        )
+    }
+
+    private func handleImportProviderSession(_ providerName: String) {
+        do {
+            persistProfilesPath()
+            let imported = try AdvisoryCLIProfilesStore.importCurrentSession(
+                provider: providerName,
+                profilesPath: advisoryCLIProfilesPath
+            )
+            persistSelectedAccount(imported.accountName, providerName: providerName)
+            refreshAdvisoryProviderProfiles()
+            advisoryAccountActionFeedback[providerName] = "Imported current \(providerName.capitalized) session as \(imported.accountName)."
+            advisoryHealthMonitor.restartSidecar()
+            scheduleAdvisoryHealthRefresh()
+        } catch {
+            advisoryAccountActionFeedback[providerName] = error.localizedDescription
+        }
+    }
+
+    private func handleAddProviderAccount(_ providerName: String) {
+        do {
+            persistProfilesPath()
+            let profile = try AdvisoryCLIProfilesStore.createNextProfile(
+                provider: providerName,
+                profilesPath: advisoryCLIProfilesPath
+            )
+            persistSelectedAccount(profile.accountName, providerName: providerName)
+            guard let command = AdvisoryProviderSessionControl.command(forProvider: providerName, action: providerName == "gemini" ? .openCLI : .login) else {
+                advisoryAccountActionFeedback[providerName] = "No interactive login command is available for \(providerName.capitalized)."
+                return
+            }
+            try AdvisoryProviderSessionControl.launchCommandInTerminal(
+                command: command,
+                environment: AdvisoryCLIProfilesStore.loginEnvironment(
+                    provider: providerName,
+                    profilePath: profile.path
+                )
+            )
+            refreshAdvisoryProviderProfiles()
+            advisoryAccountActionFeedback[providerName] = "Opened isolated login flow for \(providerName.capitalized) \(profile.accountName). Finish auth in Terminal, then run auth check."
+            scheduleAdvisoryHealthRefresh()
+        } catch {
+            advisoryAccountActionFeedback[providerName] = error.localizedDescription
+        }
+    }
+
+    private func handleSwitchProviderAccount(_ profile: AdvisoryCLIAccountProfile) {
+        persistProfilesPath()
+        persistSelectedAccount(profile.accountName, providerName: profile.providerName)
+        refreshAdvisoryProviderProfiles()
+        advisoryAccountActionFeedback[profile.providerName] = "Switched \(profile.providerName.capitalized) to \(profile.accountName)."
+        advisoryHealthMonitor.restartSidecar()
+        scheduleAdvisoryHealthRefresh()
+    }
+
+    private func handleReauthorizeProviderAccount(_ profile: AdvisoryCLIAccountProfile) {
+        do {
+            let action: AdvisoryProviderSessionAction = profile.providerName == "gemini" ? .openCLI : .relogin
+            guard let command = AdvisoryProviderSessionControl.command(forProvider: profile.providerName, action: action) else {
+                advisoryAccountActionFeedback[profile.providerName] = "No re-login flow is available for \(profile.providerName.capitalized)."
+                return
+            }
+            try AdvisoryProviderSessionControl.launchCommandInTerminal(
+                command: command,
+                environment: AdvisoryCLIProfilesStore.loginEnvironment(
+                    provider: profile.providerName,
+                    profilePath: profile.path
+                )
+            )
+            advisoryAccountActionFeedback[profile.providerName] = "Opened re-login flow for \(profile.providerName.capitalized) \(profile.accountName)."
+            scheduleAdvisoryHealthRefresh()
+        } catch {
+            advisoryAccountActionFeedback[profile.providerName] = error.localizedDescription
+        }
+    }
+
+    private func persistSelectedAccount(_ accountName: String, providerName: String) {
+        var settings = AppSettings()
+        switch providerName.lowercased() {
+        case "claude":
+            settings.advisorySelectedClaudeAccount = accountName
+        case "gemini":
+            settings.advisorySelectedGeminiAccount = accountName
+        case "codex":
+            settings.advisorySelectedCodexAccount = accountName
+        default:
+            break
+        }
+    }
+
+    private func persistProfilesPath() {
+        let normalized = normalizedProfilesPath()
+        advisoryCLIProfilesPath = normalized
+        var settings = AppSettings()
+        settings.advisoryCLIProfilesPath = normalized
+    }
+
+    private func normalizedProfilesPath() -> String {
+        let trimmed = advisoryCLIProfilesPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? AdvisoryCLIProfilesStore.defaultProfilesPath : trimmed
     }
 
     private func browseFolder(binding: Binding<String>) {
@@ -756,7 +1665,7 @@ struct SettingsView: View {
 
     private func openFolder(path: String) {
         let url = URL(fileURLWithPath: path, isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: nil)
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 

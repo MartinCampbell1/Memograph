@@ -214,6 +214,105 @@ final class ObsidianExporter {
         return filePath
     }
 
+    func renderAdvisoryThread(_ detail: AdvisoryThreadDetailSnapshot) -> String {
+        var md = "# Нить — \(detail.thread.displayTitle)\n\n"
+        md += "_Тип: \(threadKindLabel(detail.thread.kind)) · Статус: \(threadStatusLabel(detail.thread.status))"
+        if detail.thread.userPinned {
+            md += " · pinned"
+        }
+        md += "_\n\n"
+
+        if detail.thread.displayTitle != detail.thread.title {
+            md += "- Canonical title: \(detail.thread.title)\n"
+        }
+        md += "- Importance: \(String(format: "%.2f", detail.thread.importanceScore))\n"
+        md += "- Confidence: \(String(format: "%.2f", detail.thread.confidence))\n"
+        md += "- Total active: \(Self.formatDuration(minutes: detail.thread.totalActiveMinutes))\n"
+        if let firstSeenAt = detail.thread.firstSeenAt {
+            md += "- First seen: \(dateSupport.localDateTimeString(from: firstSeenAt))\n"
+        }
+        if let lastActiveAt = detail.thread.lastActiveAt {
+            md += "- Last active: \(dateSupport.localDateTimeString(from: lastActiveAt))\n"
+        }
+        if let lastArtifactAt = detail.thread.lastArtifactAt {
+            md += "- Last advisory artifact: \(dateSupport.localDateTimeString(from: lastArtifactAt))\n"
+        }
+        if let parentThread = detail.parentThread {
+            md += "- Parent thread: [[\(parentThread.slug)|\(parentThread.displayTitle)]]\n"
+        }
+        md += "\n"
+
+        md += "## Summary\n"
+        md += "\(detail.thread.summary ?? "Пока нет summary для этой нити.")\n\n"
+
+        md += "## Open Loops\n"
+        if detail.continuityItems.isEmpty {
+            md += "- Нет открытых continuity items.\n\n"
+        } else {
+            for item in detail.continuityItems {
+                md += "- \(item.title) · \(continuityStatusLabel(item.status))\n"
+            }
+            md += "\n"
+        }
+
+        md += "## Child Threads\n"
+        if detail.childThreads.isEmpty {
+            md += "- Нет sub-threads.\n\n"
+        } else {
+            for child in detail.childThreads {
+                md += "- [[\(child.slug)|\(child.displayTitle)]] · \(threadStatusLabel(child.status)) · \(Self.formatDuration(minutes: child.totalActiveMinutes))\n"
+            }
+            md += "\n"
+        }
+
+        md += "## Maintenance\n"
+        if detail.maintenanceProposals.isEmpty {
+            md += "- Похоже, maintenance moves сейчас не обязательны.\n\n"
+        } else {
+            for proposal in detail.maintenanceProposals {
+                md += "- \(proposal.title) · \(Int(proposal.confidence * 100))%\n"
+                md += "  - \(proposal.rationale)\n"
+                if let targetThreadTitle = proposal.targetThreadTitle {
+                    md += "  - Target: \(targetThreadTitle)\n"
+                }
+                if let suggestedTitle = proposal.suggestedTitle {
+                    md += "  - Suggested title: \(suggestedTitle)\n"
+                }
+            }
+            md += "\n"
+        }
+
+        md += "## Recent Advisory Artifacts\n"
+        if detail.artifacts.isEmpty {
+            md += "- Advisory artifacts ещё не появлялись.\n\n"
+        } else {
+            for artifact in detail.artifacts {
+                md += "- \(artifact.kind.rawValue) · \(artifact.title) · \(artifact.status.rawValue)\n"
+            }
+            md += "\n"
+        }
+
+        md += "## Evidence\n"
+        if detail.evidence.isEmpty {
+            md += "- Явных evidence refs пока нет.\n"
+        } else {
+            for evidence in detail.evidence.prefix(20) {
+                md += "- \(evidence.evidenceKind): \(evidence.evidenceRef)\n"
+            }
+        }
+        md += "\n"
+        return md
+    }
+
+    func exportAdvisoryThread(_ detail: AdvisoryThreadDetailSnapshot) throws -> String {
+        let threadsRoot = (knowledgeRootDirectory() as NSString).appendingPathComponent("Threads")
+        try FileManager.default.createDirectory(atPath: threadsRoot, withIntermediateDirectories: true)
+
+        let filePath = (threadsRoot as NSString).appendingPathComponent("\(detail.thread.slug).md")
+        try renderAdvisoryThread(detail).write(toFile: filePath, atomically: true, encoding: .utf8)
+        return filePath
+    }
+
     @discardableResult
     func syncKnowledgeDraftArtifacts(_ artifacts: [KnowledgeDraftArtifact]) throws -> [String] {
         let draftsRoot = knowledgeDraftsDirectory()
@@ -888,6 +987,35 @@ final class ObsidianExporter {
     private func retryDelay(for retryCount: Int) -> TimeInterval {
         let boundedRetryCount = min(max(retryCount, 1), 6)
         return Double(1 << boundedRetryCount) * 60
+    }
+
+    private func threadKindLabel(_ kind: AdvisoryThreadKind) -> String {
+        switch kind {
+        case .project: return "project"
+        case .question: return "question"
+        case .interest: return "interest"
+        case .person: return "person"
+        case .commitment: return "commitment"
+        case .theme: return "theme"
+        }
+    }
+
+    private func threadStatusLabel(_ status: AdvisoryThreadStatus) -> String {
+        switch status {
+        case .active: return "active"
+        case .stalled: return "stalled"
+        case .parked: return "parked"
+        case .resolved: return "resolved"
+        }
+    }
+
+    private func continuityStatusLabel(_ status: ContinuityItemStatus) -> String {
+        switch status {
+        case .open: return "open"
+        case .stabilizing: return "stabilizing"
+        case .parked: return "parked"
+        case .resolved: return "resolved"
+        }
     }
 
     private func knowledgeFolderName(for noteType: String) -> String {

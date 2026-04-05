@@ -30,7 +30,9 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private let retryCooldownAfterPermissionFailure: TimeInterval = 30.0
     private let retryCooldownAfterSilentRenderer: TimeInterval = 90.0
     private let retryCooldownAfterError: TimeInterval = 12.0
+    private let retryCooldownAfterThrottle: TimeInterval = 45.0
     private let audibleThreshold: Float = 0.003
+    private let queuedSegmentFingerprintTTL: TimeInterval = 15 * 60
     private let stateQueueKey = DispatchSpecificKey<Void>()
     private lazy var stateQueue: DispatchQueue = {
         let queue = DispatchQueue(label: "com.memograph.system-audio.state")
@@ -64,6 +66,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
     private var outputDeviceID: AudioDeviceID = 0
     private var currentCandidateSignature: String?
     private var knownAudibleSignatures = Set<String>()
+    private var queuedSegmentFingerprints: [String: Date] = [:]
     private var awaitingStreamShutdown = false
     private let currentPID = pid_t(ProcessInfo.processInfo.processIdentifier)
 
@@ -163,6 +166,18 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
         let observation = currentOutputObservation()
         updateSilentCandidateRearm(observation)
         updateStableOutputObservation(observation, now: now)
+        pruneQueuedSegmentFingerprints(now: now)
+
+        let throttleDecision = transcriber.systemAudioThrottleDecision(now: now)
+        if throttleDecision.shouldThrottle {
+            transcriber.setSystemAudioThrottled(
+                true,
+                reason: throttleDecision.reason,
+                cooldown: throttleDecision.cooldown
+            )
+        } else {
+            transcriber.setSystemAudioThrottled(false)
+        }
 
         if phase == .capturing, shouldStopForSilence(now: now) {
             let signature = currentCandidateSignature ?? observation.signature
@@ -181,10 +196,31 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
             return
         }
 
+        if phase == .capturing, throttleDecision.shouldThrottle {
+            retryCaptureAfter = max(
+                retryCaptureAfter,
+                now.addingTimeInterval(max(retryCooldownAfterThrottle, throttleDecision.cooldown))
+            )
+            stopCaptureLocked(
+                reason: "system audio throttled",
+                backoffUntil: retryCaptureAfter
+            )
+            return
+        }
+
         let externalOutputInUse = observation.hasExternalOutput
         if externalOutputInUse {
             pendingStopWorkItem?.cancel()
             pendingStopWorkItem = nil
+        }
+
+        if throttleDecision.shouldThrottle, phase == .idle {
+            retryCaptureAfter = max(
+                retryCaptureAfter,
+                now.addingTimeInterval(max(retryCooldownAfterThrottle, throttleDecision.cooldown))
+            )
+            phase = .backingOff
+            return
         }
 
         if SystemAudioProbePolicy.shouldAttemptCapture(
@@ -201,7 +237,7 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
             requiresSilentSignatureReset: requiresSilentSignatureReset,
             knownAudibleSignatures: knownAudibleSignatures,
             globalSilentCooldownUntil: globalSilentCooldownUntil
-        ) {
+        ), !throttleDecision.shouldThrottle {
             requestCaptureStartLocked(observation: observation)
         } else if !externalOutputInUse && phase == .capturing && pendingStopWorkItem == nil {
             let workItem = DispatchWorkItem { [weak self] in
@@ -506,6 +542,12 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
         requiresSilentSignatureReset = false
     }
 
+    private func pruneQueuedSegmentFingerprints(now: Date) {
+        queuedSegmentFingerprints = queuedSegmentFingerprints.filter {
+            now.timeIntervalSince($0.value) <= queuedSegmentFingerprintTTL
+        }
+    }
+
     private func refreshOutputDeviceIfNeeded() {
         guard let deviceID = resolveDefaultOutputDevice(), deviceID != outputDeviceID else {
             return
@@ -627,6 +669,19 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
         segmentStartedAt: Date,
         segmentEndedAt: Date
     ) {
+        let fingerprint = segmentFingerprint(
+            path: path,
+            source: source,
+            segmentStartedAt: segmentStartedAt,
+            segmentEndedAt: segmentEndedAt
+        )
+        if queuedSegmentFingerprints[fingerprint] != nil {
+            logger.info("SystemAudio: suppressed duplicate queue for \(fingerprint, privacy: .public)")
+            try? FileManager.default.removeItem(atPath: path)
+            return
+        }
+        queuedSegmentFingerprints[fingerprint] = Date()
+
         let sessionId = sessionManager.currentSessionId
         let transcriber = self.transcriber
 
@@ -647,6 +702,20 @@ final class SystemAudioCaptureEngine: NSObject, @unchecked Sendable {
                 Logger.app.error("SystemAudio: failed to queue transcription: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func segmentFingerprint(
+        path: String,
+        source: String,
+        segmentStartedAt: Date,
+        segmentEndedAt: Date
+    ) -> String {
+        [
+            source,
+            String(Int(segmentStartedAt.timeIntervalSince1970)),
+            String(Int(segmentEndedAt.timeIntervalSince1970)),
+            path
+        ].joined(separator: "|")
     }
 }
 
