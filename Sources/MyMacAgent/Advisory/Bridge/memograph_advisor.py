@@ -54,7 +54,7 @@ class ProviderDiagnostics:
         self._lock = threading.Lock()
         self._cached_health: dict[str, Any] | None = None
         self._checked_at = 0.0
-        self._cache_ttl_seconds = 20.0
+        self._cache_ttl_seconds = max(15.0, float(os.getenv("MEMOGRAPH_ADVISOR_HEALTH_CACHE_TTL", "30")))
         self._provider_state: dict[str, dict[str, Any]] = {}
         configured_profiles_dir = os.getenv("MEMOGRAPH_ADVISOR_PROFILES_DIR", "").strip()
         if configured_profiles_dir:
@@ -262,6 +262,23 @@ class ProviderDiagnostics:
             self._cached_health = dict(computed)
             self._checked_at = now
             return computed
+
+    def _quick_provider_check(self) -> dict[str, Any] | None:
+        """Return cached health if a runnable provider exists, else None."""
+        with self._lock:
+            if self._cached_health is None:
+                return None
+            health = dict(self._cached_health)
+            if health.get("status") != "ok":
+                return None
+            active = str(health.get("activeProviderName") or "").strip().lower()
+            if not active:
+                return None
+            state = self._provider_state.get(active, {})
+            cooldown_until = float(state.get("cooldown_until", 0.0))
+            if time.time() < cooldown_until:
+                return None
+            return health
 
     def accounts(self, force_refresh: bool = False) -> dict[str, Any]:
         with self._lock:
@@ -1772,8 +1789,10 @@ class AdvisoryRuntime:
         last_failure_detail: str | None = None
         last_failure_status: str | None = None
 
-        for _ in range(attempt_budget):
-            health = self.provider_diagnostics.health(force_refresh=True)
+        for attempt in range(attempt_budget):
+            health = self.provider_diagnostics._quick_provider_check()
+            if health is None:
+                health = self.provider_diagnostics.health(force_refresh=(attempt > 0))
             last_health = health
             if health["status"] != "ok":
                 detail = str(health.get("statusDetail") or health["status"]).strip()
