@@ -41,19 +41,30 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
 
     private var timer: Timer?
     private var settingsObserver: NSObjectProtocol?
+    private let notificationCenter: NotificationCenter
     private let queue = DispatchQueue(label: "memograph.advisory.health", qos: .utility)
     private let lock = NSLock()
+    private let bridgeLock = NSLock()
+    private let bridgeFactory: @Sendable () -> AdvisoryBridgeClient
+    private var bridge: AdvisoryBridgeClient
     private var refreshInFlight = false
     private var pendingForceRefresh = false
     private var started = false
 
-    private init() {
-        settingsObserver = NotificationCenter.default.addObserver(
+    init(
+        bridgeFactory: @escaping @Sendable () -> AdvisoryBridgeClient = { AdvisoryBridgeClient(settings: AppSettings()) },
+        notificationCenter: NotificationCenter = .default
+    ) {
+        self.bridgeFactory = bridgeFactory
+        self.notificationCenter = notificationCenter
+        self.bridge = bridgeFactory()
+        settingsObserver = notificationCenter.addObserver(
             forName: .settingsDidChange,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refresh()
+            self?.resetBridge()
+            self?.refresh(forceRefresh: true)
             self?.scheduleTimer()
         }
     }
@@ -73,7 +84,7 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
     deinit {
         timer?.invalidate()
         if let settingsObserver {
-            NotificationCenter.default.removeObserver(settingsObserver)
+            notificationCenter.removeObserver(settingsObserver)
         }
     }
 
@@ -91,8 +102,9 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
 
         queue.async { [weak self] in
             guard let self else { return }
-            let bridge = AdvisoryBridgeClient(settings: AppSettings())
-            let runtimeSnapshot = bridge.runtimeSnapshot(forceRefresh: effectiveForceRefresh)
+            let runtimeSnapshot = self.withBridge {
+                $0.runtimeSnapshot(forceRefresh: effectiveForceRefresh)
+            }
             DispatchQueue.main.async {
                 self.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
                 self.finishRefresh()
@@ -102,23 +114,26 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
 
     func restartSidecar() {
         queue.async { [weak self] in
-            let bridge = AdvisoryBridgeClient(settings: AppSettings())
-            bridge.restartSidecar()
-            var runtimeSnapshot = bridge.runtimeSnapshot(forceRefresh: false)
+            guard let self else { return }
+            self.withBridge { $0.restartSidecar() }
+            var runtimeSnapshot = self.withBridge {
+                $0.runtimeSnapshot(forceRefresh: false)
+            }
             if Self.restartGraceStatuses.contains(runtimeSnapshot.effectiveStatus) {
                 Thread.sleep(forTimeInterval: 2)
-                runtimeSnapshot = bridge.runtimeSnapshot(forceRefresh: false)
+                runtimeSnapshot = self.withBridge {
+                    $0.runtimeSnapshot(forceRefresh: false)
+                }
             }
             DispatchQueue.main.async {
-                self?.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
+                self.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
             }
         }
     }
 
     func stopSidecar() {
         queue.async { [weak self] in
-            let bridge = AdvisoryBridgeClient(settings: AppSettings())
-            bridge.stopSidecar()
+            self?.withBridge { $0.stopSidecar() }
             self?.refresh()
         }
     }
@@ -131,13 +146,17 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
         completion: @MainActor @escaping (Bool, Date) -> Void
     ) {
         queue.async { [weak self] in
-            let bridge = AdvisoryBridgeClient(settings: AppSettings())
-            let result = bridge.recoverAfterRelogin(provider: provider, accountName: accountName)
+            guard let self else { return }
+            let result = self.withBridge {
+                $0.recoverAfterRelogin(provider: provider, accountName: accountName)
+            }
             let verified = result.verified
             let verifiedAt = result.lastVerifiedAt
-            let runtimeSnapshot = bridge.runtimeSnapshot()
+            let runtimeSnapshot = self.withBridge {
+                $0.runtimeSnapshot(forceRefresh: true)
+            }
             DispatchQueue.main.async {
-                self?.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
+                self.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
                 completion(verified, verifiedAt)
             }
         }
@@ -151,16 +170,34 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
         completion: @MainActor @escaping (Bool, Date) -> Void
     ) {
         queue.async { [weak self] in
-            let bridge = AdvisoryBridgeClient(settings: AppSettings())
-            let result = bridge.checkProviderAuth(provider: provider, accountName: accountName)
+            guard let self else { return }
+            let result = self.withBridge {
+                $0.checkProviderAuth(provider: provider, accountName: accountName)
+            }
             let verified = result.verified
             let verifiedAt = result.lastVerifiedAt
-            let runtimeSnapshot = bridge.runtimeSnapshot()
+            let runtimeSnapshot = self.withBridge {
+                $0.runtimeSnapshot(forceRefresh: true)
+            }
             DispatchQueue.main.async {
-                self?.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
+                self.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
                 completion(verified, verifiedAt)
             }
         }
+    }
+
+    private func withBridge<T>(_ body: (AdvisoryBridgeClient) -> T) -> T {
+        bridgeLock.lock()
+        let bridge = self.bridge
+        bridgeLock.unlock()
+        return body(bridge)
+    }
+
+    private func resetBridge() {
+        let replacement = bridgeFactory()
+        bridgeLock.lock()
+        bridge = replacement
+        bridgeLock.unlock()
     }
 
     private func publish(_ snapshot: AdvisoryHealthSnapshot) {
@@ -189,6 +226,7 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
 
     private static let restartGraceStatuses: Set<String> = [
         "starting",
+        "hung_start",
         "socket_missing",
         "transport_failure",
         "unavailable",

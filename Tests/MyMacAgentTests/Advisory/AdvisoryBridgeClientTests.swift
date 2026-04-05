@@ -321,6 +321,31 @@ struct AdvisoryBridgeClientTests {
         #expect(replaced)
     }
 
+    @Test("Detached sidecar janitor escalates cleanup for a SIGTERM-ignoring orphan")
+    func cleanupDetachedSidecarsEscalatesForOrphanOwner() throws {
+        let context = try makeSettingsContext(mode: .requireSidecar)
+        defer { context.cleanup() }
+
+        let socketPath = AdvisorySidecarSocketPathResolver.resolve(context.settings.advisorySidecarSocketPath)
+        let launched = try ExternalSidecarHandle(
+            socketPath: socketPath,
+            environment: [
+                "MEMOGRAPH_ADVISOR_FAKE_PROVIDER": "claude",
+                "MEMOGRAPH_ADVISOR_IGNORE_SIGTERM": "1"
+            ]
+        )
+        defer { launched.cleanup() }
+
+        let orphanPID = try #require(launched.pid)
+        AdvisoryBridgeClient.cleanupDetachedSidecars()
+
+        let cleaned = waitUntil(timeoutSeconds: 6) {
+            !processIsAlive(orphanPID) && readLivePID(from: launched.pidfilePath) == nil
+        }
+
+        #expect(cleaned)
+    }
+
     @Test("Recover after re-login keeps a live sidecar instead of forcing restart")
     func recoverAfterReloginKeepsLiveRuntime() throws {
         let context = try makeSettingsContext(mode: .requireSidecar)
@@ -351,6 +376,35 @@ struct AdvisoryBridgeClientTests {
 
         #expect(beforePID == afterPID)
         #expect(result.accountName == "acc1")
+    }
+
+    @Test("Startup watchdog recovers from a delayed first launch without manual restart")
+    func startupWatchdogRecoversDelayedFirstLaunch() throws {
+        let context = try makeSettingsContext(mode: .requireSidecar)
+        defer { context.cleanup() }
+
+        let markerURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("memograph-advisor-startup-delay-\(UUID().uuidString)")
+        FileManager.default.createFile(atPath: markerURL.path, contents: Data())
+        defer { try? FileManager.default.removeItem(at: markerURL) }
+
+        let client = AdvisoryBridgeClient(
+            settings: context.settings,
+            fallbackServer: LocalAdvisoryBridgeStub(),
+            sidecarEnvironmentOverrides: [
+                "MEMOGRAPH_ADVISOR_FAKE_PROVIDER": "claude",
+                "MEMOGRAPH_ADVISOR_STARTUP_GRACE_SECONDS": "1",
+                "MEMOGRAPH_ADVISOR_STARTUP_DELAY_SECONDS": "3",
+                "MEMOGRAPH_ADVISOR_STARTUP_DELAY_ONCE_FILE": markerURL.path
+            ]
+        )
+        defer { client.stopSidecar() }
+
+        let recovered = waitUntil(timeoutSeconds: 10) {
+            client.runtimeSnapshot(forceRefresh: true).effectiveStatus == "ready"
+        }
+
+        #expect(recovered)
     }
 
     @Test("Stub continuity resume uses external enrichment anchors and timing")
@@ -3052,8 +3106,9 @@ private func waitUntil(timeoutSeconds: TimeInterval, check: () -> Bool) -> Bool 
 
 private func readLivePID(from pidfilePath: String) -> pid_t? {
     guard
-        let pidString = try? String(contentsOfFile: pidfilePath, encoding: .utf8),
-        let pid = Int32(pidString.trimmingCharacters(in: .whitespacesAndNewlines)),
+        let pidString = try? String(contentsOfFile: pidfilePath, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+        let pid = readPID(fromPidfileContents: pidString),
         pid > 0,
         processIsAlive(pid)
     else {
@@ -3064,4 +3119,18 @@ private func readLivePID(from pidfilePath: String) -> pid_t? {
 
 private func processIsAlive(_ pid: pid_t) -> Bool {
     Darwin.kill(pid, 0) == 0 || errno == EPERM
+}
+
+private func readPID(fromPidfileContents contents: String) -> pid_t? {
+    if let pid = Int32(contents.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 {
+        return pid
+    }
+    guard
+        let data = contents.data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let pid = object["pid"] as? Int
+    else {
+        return nil
+    }
+    return Int32(pid)
 }

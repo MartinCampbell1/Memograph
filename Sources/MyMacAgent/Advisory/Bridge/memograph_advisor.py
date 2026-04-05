@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,7 @@ class ProviderDiagnostics:
         self._account_state: dict[str, dict[str, Any]] = {}
         self._cached_accounts: dict[str, Any] | None = None
         self._accounts_checked_at = 0.0
+        self._accounts_refresh_in_progress = False
 
     def profiles_dir(self) -> Path:
         return self._profiles_dir
@@ -157,16 +159,40 @@ class ProviderDiagnostics:
         with self._snapshot_lock:
             self._invalidate_cache()
 
-    def _record_account_use_locked(self, provider: str, account_name: str | None = None) -> None:
+    def _record_account_use_locked(
+        self,
+        provider: str,
+        account_name: str | None = None,
+        now: float | None = None,
+    ) -> None:
         account_name = account_name or self._selected_profile_name(provider)
         if not account_name:
             return
         state_key = self._profile_account_key(provider, account_name)
+        recorded_at = float(now if now is not None else time.time())
+        checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(recorded_at))
         with self._snapshot_lock:
             state = self._account_state.setdefault(state_key, {"cooldown_until": 0.0, "failure_count": 0, "requests_made": 0})
             state["requests_made"] = int(state.get("requests_made", 0)) + 1
-            state["last_used_at"] = int(time.time())
+            state["last_used_at"] = int(recorded_at)
+            state["last_checked_at"] = checked_at
+            state["cooldown_until"] = 0.0
+            state["last_failure_status"] = None
+            state["last_failure_detail"] = None
+            state["failure_count"] = 0
             self._invalidate_accounts_cache_locked()
+
+    def _record_provider_success_locked(self, provider: str, now: float | None = None) -> None:
+        recorded_at = float(now if now is not None else time.time())
+        checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(recorded_at))
+        with self._snapshot_lock:
+            state = self._provider_state.setdefault(provider, {"cooldown_until": 0.0, "failure_count": 0})
+            state["cooldown_until"] = 0.0
+            state["last_failure_status"] = None
+            state["last_failure_detail"] = None
+            state["failure_count"] = 0
+            state["last_checked_at"] = checked_at
+            self._invalidate_cache()
 
     def _profile_account_key(self, provider: str, account_name: str) -> str:
         return f"{provider}:{account_name}"
@@ -421,6 +447,9 @@ class ProviderDiagnostics:
             return health
 
     def accounts(self, force_refresh: bool = False) -> dict[str, Any]:
+        if force_refresh:
+            return self._do_synchronous_accounts_refresh()
+
         with self._snapshot_lock:
             now = time.time()
             if (
@@ -435,6 +464,69 @@ class ProviderDiagnostics:
             self._cached_accounts = json.loads(json.dumps(computed))
             self._accounts_checked_at = now
         return computed
+
+    def _starting_accounts_snapshot(self, now: float | None = None, refresh_in_progress: bool = True) -> dict[str, Any]:
+        return {
+            "profilesDirectory": str(self.profiles_dir()),
+            "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now or time.time())),
+            "healthSummary": {
+                "total": 0,
+                "available": 0,
+                "onCooldown": 0,
+            },
+            "accountsByProvider": {},
+            "preferredAccounts": self._load_preferred_accounts(),
+            "isStale": True,
+            "stalenessSeconds": 0,
+            "refreshInProgress": refresh_in_progress,
+        }
+
+    def _do_synchronous_accounts_refresh(self) -> dict[str, Any]:
+        requested_at = time.time()
+        deadline = time.time() + min(1.0, max(0.25, self.probe_timeout_seconds * 0.25))
+        claimed_refresh_slot = False
+
+        while True:
+            with self._snapshot_lock:
+                cached = json.loads(json.dumps(self._cached_accounts)) if self._cached_accounts is not None else None
+                checked_at = self._accounts_checked_at
+                if not self._accounts_refresh_in_progress:
+                    if cached is not None and checked_at >= requested_at:
+                        cached["isStale"] = False
+                        cached["refreshInProgress"] = False
+                        cached["stalenessSeconds"] = 0
+                        return cached
+                    self._accounts_refresh_in_progress = True
+                    claimed_refresh_slot = True
+                    break
+
+            if cached is not None:
+                cached["isStale"] = True
+                cached["refreshInProgress"] = True
+                cached["stalenessSeconds"] = int(max(0, time.time() - checked_at)) if checked_at else 0
+                return cached
+
+            if time.time() >= deadline:
+                now = time.time()
+                return self._starting_accounts_snapshot(now=now, refresh_in_progress=True)
+
+            time.sleep(0.02)
+
+        try:
+            computed = self._compute_accounts_snapshot(now=time.time(), force_refresh=True)
+            checked_at = time.time()
+            with self._snapshot_lock:
+                self._cached_accounts = json.loads(json.dumps(computed))
+                self._accounts_checked_at = checked_at
+            result = json.loads(json.dumps(computed))
+            result["isStale"] = False
+            result["stalenessSeconds"] = 0
+            result["refreshInProgress"] = False
+            return result
+        finally:
+            if claimed_refresh_slot:
+                with self._snapshot_lock:
+                    self._accounts_refresh_in_progress = False
 
     def _compute_accounts_snapshot(self, now: float, force_refresh: bool) -> dict[str, Any]:
         checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
@@ -1724,10 +1816,11 @@ class ProviderDiagnostics:
         return {"status": "unavailable", "detail": f"{provider}: {message}"}
 
     def _selected_profile_name(self, provider: str) -> str | None:
+        preferred_account = self._load_preferred_accounts().get(provider)
+        if preferred_account:
+            return preferred_account
         env_value = os.getenv(f"MEMOGRAPH_ADVISOR_PROFILE_{provider.upper()}", "").strip()
-        if env_value:
-            return env_value
-        return self._load_preferred_accounts().get(provider)
+        return env_value or None
 
     def _selected_profile_root(self, provider: str) -> Path | None:
         account_name = self._selected_profile_name(provider)
@@ -2001,8 +2094,15 @@ class AdvisoryRuntime:
         if target_account:
             try:
                 profile_path = self.provider_diagnostics._profile_directory(provider, target_account)
-            except FileNotFoundError as exc:
-                raise JsonRPCMethodError(-32021, str(exc)) from exc
+            except FileNotFoundError:
+                return {
+                    "providerName": provider,
+                    "accountName": target_account,
+                    "verified": False,
+                    "status": "account_not_found",
+                    "detail": f"Unknown {provider} account: {target_account}",
+                    "checkedAt": checked_at,
+                }
 
             preferred_accounts = self.provider_diagnostics._load_preferred_accounts()
             snapshot = self.provider_diagnostics._profile_account_snapshot(
@@ -2013,8 +2113,8 @@ class AdvisoryRuntime:
                 checked_at=checked_at,
                 force_refresh=force_refresh,
             )
-            verified = bool(snapshot.get("available"))
-            status = "ok" if verified else str(snapshot.get("authState") or "error").strip().lower() or "error"
+            status = self._account_auth_status_from_snapshot(provider, snapshot)
+            verified = status == "ok"
             detail = str(snapshot.get("detail") or snapshot.get("lastError") or status).strip()
             return {
                 "providerName": provider,
@@ -2023,6 +2123,7 @@ class AdvisoryRuntime:
                 "status": status,
                 "detail": detail,
                 "checkedAt": checked_at,
+                "identity": self.provider_diagnostics._normalize_optional_text(snapshot.get("identity")),
             }
 
         try:
@@ -2056,7 +2157,20 @@ class AdvisoryRuntime:
             "status": "ok" if verified else status,
             "detail": str(probe.get("detail") or probe.get("lastError") or status).strip(),
             "checkedAt": checked_at,
+            "identity": self.provider_diagnostics._normalize_optional_text(probe.get("accountIdentity")),
         }
+
+    def _candidate_account_sort_key(
+        self,
+        account_name: str,
+        state: dict[str, Any],
+        preferred_account_name: str | None,
+    ) -> tuple[int, int, int, int, str]:
+        requests_made = int(state.get("requests_made", 0) or 0)
+        failure_count = int(state.get("failure_count", 0) or 0)
+        last_used_at = int(state.get("last_used_at", 0) or 0)
+        preferred_bias = 0 if preferred_account_name and account_name == preferred_account_name else 1
+        return (requests_made, failure_count, last_used_at, preferred_bias, account_name)
 
     def _candidate_accounts_for_provider(self, provider: str, preferred_account_name: str | None = None) -> list[str]:
         profiles = self.provider_diagnostics._profile_directories(provider)
@@ -2067,7 +2181,7 @@ class AdvisoryRuntime:
         preferred = preferred_account_name or self.provider_diagnostics._load_preferred_accounts().get(provider)
         binary_present = shutil.which(self.provider_diagnostics._provider_binary(provider)) is not None
         now = time.time()
-        candidates: list[tuple[int, float, str]] = []
+        candidates: list[tuple[tuple[int, int, int, int, str], str]] = []
 
         with self.provider_diagnostics._snapshot_lock:
             for profile_path in profiles:
@@ -2084,12 +2198,15 @@ class AdvisoryRuntime:
                 if failure_status and not self.provider_diagnostics._account_failure_is_retryable(failure_status):
                     continue
 
-                last_used = float(state.get("last_used_at", 0.0))
-                preferred_rank = 0 if preferred and account_name == preferred else 1
-                candidates.append((preferred_rank, last_used, account_name))
+                sort_key = self._candidate_account_sort_key(
+                    account_name,
+                    state,
+                    preferred_account_name=preferred,
+                )
+                candidates.append((sort_key, account_name))
 
-        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
-        return [account_name for _, _, account_name in candidates]
+        candidates.sort(key=lambda item: item[0])
+        return [account_name for _, account_name in candidates]
 
     def _run_provider_cli_with_failover(
         self,
@@ -2134,7 +2251,13 @@ class AdvisoryRuntime:
             )
             last_result = result
             if result.ok:
-                self.provider_diagnostics._record_account_use_locked(provider, result.account_name or candidate)
+                recorded_at = time.time()
+                self.provider_diagnostics._record_provider_success_locked(provider, now=recorded_at)
+                self.provider_diagnostics._record_account_use_locked(
+                    provider,
+                    result.account_name or candidate,
+                    now=recorded_at,
+                )
                 return result
 
             if candidate:
@@ -2282,6 +2405,32 @@ class AdvisoryRuntime:
             return "empty_output" if returncode == 0 else "unavailable", f"{provider} CLI returned no output."
         return "unavailable", f"{provider}: {message}"
 
+    def _account_auth_status_from_snapshot(self, provider: str, snapshot: dict[str, Any]) -> str:
+        if bool(snapshot.get("binaryPresent")) is False:
+            return "binary_missing"
+        if bool(snapshot.get("sessionDetected")) is False:
+            return "session_missing"
+        if bool(snapshot.get("available")):
+            return "ok"
+        cooldown_remaining = int(snapshot.get("cooldownRemainingSeconds") or 0)
+        if cooldown_remaining > 0:
+            return "cooldown"
+
+        account_name = str(snapshot.get("accountName") or "").strip()
+        if account_name:
+            state_key = self.provider_diagnostics._profile_account_key(provider, account_name)
+            state = self.provider_diagnostics._account_state.get(state_key, {})
+            failure_status = str(state.get("last_failure_status") or "").strip().lower()
+            if failure_status:
+                return failure_status
+
+        auth_state = str(snapshot.get("authState") or "").strip().lower()
+        if auth_state == "verified":
+            return "ok"
+        if auth_state == "error":
+            return "session_expired"
+        return "session_missing"
+
     def _select_account_for_provider(self, provider: str) -> str | None:
         """Select the best runnable account for a provider.
 
@@ -2291,8 +2440,9 @@ class AdvisoryRuntime:
         - authState verified (no last_failure_status)
         - cooldownRemainingSeconds == 0 (not on cooldown)
 
-        Preferred account is used as bias (tried first if runnable), not a hard
-        blocker.  Among runnable accounts, the least-recently-used wins.
+        Preferred account is used as a tie-break bias, not a hard blocker.
+        Among runnable accounts, the chooser prefers lower request volume,
+        lower recent failure pressure, then older last use.
         """
         candidates = self._candidate_accounts_for_provider(provider)
         if not candidates:
@@ -4104,6 +4254,24 @@ def main() -> int:
     socket_path = Path(args.socket).expanduser()
     pidfile_path = Path(str(socket_path) + ".pid")
     socket_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        startup_delay_seconds = max(0.0, float(os.getenv("MEMOGRAPH_ADVISOR_STARTUP_DELAY_SECONDS", "0") or "0"))
+    except ValueError:
+        startup_delay_seconds = 0.0
+    startup_delay_once_file = os.getenv("MEMOGRAPH_ADVISOR_STARTUP_DELAY_ONCE_FILE", "").strip()
+    should_delay_startup = startup_delay_seconds > 0
+    if should_delay_startup and startup_delay_once_file:
+        delay_marker = Path(startup_delay_once_file).expanduser()
+        should_delay_startup = delay_marker.exists()
+        if should_delay_startup:
+            try:
+                delay_marker.unlink()
+            except OSError:
+                pass
+    if should_delay_startup:
+        time.sleep(startup_delay_seconds)
+
     if socket_path.exists():
         socket_path.unlink()
 
@@ -4113,7 +4281,19 @@ def main() -> int:
 
     # Write pidfile so the Swift supervisor can verify socket ownership
     try:
-        pidfile_path.write_text(str(os.getpid()), encoding="utf-8")
+        pidfile_path.write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "socket_path": str(socket_path),
+                    "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "instance_id": str(uuid.uuid4()),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     except OSError:
         pass
 
@@ -4131,7 +4311,8 @@ def main() -> int:
     def shutdown(*_: Any) -> None:
         server.shutdown()
 
-    signal.signal(signal.SIGTERM, shutdown)
+    ignore_sigterm = os.getenv("MEMOGRAPH_ADVISOR_IGNORE_SIGTERM", "").strip().lower() in {"1", "true", "yes"}
+    signal.signal(signal.SIGTERM, signal.SIG_IGN if ignore_sigterm else shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
     try:

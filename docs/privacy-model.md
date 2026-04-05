@@ -28,6 +28,14 @@
 - Credentials are stored in Keychain.
 - Local-only mode disables external provider use at runtime even if fields are filled in.
 
+## Advisory sidecar and provider CLIs
+
+- The advisory sidecar itself runs locally on the Mac.
+- Advisory provider execution may call logged-in Claude, Gemini, or Codex CLIs when the user enables advisory and has those CLIs configured.
+- Advisory payloads sent to provider CLIs are text prompts built from thread summaries, continuity items, and explicitly enabled enrichment fragments.
+- Raw screenshots and direct SQLite dumps are not sent to advisory providers.
+- Account inventory on disk is separate from runtime availability; the UI reports those states independently.
+
 ## Local data deletion
 
 - The Settings window can request deletion of all local data.

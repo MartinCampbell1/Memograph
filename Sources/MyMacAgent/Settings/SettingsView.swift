@@ -377,7 +377,7 @@ struct SettingsView: View {
 
     private var providersTab: some View {
         settingsScroll {
-            settingsCard("External Provider", subtitle: "Used only when you choose external summary or vision providers.") {
+            settingsCard("External Provider", subtitle: "Used only when you explicitly choose external summary or vision providers. Screenshots stay local; only processed text prompts leave the Mac.") {
                 settingRow("Provider label") {
                     TextField("OpenRouter-compatible", text: $externalProviderName)
                         .textFieldStyle(.roundedBorder)
@@ -474,7 +474,7 @@ struct SettingsView: View {
                 }
             }
 
-            settingsCard("Advisory Sidecar", subtitle: "Advisory recipes run through external sidecar execution. Memograph core continues working even when the sidecar is degraded.") {
+            settingsCard("Advisory Sidecar", subtitle: "Runs a local sidecar that may call logged-in Claude, Gemini, or Codex CLIs. Runtime health is tracked separately from account inventory stored on disk.") {
                 settingRow("Bridge mode") {
                     Picker("Advisory bridge mode", selection: $advisoryBridgeMode) {
                         ForEach(AdvisoryBridgeMode.allCases) { mode in
@@ -485,7 +485,7 @@ struct SettingsView: View {
                     .pickerStyle(.menu)
                 }
 
-                toggleRow("Read-only external enrichment", help: "Allows advisory to read staged calendar, reminders, and browser-derived research context when available.", isOn: $advisoryAllowMCPEnrichment)
+                toggleRow("Read-only external enrichment", help: "Allows advisory to read staged calendar, reminders, and browser-derived research fragments when available. Raw screenshots and SQLite rows are not sent directly.", isOn: $advisoryAllowMCPEnrichment)
 
                 settingRow("Enrichment phase", help: "Phase 1 keeps advisory on Memograph-derived notes only. Phase 2 and 3 prepare staged external enrichers.") {
                     Picker("Advisory enrichment phase", selection: $advisoryEnrichmentPhase) {
@@ -941,6 +941,13 @@ struct SettingsView: View {
         settingsScroll {
             settingsCard("Permissions", subtitle: "Memograph works in limited mode when optional permissions are missing.") {
                 PermissionsView(manager: permissionsManager, autoRefresh: previewState == nil)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            settingsCard("External Execution", subtitle: "Networked providers stay opt-in.") {
+                Text("Summary and vision vendors run only after you explicitly choose an external provider. Advisory sidecar execution stays local, but logged-in provider CLIs may receive thread summaries, continuity notes, and staged enrichment text. Raw screenshots and direct SQLite dumps are not sent to advisory providers.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -1402,13 +1409,17 @@ struct SettingsView: View {
                 .foregroundStyle(runtimeSnapshot.isDegraded ? .orange : .secondary)
 
             Text(inventoryCount == 0
-                 ? "Inventory: no accounts on disk"
-                 : "Inventory: \(inventoryCount) account\(inventoryCount == 1 ? "" : "s") on disk")
+                 ? "Inventory on disk: no imported accounts"
+                 : "Inventory on disk: \(inventoryCount) account\(inventoryCount == 1 ? "" : "s") available for runtime selection")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Text(verificationSummary(for: runtimeSnapshot, providerDiagnosticsCount: providerDiagnostics))
                 .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("Runtime execution and on-disk inventory are reported separately so a degraded sidecar does not hide saved accounts.")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
         }
     }
@@ -1418,14 +1429,14 @@ struct SettingsView: View {
         providerDiagnosticsCount: Int
     ) -> String {
         guard providerDiagnosticsCount > 0 else {
-            return "Verification: runtime verification unavailable"
+            return "Runtime probe: unavailable"
         }
 
         let checkedAt = runtimeSnapshot.bridgeHealth.checkedAt ?? "unknown time"
         if let activeProvider = runtimeSnapshot.bridgeHealth.activeProviderName, !activeProvider.isEmpty {
-            return "Verification: \(activeProvider.capitalized) last checked at \(checkedAt)"
+            return "Runtime probe: \(activeProvider.capitalized) answered at \(checkedAt)"
         }
-        return "Verification: last runtime probe at \(checkedAt)"
+        return "Runtime probe: last sidecar check at \(checkedAt)"
     }
 
     private func providerSessionCard(
@@ -1471,10 +1482,10 @@ struct SettingsView: View {
                 alignment: .leading,
                 spacing: 10
             ) {
-                providerMetric("Health", value: diagnostic.statusLabel)
+                providerMetric("Runtime health", value: diagnostic.statusLabel)
                 providerMetric("Last probe", value: checkedAt ?? "Not checked yet")
                 providerMetric("Binary", value: diagnostic.binaryPresent ? "Present" : "Missing")
-                providerMetric("Session", value: diagnostic.sessionDetected ? "Detected" : "Missing")
+                providerMetric("Inventory", value: diagnostic.sessionDetected ? "Present on disk" : "Missing on disk")
                 providerMetric(
                     "Cooldown",
                     value: diagnostic.cooldownRemainingSeconds.map { "\($0)s" } ?? "None"
@@ -1587,6 +1598,9 @@ struct SettingsView: View {
                     Text("Saved accounts")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
+                    Text("Inventory on disk. Runtime execution can still be degraded even when these profiles are present.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     ForEach(profiles) { profile in
                         providerAccountRow(profile)
                     }
@@ -1655,7 +1669,7 @@ struct SettingsView: View {
                     }
                 }
                 Spacer()
-                Text(profile.sessionDetected ? "session detected" : "session missing")
+                Text(profile.sessionDetected ? "inventory present" : "inventory missing")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(profile.sessionDetected ? .green : .orange)
             }
@@ -1713,9 +1727,9 @@ struct SettingsView: View {
             return identity
         }
         if diagnostic.sessionDetected {
-            return "Session detected, but account identity is not exposed by the CLI."
+            return "Runtime sees an imported session, but the CLI does not expose account identity."
         }
-        return "No active session detected."
+        return "Runtime does not see an imported session."
     }
 
     private func providerStatusColor(for diagnostic: AdvisoryProviderDiagnostic) -> Color {
@@ -1803,12 +1817,6 @@ struct SettingsView: View {
         }
     }
 
-    private func scheduleAdvisoryHealthRefresh() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            advisoryHealthMonitor.refresh(forceRefresh: true)
-        }
-    }
-
     private func refreshAdvisoryProviderProfiles() {
         advisoryCLIProfilesPath = normalizedProfilesPath()
         advisoryProviderProfiles = AdvisoryCLIProfilesStore.discoverProfiles(
@@ -1826,9 +1834,16 @@ struct SettingsView: View {
             )
             persistSelectedAccount(imported.accountName, providerName: providerName)
             refreshAdvisoryProviderProfiles()
-            advisoryAccountActionFeedback[providerName] = "Imported current \(providerName.capitalized) session as \(imported.accountName)."
-            advisoryHealthMonitor.restartSidecar()
-            scheduleAdvisoryHealthRefresh()
+            advisoryAccountActionFeedback[providerName] = "Imported current \(providerName.capitalized) session as \(imported.accountName). Verifying runtime path for this account…"
+            advisoryHealthMonitor.recoverAfterRelogin(provider: providerName, accountName: imported.accountName) { verified, verifiedAt in
+                providerAuthVerifications[providerName] = (verified, verifiedAt)
+                refreshAdvisoryProviderProfiles()
+                if verified {
+                    advisoryAccountActionFeedback[providerName] = "Imported \(providerName.capitalized) \(imported.accountName) and verified the runtime path."
+                } else {
+                    advisoryAccountActionFeedback[providerName] = "Imported \(providerName.capitalized) \(imported.accountName), but runtime verification is still pending. Run a full auth check if it does not recover."
+                }
+            }
         } catch {
             advisoryAccountActionFeedback[providerName] = error.localizedDescription
         }
@@ -1890,9 +1905,16 @@ struct SettingsView: View {
         persistProfilesPath()
         persistSelectedAccount(profile.accountName, providerName: profile.providerName)
         refreshAdvisoryProviderProfiles()
-        advisoryAccountActionFeedback[profile.providerName] = "Switched \(profile.providerName.capitalized) to \(profile.accountName)."
-        advisoryHealthMonitor.restartSidecar()
-        scheduleAdvisoryHealthRefresh()
+        advisoryAccountActionFeedback[profile.providerName] = "Switched \(profile.providerName.capitalized) to \(profile.accountName). Verifying runtime path for the selected account…"
+        advisoryHealthMonitor.checkProviderAuth(provider: profile.providerName, accountName: profile.accountName) { verified, verifiedAt in
+            providerAuthVerifications[profile.providerName] = (verified, verifiedAt)
+            refreshAdvisoryProviderProfiles()
+            if verified {
+                advisoryAccountActionFeedback[profile.providerName] = "Switched \(profile.providerName.capitalized) to \(profile.accountName) and verified the runtime path."
+            } else {
+                advisoryAccountActionFeedback[profile.providerName] = "Switched \(profile.providerName.capitalized) to \(profile.accountName). Inventory is updated, but runtime verification is still pending."
+            }
+        }
     }
 
     private func handleReauthorizeProviderAccount(_ profile: AdvisoryCLIAccountProfile) {
@@ -1949,6 +1971,11 @@ struct SettingsView: View {
         default:
             break
         }
+        try? AdvisoryCLIProfilesStore.setPreferredAccount(
+            provider: providerName,
+            accountName: accountName,
+            profilesPath: normalizedProfilesPath()
+        )
     }
 
     private func persistProfilesPath() {
@@ -2025,8 +2052,8 @@ struct SettingsView: View {
                 verifications[provider] = (verified: result.verified, verifiedAt: result.lastVerifiedAt)
             }
 
-            let runtimeSnapshot = bridge.runtimeSnapshot(forceRefresh: false)
-            let runtimeNeedsRestart = ["socket_missing", "transport_failure", "unavailable"].contains(
+            let runtimeSnapshot = bridge.runtimeSnapshot(forceRefresh: true)
+            let runtimeNeedsRestart = ["socket_missing", "transport_failure", "unavailable", "hung_start"].contains(
                 runtimeSnapshot.effectiveStatus
             )
 

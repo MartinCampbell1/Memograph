@@ -193,6 +193,8 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
             return "Runtime: stub only"
         case "starting":
             return "Runtime: starting"
+        case "hung_start":
+            return "Runtime: hung on startup"
         case "backoff":
             return "Runtime: backing off"
         case "timeout":
@@ -271,6 +273,8 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
             return "Advisory degraded"
         case "starting":
             return "Advisory sidecar starting"
+        case "hung_start":
+            return "Advisory sidecar hung on startup"
         case "backoff":
             return "Advisory sidecar backing off"
         default:
@@ -311,6 +315,8 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
             lines.append("advisor: sidecar недоступен, работает fallback")
         case "starting":
             lines.append("advisor: sidecar запускается")
+        case "hung_start":
+            lines.append("advisor: sidecar завис на старте")
         case "backoff":
             lines.append("advisor: sidecar ушёл в backoff")
         default:

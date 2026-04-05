@@ -260,7 +260,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
     @discardableResult
     func recoverAfterRelogin(provider: String, accountName: String? = nil) -> AdvisoryProviderAuthCheckResult {
         supervisor?.recordSuccess()
-        let currentRuntime = runtimeSnapshot(forceRefresh: false)
+        let currentRuntime = runtimeSnapshot(forceRefresh: true)
         let normalizedStatus = AdvisoryBridgeStatusInterpreter.normalizedStatus(currentRuntime.effectiveStatus)
         if runtimeRestartRequired(for: normalizedStatus) {
             restartSidecar()
@@ -333,7 +333,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
 
     private func runtimeRestartRequired(for status: String) -> Bool {
         switch status {
-        case "socket_missing", "transport_failure", "unavailable":
+        case "socket_missing", "transport_failure", "unavailable", "hung_start":
             return true
         default:
             return false
@@ -534,7 +534,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
 
     private func preparePrimaryRetry(for status: String) {
         switch AdvisoryBridgeStatusInterpreter.normalizedStatus(status) {
-        case "socket_missing", "transport_failure":
+        case "socket_missing", "transport_failure", "hung_start":
             // Transport-level failure — sidecar likely dead, restart is appropriate
             supervisor?.restart()
         case "timeout", "busy", "starting", "unavailable":
@@ -599,7 +599,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
                     health.lastError ?? health.statusDetail ?? ""
                 )
                 switch degradedStatus {
-                case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing":
+                case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing", "hung_start":
                     return degradedStatus
                 default:
                     break
@@ -614,7 +614,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
             }
             let normalized = AdvisoryBridgeStatusInterpreter.normalizedStatus(health.status)
             switch normalized {
-            case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing":
+            case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing", "hung_start":
                 return normalized
             default:
                 return supervisor?.status ?? "fallback"
@@ -625,7 +625,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
             }
             let normalized = AdvisoryBridgeStatusInterpreter.normalizedStatus(health.status)
             switch normalized {
-            case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing":
+            case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing", "hung_start":
                 return normalized
             default:
                 return supervisor?.status ?? normalized
@@ -693,6 +693,27 @@ private final class AdvisorySidecarSupervisorRegistry: @unchecked Sendable {
     }
 }
 
+private struct AdvisorySidecarPidfileRecord {
+    let pid: pid_t
+    let socketPath: String?
+    let startedAt: String?
+    let instanceID: String?
+}
+
+private struct AdvisorySidecarPidfilePayload: Decodable {
+    let pid: Int32
+    let socketPath: String?
+    let startedAt: String?
+    let instanceID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case pid
+        case socketPath = "socket_path"
+        case startedAt = "started_at"
+        case instanceID = "instance_id"
+    }
+}
+
 private enum AdvisorySidecarProcessJanitor {
     static func cleanup(keepingSocketPath: String?) {
         let lines = runningSidecarLines()
@@ -700,20 +721,21 @@ private enum AdvisorySidecarProcessJanitor {
 
         for line in lines {
             guard let parsed = parse(line) else { continue }
-            if let keepingSocketPath, parsed.socketPath == keepingSocketPath {
+            let pidfilePath = parsed.socketPath.map { $0 + ".pid" }
+            let pidfileRecord = pidfilePath.flatMap(readPidfileRecord(atPath:))
+            let ownedSocketPath = pidfileRecord?.socketPath ?? parsed.socketPath
+            if let keepingSocketPath, ownedSocketPath == keepingSocketPath {
                 continue
             }
 
-            _ = kill(parsed.pid, SIGTERM)
-            if let socketPath = parsed.socketPath {
-                if FileManager.default.fileExists(atPath: socketPath) {
-                    try? FileManager.default.removeItem(atPath: socketPath)
-                }
-                // Clean up pidfile associated with this socket
-                let pidfilePath = socketPath + ".pid"
-                if FileManager.default.fileExists(atPath: pidfilePath) {
-                    try? FileManager.default.removeItem(atPath: pidfilePath)
-                }
+            let ownerPID = pidfileRecord?.pid ?? parsed.pid
+            let stopped = terminatePID(ownerPID, reason: "janitor cleanup")
+            if stopped, let ownedSocketPath {
+                cleanupArtifacts(
+                    socketPath: ownedSocketPath,
+                    pidfilePath: ownedSocketPath + ".pid",
+                    expectedPID: ownerPID
+                )
             }
         }
     }
@@ -728,11 +750,11 @@ private enum AdvisorySidecarProcessJanitor {
 
         do {
             try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 || process.terminationStatus == 1 else {
                 return []
             }
-            let data = output.fileHandleForReading.readDataToEndOfFile()
             let text = String(data: data, encoding: .utf8) ?? ""
             return text
                 .split(separator: "\n")
@@ -765,6 +787,74 @@ private enum AdvisorySidecarProcessJanitor {
 
         return (pid: pid, socketPath: socketPath)
     }
+
+    private static func readPidfileRecord(atPath path: String) -> AdvisorySidecarPidfileRecord? {
+        guard
+            let contents = try? String(contentsOfFile: path, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !contents.isEmpty
+        else {
+            return nil
+        }
+
+        if let data = contents.data(using: .utf8),
+           let payload = try? JSONDecoder().decode(AdvisorySidecarPidfilePayload.self, from: data),
+           payload.pid > 0 {
+            return AdvisorySidecarPidfileRecord(
+                pid: payload.pid,
+                socketPath: payload.socketPath,
+                startedAt: payload.startedAt,
+                instanceID: payload.instanceID
+            )
+        }
+
+        guard let pid = Int32(contents), pid > 0 else {
+            return nil
+        }
+        return AdvisorySidecarPidfileRecord(pid: pid, socketPath: nil, startedAt: nil, instanceID: nil)
+    }
+
+    private static func terminatePID(_ pid: pid_t, reason: String) -> Bool {
+        guard pid > 1 else { return false }
+        if !processIsAlive(pid) {
+            return true
+        }
+
+        _ = Darwin.kill(pid, SIGTERM)
+        if waitForExit(pid: pid, timeoutSeconds: 2) {
+            return true
+        }
+
+        _ = Darwin.kill(pid, SIGKILL)
+        return waitForExit(pid: pid, timeoutSeconds: 2)
+    }
+
+    private static func waitForExit(pid: pid_t, timeoutSeconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if !processIsAlive(pid) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return !processIsAlive(pid)
+    }
+
+    private static func processIsAlive(_ pid: pid_t) -> Bool {
+        Darwin.kill(pid, 0) == 0 || errno == EPERM
+    }
+
+    private static func cleanupArtifacts(socketPath: String, pidfilePath: String, expectedPID: pid_t?) {
+        if let expectedPID, processIsAlive(expectedPID) {
+            return
+        }
+        if FileManager.default.fileExists(atPath: socketPath) {
+            try? FileManager.default.removeItem(atPath: socketPath)
+        }
+        if FileManager.default.fileExists(atPath: pidfilePath) {
+            try? FileManager.default.removeItem(atPath: pidfilePath)
+        }
+    }
 }
 
 private struct AdvisorySidecarSupervisorSnapshot {
@@ -791,6 +881,9 @@ private enum AdvisoryBridgeStatusInterpreter {
         }
         if lower.contains("starting") {
             return "starting"
+        }
+        if lower.contains("hung") {
+            return "hung_start"
         }
         if lower.contains("backoff") {
             return "backoff"
@@ -839,6 +932,8 @@ private enum AdvisoryBridgeStatusInterpreter {
             return autoStartEnabled
                 ? "memograph-advisor ещё не поднят. Memograph попробует запустить его автоматически."
                 : "memograph-advisor не запущен. Подними sidecar вручную или включи auto-start."
+        case "hung_start":
+            return "memograph-advisor завис на старте до создания сокета. Его нужно перезапустить принудительно."
         case "timeout":
             return "memograph-advisor не ответил вовремя. Возможно, runtime перегружен."
         case "busy":
@@ -910,6 +1005,13 @@ private enum AdvisoryBridgeStatusInterpreter {
 }
 
 private final class AdvisorySidecarSupervisor: @unchecked Sendable {
+    private enum StartupState: Equatable {
+        case stopped
+        case starting
+        case ready
+        case hungStart
+    }
+
     private var autoStart: Bool
     private let socketPath: String
     private var pidfilePath: String { socketPath + ".pid" }
@@ -918,14 +1020,17 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
     private var runtimeStatus: AdvisorySidecarRuntimeStatus
     private var probeTimeoutSeconds: Int
     private var environmentOverrides: [String: String]
+    private var startupGracePeriod: TimeInterval
     private let logger = Logger.advisory
     private let lock = NSLock()
     private var consecutiveFailures = 0
     private var lastHealthCheckAt: Date?
     private var lastStartAttemptAt: Date?
+    private var launchBeganAt: Date?
     private var lastKnownStatus = "socket_missing"
     private var lastError: String?
     private var process: Process?
+    private var ignoredTerminationPIDs: Set<pid_t> = []
 
     init(
         autoStart: Bool,
@@ -943,6 +1048,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         self.runtimeStatus = runtimeStatus
         self.probeTimeoutSeconds = max(2, probeTimeoutSeconds)
         self.environmentOverrides = environmentOverrides
+        self.startupGracePeriod = Self.parseStartupGracePeriod(from: environmentOverrides)
     }
 
     func updateConfiguration(
@@ -960,15 +1066,18 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         self.runtimeStatus = runtimeStatus
         self.probeTimeoutSeconds = max(2, probeTimeoutSeconds)
         self.environmentOverrides = environmentOverrides
+        self.startupGracePeriod = Self.parseStartupGracePeriod(from: environmentOverrides)
         lock.unlock()
     }
 
     func prepareForHealthCheck() {
+        recoverHungStartIfNeeded(now: Date())
         guard shouldAttempt(now: Date(), force: false) else { return }
         ensureStarted()
     }
 
     func prepareForExecution() {
+        recoverHungStartIfNeeded(now: Date())
         guard shouldAttempt(now: Date(), force: true) else { return }
         ensureStarted()
     }
@@ -981,6 +1090,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         lastError = health.lastError ?? health.statusDetail
         if health.status == "ok" {
             consecutiveFailures = 0
+            launchBeganAt = nil
             lastError = nil
         } else if countsAsFailureStatus(lastKnownStatus) {
             consecutiveFailures = min(maxConsecutiveFailures, consecutiveFailures + 1)
@@ -994,6 +1104,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         consecutiveFailures = 0
         lastHealthCheckAt = Date()
         lastKnownStatus = "ok"
+        launchBeganAt = nil
         lastError = nil
         lock.unlock()
     }
@@ -1017,34 +1128,30 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
 
     func shutdown() {
         let runningProcess: Process?
+        let managedPID: pid_t?
         let externalPID: pid_t?
         lock.lock()
         runningProcess = process
         process = nil
-        externalPID = readLivePIDFromPidfile(excluding: runningProcess?.processIdentifier)
+        managedPID = runningProcess?.processIdentifier
+        if let managedPID {
+            ignoredTerminationPIDs.insert(managedPID)
+        }
+        externalPID = readLivePIDFromPidfile(excluding: managedPID)
         lastStartAttemptAt = nil
+        launchBeganAt = nil
         lastKnownStatus = "socket_missing"
         lastError = nil
         consecutiveFailures = 0
         lock.unlock()
 
         if let runningProcess, runningProcess.isRunning {
-            runningProcess.terminate()
-            _ = waitForExit(of: runningProcess, timeoutSeconds: 2)
-            if runningProcess.isRunning {
-                runningProcess.interrupt()
-                _ = waitForExit(of: runningProcess, timeoutSeconds: 1)
-            }
-            if runningProcess.isRunning {
-                _ = Darwin.kill(runningProcess.processIdentifier, SIGKILL)
-            }
-        } else if let externalPID {
-            terminateExternalPID(externalPID)
+            _ = terminateTrackedProcess(runningProcess, reason: "shutdown")
         }
-        if FileManager.default.fileExists(atPath: socketPath) {
-            try? FileManager.default.removeItem(atPath: socketPath)
+        if let externalPID, externalPID != managedPID {
+            _ = terminatePID(externalPID, reason: "shutdown orphan owner")
         }
-        try? FileManager.default.removeItem(atPath: pidfilePath)
+        cleanupRuntimeArtifacts(expectedPID: externalPID ?? managedPID)
     }
 
     func restart() {
@@ -1061,6 +1168,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         let autoStartEnabled = autoStart
         let failureBudget = maxConsecutiveFailures
         let currentRuntimeStatus = runtimeStatus
+        let launchBeganAt = self.launchBeganAt
         let baseStatus = currentHealth.map { AdvisoryBridgeStatusInterpreter.normalizedStatus($0.status) } ?? lastKnownStatus
         let status: String
         let baseRuntimeError: String?
@@ -1071,7 +1179,16 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
             baseRuntimeError = details
         }
 
-        if processRunning && !socketPresent {
+        let startupState = currentStartupState(
+            now: Date(),
+            socketPresent: socketPresent,
+            processRunning: processRunning,
+            launchBeganAt: launchBeganAt
+        )
+
+        if startupState == .hungStart {
+            status = "hung_start"
+        } else if processRunning && !socketPresent {
             status = "starting"
         } else if baseRuntimeError != nil {
             status = "unavailable"
@@ -1174,17 +1291,28 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
                 return
             }
 
-            // Check pidfile for existing owner before probing or launching
-            if let pidString = try? String(contentsOfFile: pidfilePath, encoding: .utf8),
-               let pid = Int32(pidString.trimmingCharacters(in: .whitespacesAndNewlines)),
-               pid > 0 {
-                if kill(pid, 0) == 0 {
-                    // Process is alive — it owns this socket, do not launch a competitor
-                    lock.lock()
-                    lastKnownStatus = "ok"
-                    lastError = nil
-                    lock.unlock()
-                    return
+            // Check pidfile for existing owner before probing or launching.
+            // A live owner without a socket is only tolerated inside the startup grace window.
+            if let pidfileRecord = readPidfileRecord() {
+                if processIsAlive(pidfileRecord.pid) {
+                    if FileManager.default.fileExists(atPath: socketPath) {
+                        lock.lock()
+                        lastKnownStatus = "ok"
+                        lastError = nil
+                        lock.unlock()
+                        return
+                    }
+
+                    if pidfileIndicatesHungStart(pidfileRecord, now: Date()) {
+                        _ = terminatePID(pidfileRecord.pid, reason: "startup watchdog: pidfile owner never created socket")
+                        cleanupRuntimeArtifacts(expectedPID: pidfileRecord.pid)
+                    } else {
+                        lock.lock()
+                        lastKnownStatus = "starting"
+                        lastError = nil
+                        lock.unlock()
+                        return
+                    }
                 } else {
                     // Stale pidfile — process is dead, clean up
                     try? FileManager.default.removeItem(atPath: pidfilePath)
@@ -1272,6 +1400,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
             try process.run()
             lock.lock()
             self.process = process
+            self.launchBeganAt = Date()
             self.lastKnownStatus = "starting"
             self.lastError = nil
             lock.unlock()
@@ -1283,6 +1412,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
             if probeExistingSocketIsResponsive() {
                 lock.lock()
                 lastKnownStatus = "ok"
+                launchBeganAt = nil
                 lastError = nil
                 consecutiveFailures = 0
                 lock.unlock()
@@ -1290,6 +1420,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         } catch {
             lock.lock()
             consecutiveFailures = min(failureBudget, consecutiveFailures + 1)
+            launchBeganAt = nil
             lastKnownStatus = AdvisoryBridgeStatusInterpreter.normalizedStatus(error.localizedDescription)
             lastError = error.localizedDescription
             lock.unlock()
@@ -1298,10 +1429,17 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
     }
 
     private func handleTermination(_ process: Process) {
+        let processIdentifier = process.processIdentifier
         let reason = "memograph-advisor exited (\(process.terminationReason.rawValue):\(process.terminationStatus))"
         lock.lock()
         if self.process === process {
             self.process = nil
+        }
+        launchBeganAt = nil
+        if ignoredTerminationPIDs.remove(processIdentifier) != nil {
+            lock.unlock()
+            logger.info("memograph-advisor exit ignored for managed shutdown pid=\(processIdentifier, privacy: .public)")
+            return
         }
         let failureBudget = maxConsecutiveFailures
         lastKnownStatus = AdvisoryBridgeStatusInterpreter.normalizedStatus(reason)
@@ -1352,27 +1490,9 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: socketPath)
     }
 
-    private func waitForExit(
-        of process: Process,
-        timeoutSeconds: TimeInterval
-    ) -> Bool {
-        guard process.isRunning else { return true }
-
-        let semaphore = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in
-            semaphore.signal()
-        }
-        let result = semaphore.wait(timeout: .now() + timeoutSeconds)
-        if result == .timedOut {
-            process.terminationHandler = nil
-        }
-        return !process.isRunning
-    }
-
     private func readLivePIDFromPidfile(excluding managedPID: pid_t?) -> pid_t? {
         guard
-            let pidString = try? String(contentsOfFile: pidfilePath, encoding: .utf8),
-            let pid = Int32(pidString.trimmingCharacters(in: .whitespacesAndNewlines)),
+            let pid = readPidfileRecord()?.pid,
             pid > 0,
             managedPID != pid,
             processIsAlive(pid)
@@ -1382,14 +1502,161 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         return pid
     }
 
-    private func terminateExternalPID(_ pid: pid_t, timeoutSeconds: TimeInterval = 2) {
+    private func readPidfileRecord() -> AdvisorySidecarPidfileRecord? {
+        guard
+            let contents = try? String(contentsOfFile: pidfilePath, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !contents.isEmpty
+        else {
+            return nil
+        }
+
+        if let data = contents.data(using: .utf8),
+           let payload = try? JSONDecoder().decode(AdvisorySidecarPidfilePayload.self, from: data),
+           payload.pid > 0 {
+            return AdvisorySidecarPidfileRecord(
+                pid: payload.pid,
+                socketPath: payload.socketPath,
+                startedAt: payload.startedAt,
+                instanceID: payload.instanceID
+            )
+        }
+
+        guard let pid = Int32(contents), pid > 0 else {
+            return nil
+        }
+        return AdvisorySidecarPidfileRecord(pid: pid, socketPath: nil, startedAt: nil, instanceID: nil)
+    }
+
+    private func terminateTrackedProcess(_ process: Process, reason: String) -> Bool {
+        let pid = process.processIdentifier
+        guard pid > 1 else { return !process.isRunning }
+        return terminatePID(pid, reason: reason)
+    }
+
+    private func terminatePID(_ pid: pid_t, reason: String, timeoutSeconds: TimeInterval = 2) -> Bool {
+        guard pid > 1 else { return false }
+        if !processIsAlive(pid) {
+            return true
+        }
+
         _ = Darwin.kill(pid, SIGTERM)
+        if waitForPIDToExit(pid, timeoutSeconds: timeoutSeconds) {
+            return true
+        }
+
+        _ = Darwin.kill(pid, SIGKILL)
+        let terminated = waitForPIDToExit(pid, timeoutSeconds: timeoutSeconds)
+        if !terminated {
+            logger.error("Failed to terminate advisory sidecar pid=\(pid, privacy: .public) reason=\(reason, privacy: .public)")
+        }
+        return terminated
+    }
+
+    private func waitForPIDToExit(_ pid: pid_t, timeoutSeconds: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
-            guard processIsAlive(pid) else { return }
-            Thread.sleep(forTimeInterval: 0.05)
+            if !processIsAlive(pid) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
         }
-        _ = Darwin.kill(pid, SIGKILL)
+        return !processIsAlive(pid)
+    }
+
+    private func cleanupRuntimeArtifacts(expectedPID: pid_t?) {
+        if let expectedPID, processIsAlive(expectedPID) {
+            return
+        }
+        if FileManager.default.fileExists(atPath: socketPath) {
+            try? FileManager.default.removeItem(atPath: socketPath)
+        }
+        try? FileManager.default.removeItem(atPath: pidfilePath)
+    }
+
+    private func pidfileIndicatesHungStart(_ record: AdvisorySidecarPidfileRecord, now: Date) -> Bool {
+        guard let startedAt = record.startedAt else {
+            return false
+        }
+        let formatter = ISO8601DateFormatter()
+        guard let startedDate = formatter.date(from: startedAt) else {
+            return false
+        }
+        return now.timeIntervalSince(startedDate) > startupGracePeriod
+    }
+
+    private func recoverHungStartIfNeeded(now: Date) {
+        let trackedProcess: Process?
+        let managedPID: pid_t?
+        let externalPID: pid_t?
+        let reason: String
+
+        lock.lock()
+        let socketPresent = FileManager.default.fileExists(atPath: socketPath)
+        let processRunning = process?.isRunning == true
+        let startupState = currentStartupState(
+            now: now,
+            socketPresent: socketPresent,
+            processRunning: processRunning,
+            launchBeganAt: launchBeganAt
+        )
+        guard startupState == .hungStart else {
+            lock.unlock()
+            return
+        }
+        trackedProcess = process
+        managedPID = trackedProcess?.processIdentifier
+        if let managedPID {
+            ignoredTerminationPIDs.insert(managedPID)
+        }
+        process = nil
+        externalPID = readLivePIDFromPidfile(excluding: managedPID)
+        launchBeganAt = nil
+        lastStartAttemptAt = nil
+        lastKnownStatus = "hung_start"
+        reason = "startup watchdog: socket never appeared"
+        lastError = reason
+        consecutiveFailures = min(maxConsecutiveFailures, consecutiveFailures + 1)
+        lock.unlock()
+
+        if let trackedProcess, trackedProcess.isRunning {
+            _ = terminateTrackedProcess(trackedProcess, reason: reason)
+        }
+        if let externalPID, externalPID != managedPID {
+            _ = terminatePID(externalPID, reason: reason)
+        }
+        cleanupRuntimeArtifacts(expectedPID: externalPID ?? managedPID)
+    }
+
+    private func currentStartupState(
+        now: Date,
+        socketPresent: Bool,
+        processRunning: Bool,
+        launchBeganAt: Date?
+    ) -> StartupState {
+        if processRunning && socketPresent {
+            return .ready
+        }
+        if processRunning,
+           let launchBeganAt,
+           now.timeIntervalSince(launchBeganAt) > startupGracePeriod {
+            return .hungStart
+        }
+        if processRunning {
+            return .starting
+        }
+        return .stopped
+    }
+
+    private static func parseStartupGracePeriod(from environmentOverrides: [String: String]) -> TimeInterval {
+        guard
+            let rawValue = environmentOverrides["MEMOGRAPH_ADVISOR_STARTUP_GRACE_SECONDS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            let value = Double(rawValue),
+            value >= 1
+        else {
+            return 15
+        }
+        return value
     }
 
     private func processIsAlive(_ pid: pid_t) -> Bool {
@@ -1402,7 +1669,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
 
     private func restartableStatus(_ status: String) -> Bool {
         switch status {
-        case "socket_missing", "transport_failure", "timeout", "unavailable", "backoff":
+        case "socket_missing", "transport_failure", "timeout", "unavailable", "backoff", "hung_start":
             return true
         default:
             return false

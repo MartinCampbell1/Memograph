@@ -53,3 +53,4 @@ SQLite (DatabaseManager + migrations)
 - `AppSettings` controls operating mode, providers, privacy defaults, audio, and storage paths.
 - Credentials are stored in Keychain through `CredentialsStore`.
 - `AppPaths` resolves the current data locations.
+- Advisory runtime/inventory terminology is defined in [advisory-runtime-contract.md](advisory-runtime-contract.md).

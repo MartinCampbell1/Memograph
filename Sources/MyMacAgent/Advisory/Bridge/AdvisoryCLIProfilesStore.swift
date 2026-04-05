@@ -209,6 +209,28 @@ enum AdvisoryCLIProfilesStore {
         return selected
     }
 
+    static func setPreferredAccount(
+        provider: String,
+        accountName: String,
+        profilesPath: String = defaultProfilesPath,
+        fileManager: FileManager = .default
+    ) throws {
+        let normalizedProvider = provider.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAccountName = accountName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard supportedProviders.contains(normalizedProvider), !normalizedAccountName.isEmpty else {
+            throw AdvisoryCLIProfilesStoreError.unsupportedProvider(provider)
+        }
+
+        let root = URL(fileURLWithPath: expandedProfilesPath(profilesPath), isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true, attributes: nil)
+        let path = preferredAccountsURL(profilesPath: profilesPath)
+        var preferredAccounts = loadPreferredAccounts(profilesPath: profilesPath, fileManager: fileManager)
+        preferredAccounts[normalizedProvider] = normalizedAccountName
+        let payload = ["preferredAccounts": preferredAccounts]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: path, options: .atomic)
+    }
+
     private static let supportedProviders = ["claude", "gemini", "codex"]
 
     private static func makeProfile(
@@ -386,6 +408,19 @@ enum AdvisoryCLIProfilesStore {
         return payload
     }
 
+    private static func loadPreferredAccounts(
+        profilesPath: String,
+        fileManager: FileManager
+    ) -> [String: String] {
+        let path = preferredAccountsURL(profilesPath: profilesPath)
+        guard fileManager.fileExists(atPath: path.path),
+              let payload = readJSON(path) as? [String: Any],
+              let preferred = payload["preferredAccounts"] as? [String: String] else {
+            return [:]
+        }
+        return preferred
+    }
+
     private static func nextAccountName(
         provider: String,
         profilesPath: String,
@@ -450,6 +485,11 @@ enum AdvisoryCLIProfilesStore {
         let trimmed = profilesPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let raw = trimmed.isEmpty ? defaultProfilesPath : trimmed
         return (raw as NSString).expandingTildeInPath
+    }
+
+    private static func preferredAccountsURL(profilesPath: String) -> URL {
+        URL(fileURLWithPath: expandedProfilesPath(profilesPath), isDirectory: true)
+            .appendingPathComponent(".memograph-account-preferences.json")
     }
 
     private static func normalizedAccountName(_ accountName: String?, fallback: String) -> String {

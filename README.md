@@ -245,7 +245,7 @@ Memograph is designed for people who care about where their data goes.
 - Metadata-only mode for specific apps (tracks app name and duration, no screenshots or text)
 - One-click "Delete all data" in Settings
 
-More detail: [privacy-model.md](docs/privacy-model.md) &middot; [threat-model.md](docs/threat-model.md)
+More detail: [privacy-model.md](docs/privacy-model.md) &middot; [threat-model.md](docs/threat-model.md) &middot; [advisory-runtime-contract.md](docs/advisory-runtime-contract.md)
 
 ---
 
