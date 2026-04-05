@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import os
 
-final class AdvisoryBridgeClient {
+final class AdvisoryBridgeClient: @unchecked Sendable {
     private let primaryServer: AdvisoryBridgeServerProtocol?
     private let fallbackServer: AdvisoryBridgeServerProtocol
     private let mode: AdvisoryBridgeMode
