@@ -292,6 +292,7 @@ struct AdvisoryRecipeResult: Codable {
     let runId: String
     let artifactProposals: [AdvisoryArtifactCandidate]
     let continuityProposals: [ContinuityItemCandidate]
+    var source: String?  // "sidecar" | "stub" — nil treated as "sidecar" for backward compat
 }
 
 struct AdvisoryBridgeExecution {

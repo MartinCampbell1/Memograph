@@ -1140,32 +1140,35 @@ final class LocalAdvisoryBridgeStub: AdvisoryBridgeServerProtocol {
     }
 
     func runRecipe(_ request: AdvisoryRecipeRequest) throws -> AdvisoryRecipeResult {
+        var result: AdvisoryRecipeResult
         switch request.recipeName {
         case "continuity_resume":
-            return continuityResume(request)
+            result = continuityResume(request)
         case "thread_maintenance":
-            return threadMaintenance(request)
+            result = threadMaintenance(request)
         case "writing_seed":
-            return writingSeed(request)
+            result = writingSeed(request)
         case "tweet_from_thread":
-            return tweetFromThread(request)
+            result = tweetFromThread(request)
         case "research_direction":
-            return researchDirection(request)
+            result = researchDirection(request)
         case "weekly_reflection":
-            return weeklyReflection(request)
+            result = weeklyReflection(request)
         case "focus_reflection":
-            return focusReflection(request)
+            result = focusReflection(request)
         case "social_signal":
-            return socialSignal(request)
+            result = socialSignal(request)
         case "health_pulse":
-            return healthPulse(request)
+            result = healthPulse(request)
         case "decision_review":
-            return decisionReview(request)
+            result = decisionReview(request)
         case "life_admin_review":
-            return lifeAdminReview(request)
+            result = lifeAdminReview(request)
         default:
-            return AdvisoryRecipeResult(runId: request.runId, artifactProposals: [], continuityProposals: [])
+            result = AdvisoryRecipeResult(runId: request.runId, artifactProposals: [], continuityProposals: [])
         }
+        result.source = "stub"
+        return result
     }
 
     func cancelRun(runId: String) {}
@@ -2079,11 +2082,15 @@ final class JSONRPCAdvisoryBridgeServer: AdvisoryBridgeServerProtocol {
         guard FileManager.default.fileExists(atPath: socketPath) else {
             throw AdvisoryBridgeError.unavailable("Advisory sidecar socket is missing at \(socketPath).")
         }
-        return try call(
+        var result: AdvisoryRecipeResult = try call(
             method: "advisor.runRecipe",
             params: request,
             timeoutSeconds: request.timeoutSeconds
         )
+        if result.source == nil {
+            result.source = "sidecar"
+        }
+        return result
     }
 
     func cancelRun(runId: String) {
