@@ -1434,7 +1434,7 @@ struct SettingsView: View {
 
         let checkedAt = runtimeSnapshot.bridgeHealth.checkedAt ?? "unknown time"
         if let activeProvider = runtimeSnapshot.bridgeHealth.activeProviderName, !activeProvider.isEmpty {
-            return "Runtime probe: \(activeProvider.capitalized) answered at \(checkedAt)"
+            return "Runtime probe: \(activeProvider.capitalized) is the current active provider at \(checkedAt)"
         }
         return "Runtime probe: last sidecar check at \(checkedAt)"
     }
@@ -1453,7 +1453,7 @@ struct SettingsView: View {
                         Text(diagnostic.displayName)
                             .font(.headline)
                         if activeProviderName == diagnostic.providerName {
-                            Text("Selected")
+                            Text("Active runtime")
                                 .font(.caption2.weight(.semibold))
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)

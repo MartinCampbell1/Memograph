@@ -2269,7 +2269,7 @@ final class JSONRPCAdvisoryBridgeServer: AdvisoryBridgeServerProtocol {
         return try call(
             method: "advisor.accounts.list",
             params: AdvisoryAccountsParams(forceRefresh: forceRefresh),
-            timeoutSeconds: min(6, defaultTimeoutSeconds)
+            timeoutSeconds: forceRefresh ? max(30, defaultTimeoutSeconds) : min(6, defaultTimeoutSeconds)
         )
     }
 
@@ -2325,7 +2325,7 @@ final class JSONRPCAdvisoryBridgeServer: AdvisoryBridgeServerProtocol {
                 accountName: accountName,
                 forceRefresh: forceRefresh
             ),
-            timeoutSeconds: min(forceRefresh ? 6 : 4, defaultTimeoutSeconds)
+            timeoutSeconds: forceRefresh ? max(15, defaultTimeoutSeconds) : min(4, defaultTimeoutSeconds)
         )
     }
 
