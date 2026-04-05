@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import json
+import logging
 import math
 import os
 import re
@@ -15,8 +16,11 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("memograph_advisor")
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -51,9 +55,10 @@ def _read_json_file(path: Path) -> Any:
 class ProviderDiagnostics:
     def __init__(self, probe_timeout_seconds: int) -> None:
         self.probe_timeout_seconds = max(2, probe_timeout_seconds)
-        self._lock = threading.Lock()
+        self._snapshot_lock = threading.Lock()
         self._cached_health: dict[str, Any] | None = None
         self._checked_at = 0.0
+        self._refresh_in_progress = False
         self._cache_ttl_seconds = max(15.0, float(os.getenv("MEMOGRAPH_ADVISOR_HEALTH_CACHE_TTL", "30")))
         self._provider_state: dict[str, dict[str, Any]] = {}
         configured_profiles_dir = os.getenv("MEMOGRAPH_ADVISOR_PROFILES_DIR", "").strip()
@@ -134,17 +139,19 @@ class ProviderDiagnostics:
         preferred_accounts = self._load_preferred_accounts()
         preferred_accounts[provider] = account_name
         self._save_preferred_accounts(preferred_accounts)
-        self._invalidate_cache_locked()
+        with self._snapshot_lock:
+            self._invalidate_cache()
 
     def _record_account_use_locked(self, provider: str, account_name: str | None = None) -> None:
         account_name = account_name or self._selected_profile_name(provider)
         if not account_name:
             return
         state_key = self._profile_account_key(provider, account_name)
-        state = self._account_state.setdefault(state_key, {"cooldown_until": 0.0, "failure_count": 0, "requests_made": 0})
-        state["requests_made"] = int(state.get("requests_made", 0)) + 1
-        state["last_used_at"] = int(time.time())
-        self._invalidate_cache_locked()
+        with self._snapshot_lock:
+            state = self._account_state.setdefault(state_key, {"cooldown_until": 0.0, "failure_count": 0, "requests_made": 0})
+            state["requests_made"] = int(state.get("requests_made", 0)) + 1
+            state["last_used_at"] = int(time.time())
+            self._invalidate_cache()
 
     def _profile_account_key(self, provider: str, account_name: str) -> str:
         return f"{provider}:{account_name}"
@@ -211,6 +218,26 @@ class ProviderDiagnostics:
                     maybe_email = str(oauth.get("email", "")).strip()
                     if maybe_email:
                         return maybe_email
+        if provider == "codex":
+            # Try auth.json for codex identity
+            auth_data = _read_json_file(profile_path / "auth.json")
+            if isinstance(auth_data, dict):
+                email = str(auth_data.get("email", "")).strip()
+                if email:
+                    return email
+                user = str(auth_data.get("user", "")).strip()
+                if user:
+                    return user
+            # Try config.toml
+            config_path = profile_path / "config.toml"
+            if config_path.exists():
+                try:
+                    content = config_path.read_text(encoding="utf-8")
+                    for line in content.splitlines():
+                        if line.strip().startswith("email") and "=" in line:
+                            return line.split("=", 1)[1].strip().strip('"').strip("'")
+                except OSError:
+                    pass
         return ""
 
     def _ensure_gemini_auth_settings(self, home_dir: Path) -> None:
@@ -249,23 +276,76 @@ class ProviderDiagnostics:
             return
 
     def health(self, force_refresh: bool = False) -> dict[str, Any]:
-        with self._lock:
+        with self._snapshot_lock:
             now = time.time()
-            if (
-                not force_refresh
-                and self._cached_health is not None
-                and (now - self._checked_at) < self._health_cache_ttl_seconds(self._cached_health, now)
-            ):
-                return dict(self._cached_health)
+            cached = self._cached_health
+            checked_at = self._checked_at
+            stale = cached is None or (now - checked_at) >= self._health_cache_ttl_seconds(cached, now)
+            refresh_running = self._refresh_in_progress
 
-            computed = self._compute_health()
-            self._cached_health = dict(computed)
-            self._checked_at = now
-            return computed
+        if not force_refresh and cached is not None:
+            result = dict(cached)
+            if stale and not refresh_running:
+                self._trigger_background_refresh()
+            result["isStale"] = stale
+            result["stalenessSeconds"] = int(now - checked_at) if checked_at else 0
+            result["refreshInProgress"] = refresh_running
+            return result
+
+        # force_refresh requested, or no cache at all — synchronous refresh
+        return self._do_synchronous_refresh()
+
+    def _trigger_background_refresh(self) -> None:
+        with self._snapshot_lock:
+            if self._refresh_in_progress:
+                return
+            self._refresh_in_progress = True
+
+        thread = threading.Thread(target=self._background_refresh, daemon=True)
+        thread.start()
+
+    def _background_refresh(self) -> None:
+        try:
+            computed = self._compute_health()  # runs OUTSIDE any lock
+            with self._snapshot_lock:
+                self._cached_health = dict(computed)
+                self._checked_at = time.time()
+        except Exception:
+            logger.exception("Background health refresh failed")
+        finally:
+            with self._snapshot_lock:
+                self._refresh_in_progress = False
+
+    def _do_synchronous_refresh(self) -> dict[str, Any]:
+        with self._snapshot_lock:
+            if self._refresh_in_progress:
+                # Another thread is already refreshing; return stale cache if available
+                if self._cached_health is not None:
+                    result = dict(self._cached_health)
+                    result["isStale"] = True
+                    result["stalenessSeconds"] = int(time.time() - self._checked_at) if self._checked_at else 0
+                    result["refreshInProgress"] = True
+                    return result
+            self._refresh_in_progress = True
+
+        try:
+            computed = self._compute_health()  # OUTSIDE lock
+            now = time.time()
+            with self._snapshot_lock:
+                self._cached_health = dict(computed)
+                self._checked_at = now
+            result = dict(computed)
+            result["isStale"] = False
+            result["stalenessSeconds"] = 0
+            result["refreshInProgress"] = False
+            return result
+        finally:
+            with self._snapshot_lock:
+                self._refresh_in_progress = False
 
     def _quick_provider_check(self) -> dict[str, Any] | None:
         """Return cached health if a runnable provider exists, else None."""
-        with self._lock:
+        with self._snapshot_lock:
             if self._cached_health is None:
                 return None
             health = dict(self._cached_health)
@@ -281,7 +361,7 @@ class ProviderDiagnostics:
             return health
 
     def accounts(self, force_refresh: bool = False) -> dict[str, Any]:
-        with self._lock:
+        with self._snapshot_lock:
             now = time.time()
             if (
                 not force_refresh
@@ -290,10 +370,11 @@ class ProviderDiagnostics:
             ):
                 return json.loads(json.dumps(self._cached_accounts))
 
-            computed = self._compute_accounts_snapshot(now=now, force_refresh=force_refresh)
+        computed = self._compute_accounts_snapshot(now=now, force_refresh=force_refresh)
+        with self._snapshot_lock:
             self._cached_accounts = json.loads(json.dumps(computed))
             self._accounts_checked_at = now
-            return computed
+        return computed
 
     def _compute_accounts_snapshot(self, now: float, force_refresh: bool) -> dict[str, Any]:
         checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
@@ -443,13 +524,15 @@ class ProviderDiagnostics:
         status = str(result.get("status") or "unavailable").strip().lower() or "unavailable"
         detail = str(result.get("detail") or f"{provider}/{account_name} unavailable.").strip()
         identity = self._normalize_optional_text(result.get("accountIdentity"))
-        state["last_checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        checked_at_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
 
         if status == "ok":
-            state["cooldown_until"] = 0.0
-            state["last_failure_status"] = None
-            state["last_failure_detail"] = None
-            state["failure_count"] = 0
+            with self._snapshot_lock:
+                state["last_checked_at"] = checked_at_str
+                state["cooldown_until"] = 0.0
+                state["last_failure_status"] = None
+                state["last_failure_detail"] = None
+                state["failure_count"] = 0
             return {
                 "binaryPresent": True,
                 "sessionDetected": True,
@@ -459,6 +542,8 @@ class ProviderDiagnostics:
                 "identity": identity,
             }
 
+        with self._snapshot_lock:
+            state["last_checked_at"] = checked_at_str
         self._record_account_failure_locked(state_key=state_key, status=status, detail=detail, now=now)
         return {
             "binaryPresent": True,
@@ -716,11 +801,28 @@ class ProviderDiagnostics:
             for profile_path in self._profile_directories(provider)
         ]
 
-        selected = next((account for account in account_snapshots if account.get("preferred")), None)
-        if selected is None:
-            selected = next((account for account in account_snapshots if account.get("available")), None)
-        if selected is None and account_snapshots:
-            selected = account_snapshots[0]
+        # Selection: prefer preferred-and-available, then any available, then
+        # preferred-but-unavailable (for display), then first account.
+        preferred_available = next(
+            (a for a in account_snapshots if a.get("preferred") and a.get("available")), None
+        )
+        any_available = next(
+            (a for a in account_snapshots if a.get("available")), None
+        )
+
+        if preferred_available:
+            selected = preferred_available
+        elif any_available:
+            selected = any_available
+        else:
+            selected = next(
+                (a for a in account_snapshots if a.get("preferred")),
+                account_snapshots[0] if account_snapshots else None,
+            )
+
+        # Provider is runnable if ANY account is available, not just selected
+        provider_runnable = any_available is not None
+
         if selected is None:
             return self._provider_snapshot(
                 provider=provider,
@@ -744,7 +846,8 @@ class ProviderDiagnostics:
         supported_actions.append("relogin")
 
         detail_prefix = selected.get("label") or selected.get("identity") or selected.get("accountName")
-        status = "ok" if selected.get("available") else ("session_expired" if selected.get("authState") == "error" else "session_missing")
+        # Provider status is "ok" when ANY account is available, not just selected
+        status = "ok" if provider_runnable else ("session_expired" if selected.get("authState") == "error" else "session_missing")
         detail = selected.get("detail") or "Imported account unavailable."
         if detail_prefix:
             detail = f"{detail_prefix}: {detail}"
@@ -758,14 +861,14 @@ class ProviderDiagnostics:
             priority=priority,
             cooldown_remaining_seconds=selected.get("cooldownRemainingSeconds"),
             failure_count=1 if selected.get("lastError") else 0,
-            runnable=bool(selected.get("available")),
+            runnable=provider_runnable,
             account_identity=self._normalize_optional_text(selected.get("identity")),
             account_detail=self._normalize_optional_text(selected.get("label") or selected.get("accountName")),
             config_directory=str(self.profiles_dir() / provider),
             supported_actions=supported_actions,
             last_checked_at=checked_at,
         )
-        return snapshot, bool(selected.get("available"))
+        return snapshot, provider_runnable
 
     def _fake_provider_snapshot(
         self,
@@ -816,18 +919,20 @@ class ProviderDiagnostics:
         elif status == "cooldown":
             if cooldown_seconds is None:
                 cooldown_seconds = self._provider_cooldown_seconds
-            state["cooldown_until"] = max(float(state.get("cooldown_until", 0.0)), now + cooldown_seconds)
-            state["last_failure_status"] = "cooldown"
-            state["last_failure_detail"] = detail or f"{provider} is cooling down."
-            state["failure_count"] = int(state.get("failure_count", 0)) + 1
+            with self._snapshot_lock:
+                state["cooldown_until"] = max(float(state.get("cooldown_until", 0.0)), now + cooldown_seconds)
+                state["last_failure_status"] = "cooldown"
+                state["last_failure_detail"] = detail or f"{provider} is cooling down."
+                state["failure_count"] = int(state.get("failure_count", 0)) + 1
             detail = self._with_cooldown_detail(state["last_failure_detail"], state["cooldown_until"], now)
         elif self._status_triggers_cooldown(status):
             if cooldown_seconds is None:
                 cooldown_seconds = self._provider_cooldown_seconds
-            state["cooldown_until"] = max(float(state.get("cooldown_until", 0.0)), now + cooldown_seconds)
-            state["last_failure_status"] = status
-            state["last_failure_detail"] = detail or f"{provider} provider unavailable."
-            state["failure_count"] = int(state.get("failure_count", 0)) + 1
+            with self._snapshot_lock:
+                state["cooldown_until"] = max(float(state.get("cooldown_until", 0.0)), now + cooldown_seconds)
+                state["last_failure_status"] = status
+                state["last_failure_detail"] = detail or f"{provider} provider unavailable."
+                state["failure_count"] = int(state.get("failure_count", 0)) + 1
             detail = self._with_cooldown_detail(state["last_failure_detail"], state["cooldown_until"], now)
         elif status == "ok":
             if existing_cooldown_remaining > 0:
@@ -837,10 +942,11 @@ class ProviderDiagnostics:
                     now,
                 )
             else:
-                state["cooldown_until"] = 0.0
-                state["last_failure_status"] = None
-                state["last_failure_detail"] = None
-                state["failure_count"] = 0
+                with self._snapshot_lock:
+                    state["cooldown_until"] = 0.0
+                    state["last_failure_status"] = None
+                    state["last_failure_detail"] = None
+                    state["failure_count"] = 0
 
         cooldown_remaining, cooldown_until = self._cooldown_snapshot(state, now)
         if cooldown_remaining > 0 and status == "ok":
@@ -1006,12 +1112,13 @@ class ProviderDiagnostics:
         result_account_identity = self._normalize_optional_text(result.get("accountIdentity"))
         result_account_detail = self._normalize_optional_text(result.get("accountDetail"))
         if status == "ok":
-            state["cooldown_until"] = 0.0
-            state["last_failure_status"] = None
-            state["last_failure_detail"] = None
-            state["failure_count"] = 0
-            state["last_account_identity"] = result_account_identity
-            state["last_account_detail"] = result_account_detail
+            with self._snapshot_lock:
+                state["cooldown_until"] = 0.0
+                state["last_failure_status"] = None
+                state["last_failure_detail"] = None
+                state["failure_count"] = 0
+                state["last_account_identity"] = result_account_identity
+                state["last_account_detail"] = result_account_detail
             snapshot = self._provider_snapshot(
                 provider=provider,
                 status="ok",
@@ -1108,13 +1215,14 @@ class ProviderDiagnostics:
         now: float,
         cooldown_seconds: int | None = None,
     ) -> None:
-        state = self._provider_state.setdefault(provider, {"cooldown_until": 0.0, "failure_count": 0})
-        cooldown_seconds = cooldown_seconds or self._provider_cooldown_seconds
-        state["cooldown_until"] = max(float(state.get("cooldown_until", 0.0)), now + cooldown_seconds)
-        state["last_failure_status"] = status
-        state["last_failure_detail"] = detail
-        state["failure_count"] = int(state.get("failure_count", 0)) + 1
-        self._invalidate_cache_locked()
+        with self._snapshot_lock:
+            state = self._provider_state.setdefault(provider, {"cooldown_until": 0.0, "failure_count": 0})
+            cooldown_seconds = cooldown_seconds or self._provider_cooldown_seconds
+            state["cooldown_until"] = max(float(state.get("cooldown_until", 0.0)), now + cooldown_seconds)
+            state["last_failure_status"] = status
+            state["last_failure_detail"] = detail
+            state["failure_count"] = int(state.get("failure_count", 0)) + 1
+            self._invalidate_cache()
 
     def _record_account_failure_locked(
         self,
@@ -1124,16 +1232,17 @@ class ProviderDiagnostics:
         now: float,
         cooldown_seconds: int | None = None,
     ) -> None:
-        state = self._account_state.setdefault(state_key, {"cooldown_until": 0.0, "failure_count": 0, "requests_made": 0})
-        cooldown_seconds = cooldown_seconds or self._provider_cooldown_seconds
-        state["cooldown_until"] = max(float(state.get("cooldown_until", 0.0)), now + cooldown_seconds)
-        state["last_failure_status"] = status
-        state["last_failure_detail"] = detail
-        state["failure_count"] = int(state.get("failure_count", 0)) + 1
-        state["last_checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-        self._invalidate_cache_locked()
+        with self._snapshot_lock:
+            state = self._account_state.setdefault(state_key, {"cooldown_until": 0.0, "failure_count": 0, "requests_made": 0})
+            cooldown_seconds = cooldown_seconds or self._provider_cooldown_seconds
+            state["cooldown_until"] = max(float(state.get("cooldown_until", 0.0)), now + cooldown_seconds)
+            state["last_failure_status"] = status
+            state["last_failure_detail"] = detail
+            state["failure_count"] = int(state.get("failure_count", 0)) + 1
+            state["last_checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+            self._invalidate_cache()
 
-    def _invalidate_cache_locked(self) -> None:
+    def _invalidate_cache(self) -> None:
         self._cached_health = None
         self._checked_at = 0.0
         self._cached_accounts = None
@@ -1581,6 +1690,25 @@ class ProviderDiagnostics:
                 active = str(payload.get("active", "")).strip()
                 if active:
                     return active
+        if provider == "codex":
+            codex_dir = profile_root / "home" / ".codex"
+            auth_data = self._read_json_file(codex_dir / "auth.json")
+            if isinstance(auth_data, dict):
+                email = str(auth_data.get("email", "")).strip()
+                if email:
+                    return email
+                user = str(auth_data.get("user", "")).strip()
+                if user:
+                    return user
+            config_path = codex_dir / "config.toml"
+            if config_path.exists():
+                try:
+                    content = config_path.read_text(encoding="utf-8")
+                    for line in content.splitlines():
+                        if line.strip().startswith("email") and "=" in line:
+                            return line.split("=", 1)[1].strip().strip('"').strip("'")
+                except OSError:
+                    pass
         return None
 
     def _read_json_file(self, path: Path) -> Any:
@@ -1619,8 +1747,18 @@ class ProviderDiagnostics:
         return None
 
 
+@dataclass(frozen=True)
+class ExecutionBinding:
+    """Immutable binding from routing to execution — ensures handlers use the routed provider."""
+    provider_name: str
+    account_name: str | None
+    route_reason: str  # "recipe_preferred" | "fallback" | "only_available"
+    attempt_index: int
+
+
 class AdvisoryRuntime:
     def __init__(self, probe_timeout_seconds: int) -> None:
+        self._logger = logging.getLogger("memograph_advisor")
         self.provider_diagnostics = ProviderDiagnostics(probe_timeout_seconds=probe_timeout_seconds)
         self._cancelled_runs: set[str] = set()
         self._lock = threading.Lock()
@@ -1676,11 +1814,11 @@ class AdvisoryRuntime:
         except (FileNotFoundError, ValueError) as exc:
             raise JsonRPCMethodError(-32020, str(exc)) from exc
 
-        with self.provider_diagnostics._lock:
-            preferred_accounts = self.provider_diagnostics._load_preferred_accounts()
-            preferred_accounts.setdefault(provider, imported_name)
-            self.provider_diagnostics._save_preferred_accounts(preferred_accounts)
-            self.provider_diagnostics._invalidate_cache_locked()
+        preferred_accounts = self.provider_diagnostics._load_preferred_accounts()
+        preferred_accounts.setdefault(provider, imported_name)
+        self.provider_diagnostics._save_preferred_accounts(preferred_accounts)
+        with self.provider_diagnostics._snapshot_lock:
+            self.provider_diagnostics._invalidate_cache()
 
         return self._account_action_result(
             provider=provider,
@@ -1721,8 +1859,8 @@ class AdvisoryRuntime:
         except FileNotFoundError as exc:
             raise JsonRPCMethodError(-32021, str(exc)) from exc
         normalized = set_account_label(self.provider_diagnostics.profiles_dir(), provider, account_name, label)
-        with self.provider_diagnostics._lock:
-            self.provider_diagnostics._invalidate_cache_locked()
+        with self.provider_diagnostics._snapshot_lock:
+            self.provider_diagnostics._invalidate_cache()
         message = (
             f"Updated label for {provider}/{account_name}."
             if normalized
@@ -1744,8 +1882,7 @@ class AdvisoryRuntime:
             self.provider_diagnostics._profile_directory(provider, account_name)
         except FileNotFoundError as exc:
             raise JsonRPCMethodError(-32021, str(exc)) from exc
-        with self.provider_diagnostics._lock:
-            self.provider_diagnostics._set_preferred_account_locked(provider, account_name)
+        self.provider_diagnostics._set_preferred_account_locked(provider, account_name)
         return self._account_action_result(
             provider=provider,
             account_name=account_name,
@@ -1832,44 +1969,57 @@ class AdvisoryRuntime:
         except (subprocess.TimeoutExpired, OSError):
             return None
 
-    def _current_provider_name(self) -> str | None:
-        """Return the currently active provider name from cached health.
-        Never triggers a full provider probe — uses quick check only."""
-        health = self.provider_diagnostics._quick_provider_check()
-        if health is None:
-            # Only use cached health, never force a full probe here
-            with self.provider_diagnostics._lock:
-                if self.provider_diagnostics._cached_health is not None:
-                    health = dict(self.provider_diagnostics._cached_health)
-        if health is None:
-            return None
-        return str(health.get("activeProviderName") or "").strip().lower() or None
-
     def _select_account_for_provider(self, provider: str) -> str | None:
-        """Select the best account for a provider, respecting cooldown and LRU rotation."""
-        with self.provider_diagnostics._lock:
-            profiles = self.provider_diagnostics._profile_directories(provider)
-            if not profiles:
-                return self.provider_diagnostics._selected_profile_name(provider)
+        """Select the best runnable account for a provider.
 
-            now = time.time()
-            available: list[tuple[str, float]] = []
-            for profile_path in profiles:
-                acc_name = profile_path.name
+        An account is runnable only if ALL of:
+        - binaryPresent (CLI installed)
+        - sessionDetected (session marker exists)
+        - authState verified (no last_failure_status)
+        - cooldownRemainingSeconds == 0 (not on cooldown)
+
+        Preferred account is used as bias (tried first if runnable), not a hard
+        blocker.  Among runnable accounts, the least-recently-used wins.
+        """
+        profiles = self.provider_diagnostics._profile_directories(provider)
+        if not profiles:
+            return self.provider_diagnostics._selected_profile_name(provider)
+
+        preferred = self.provider_diagnostics._load_preferred_accounts().get(provider)
+        binary_present = shutil.which(self.provider_diagnostics._provider_binary(provider)) is not None
+        now = time.time()
+
+        # Collect per-profile filesystem checks outside the lock
+        profile_fs: list[tuple[str, bool]] = []
+        for profile_path in profiles:
+            session_detected = self.provider_diagnostics._profile_has_session_marker(provider, profile_path)
+            profile_fs.append((profile_path.name, session_detected))
+
+        # Evaluate runnable criteria under the lock (only _account_state reads)
+        runnable: list[tuple[str, float]] = []
+        with self.provider_diagnostics._snapshot_lock:
+            for acc_name, session_detected in profile_fs:
+                if not binary_present or not session_detected:
+                    continue
                 state_key = self.provider_diagnostics._profile_account_key(provider, acc_name)
                 state = self.provider_diagnostics._account_state.get(state_key, {})
-                cooldown_until = float(state.get("cooldown_until", 0.0))
-                if now < cooldown_until:
+                if now < float(state.get("cooldown_until", 0.0)):
+                    continue
+                if state.get("last_failure_status"):
                     continue
                 last_used = float(state.get("last_used_at", 0.0))
-                available.append((acc_name, last_used))
+                runnable.append((acc_name, last_used))
 
-            if not available:
-                return None
+        if not runnable:
+            return None
 
-            # Prefer least-recently-used account
-            available.sort(key=lambda x: x[1])
-            return available[0][0]
+        # Preferred as bias: use it if it is runnable
+        if preferred and any(acc[0] == preferred for acc in runnable):
+            return preferred
+
+        # Otherwise least-recently-used among runnable accounts
+        runnable.sort(key=lambda x: x[1])
+        return runnable[0][0]
 
     def _select_provider_for_recipe(
         self,
@@ -1895,7 +2045,7 @@ class AdvisoryRuntime:
             status = statuses.get(provider, {})
             if str(status.get("status", "")).strip().lower() not in ("ok", ""):
                 continue
-            with self.provider_diagnostics._lock:
+            with self.provider_diagnostics._snapshot_lock:
                 state = self.provider_diagnostics._provider_state.get(provider, {})
                 if now < float(state.get("cooldown_until", 0.0)):
                     continue
@@ -1912,6 +2062,7 @@ class AdvisoryRuntime:
                 return {
                     "runId": run_id,
                     "artifactProposals": [],
+                    # continuityProposals: post-V1 feature — always empty in V1 scope
                     "continuityProposals": [],
                 }
 
@@ -1936,6 +2087,7 @@ class AdvisoryRuntime:
         last_failure_status: str | None = None
 
         for attempt in range(attempt_budget):
+            start_time = time.time()
             health = self.provider_diagnostics._quick_provider_check()
             if health is None:
                 health = self.provider_diagnostics.health(force_refresh=(attempt > 0))
@@ -1955,9 +2107,9 @@ class AdvisoryRuntime:
 
             account_name = self._select_account_for_provider(provider_name)
             routing_type = "recipe_preferred" if provider_name in self._recipe_routing.get(recipe_name, [])[:1] else "fallback"
-            logger.info(
-                "recipe=%s provider=%s account=%s attempt=%d routing=%s",
-                recipe_name, provider_name, account_name, attempt + 1, routing_type,
+            self._logger.info(
+                "recipe_start run_id=%s recipe=%s provider=%s account=%s attempt=%d routing=%s",
+                run_id, recipe_name, provider_name, account_name, attempt + 1, routing_type,
             )
 
             failure = self.provider_diagnostics._consume_fake_run_failure(provider_name)
@@ -1968,24 +2120,35 @@ class AdvisoryRuntime:
                     or f"{provider_name} simulated run failure ({failure_status})."
                 ).strip()
                 cooldown_seconds = self.provider_diagnostics._coerce_cooldown_seconds((failure or {}).get("cooldownSeconds"))
-                with self.provider_diagnostics._lock:
-                    self.provider_diagnostics._record_provider_failure_locked(
-                        provider=provider_name,
-                        status=failure_status,
-                        detail=failure_detail,
-                        now=time.time(),
-                        cooldown_seconds=cooldown_seconds,
-                    )
+                self.provider_diagnostics._record_provider_failure_locked(
+                    provider=provider_name,
+                    status=failure_status,
+                    detail=failure_detail,
+                    now=time.time(),
+                    cooldown_seconds=cooldown_seconds,
+                )
                 last_failure_detail = failure_detail
                 last_failure_status = failure_status
                 continue
 
-            with self.provider_diagnostics._lock:
-                self.provider_diagnostics._record_account_use_locked(provider_name, account_name)
-            proposals = handler(packet, recipe_name) if handler else []
+            binding = ExecutionBinding(
+                provider_name=provider_name,
+                account_name=account_name,
+                route_reason=routing_type,
+                attempt_index=attempt + 1,
+            )
+            self.provider_diagnostics._record_account_use_locked(provider_name, account_name)
+            proposals = handler(packet, recipe_name, binding) if handler else []
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            self._logger.info(
+                "recipe_done run_id=%s recipe=%s provider=%s account=%s latency_ms=%d fallback=%s",
+                run_id, recipe_name, provider_name, account_name, elapsed_ms,
+                "false" if routing_type == "recipe_preferred" else "true",
+            )
             return {
                 "runId": run_id,
                 "artifactProposals": proposals,
+                # continuityProposals: post-V1 feature — always empty in V1 scope
                 "continuityProposals": [],
             }
 
@@ -1996,9 +2159,13 @@ class AdvisoryRuntime:
             failure_detail = str(last_health.get("statusDetail") or last_health.get("lastError") or failure_status)
         else:
             failure_detail = "No provider available"
+        self._logger.warning(
+            "recipe_exhausted run_id=%s recipe=%s last_status=%s last_detail=%s",
+            run_id, recipe_name, failure_status, failure_detail,
+        )
         raise JsonRPCMethodError(-32002, f"Advisory provider exhausted ({failure_status}): {failure_detail}")
 
-    def _continuity_resume(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _continuity_resume(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         thread = self._primary_thread(packet)
         if thread is None:
             return []
@@ -2022,10 +2189,9 @@ class AdvisoryRuntime:
         continuations = self._suggested_continuations(thread, items, packet.get("salientSessions", []))
 
         # Try provider CLI for richer generation
-        provider = self._current_provider_name()
         generated_by = "local_heuristic"
         provider_output: str | None = None
-        if provider:
+        if binding.provider_name:
             context_parts = [
                 f"Thread: {thread['title']}",
                 f"Summary: {thread.get('summary', 'N/A')}",
@@ -2041,9 +2207,17 @@ class AdvisoryRuntime:
                 "return to their main thread. Include 3 concrete re-entry points.\n\n"
                 + "\n".join(context_parts)
             )
-            provider_output = self._call_provider_cli(provider, prompt)
+            provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
             if provider_output:
                 generated_by = "provider_cli"
+            else:
+                generated_by = "local_heuristic_fallback"
+                self.provider_diagnostics._record_provider_failure_locked(
+                    provider=binding.provider_name,
+                    status="cli_generation_failed",
+                    detail=f"{binding.provider_name} CLI returned no output for {recipe_name}",
+                    now=time.time(),
+                )
 
         if provider_output:
             body = provider_output
@@ -2094,12 +2268,14 @@ class AdvisoryRuntime:
                     enrichment_sources=self._enrichment_sources(note, calendar, reminder),
                     timing_window=timing_window,
                     generated_by=generated_by,
-                    provider=provider,
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
 
-    def _thread_maintenance(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _thread_maintenance(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         threads = packet.get("candidateThreadRefs", [])
         if len(threads) < 2:
             return []
@@ -2163,11 +2339,15 @@ class AdvisoryRuntime:
                         "Старые тихие нити перевести в parked или resolved.",
                     ],
                     pattern_name="Thread Maintenance",
+                    generated_by="local_heuristic",
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
 
-    def _writing_seed(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _writing_seed(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         thread = self._primary_thread(packet)
         if (
             thread is None
@@ -2208,6 +2388,10 @@ class AdvisoryRuntime:
             "sourceAnchors": self._source_anchors(note, web_research, calendar, reminder),
             "enrichmentSources": self._enrichment_sources(note, web_research, calendar, reminder),
             "timingWindow": timing_window,
+            "generatedBy": "local_heuristic",
+            "provider": binding.provider_name,
+            "account": binding.account_name,
+            "routeReason": binding.route_reason,
         }
 
         lines = [
@@ -2244,7 +2428,7 @@ class AdvisoryRuntime:
             )
         ]
 
-    def _tweet_from_thread(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _tweet_from_thread(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         thread = self._thread_packet_thread(packet)
         if (
             thread is None
@@ -2292,10 +2476,9 @@ class AdvisoryRuntime:
         }
 
         # Try provider CLI for richer generation
-        tweet_provider = self._current_provider_name()
         generated_by = "local_heuristic"
         provider_output: str | None = None
-        if tweet_provider:
+        if binding.provider_name:
             prompt = (
                 "You are a tweet ghostwriter. Based on the context below, suggest 3 tweet angles "
                 "grounded in the thread evidence. Each angle: one sentence + a draft tweet (280 chars max). "
@@ -2306,9 +2489,17 @@ class AdvisoryRuntime:
             )
             if voice_examples:
                 prompt += f"Voice examples: {' | '.join(voice_examples)}\n"
-            provider_output = self._call_provider_cli(tweet_provider, prompt)
+            provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
             if provider_output:
                 generated_by = "provider_cli"
+            else:
+                generated_by = "local_heuristic_fallback"
+                self.provider_diagnostics._record_provider_failure_locked(
+                    provider=binding.provider_name,
+                    status="cli_generation_failed",
+                    detail=f"{binding.provider_name} CLI returned no output for {recipe_name}",
+                    now=time.time(),
+                )
 
         if provider_output:
             body = provider_output
@@ -2336,7 +2527,9 @@ class AdvisoryRuntime:
             body = "\n".join(lines)
 
         metadata["generatedBy"] = generated_by
-        metadata["provider"] = tweet_provider
+        metadata["provider"] = binding.provider_name
+        metadata["account"] = binding.account_name
+        metadata["routeReason"] = binding.route_reason
         return [
             self._artifact(
                 packet=packet,
@@ -2352,7 +2545,7 @@ class AdvisoryRuntime:
             )
         ]
 
-    def _research_direction(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _research_direction(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         research_pull = self._signal(packet, "research_pull")
         if research_pull < self._adjusted_minimum_signal(packet, 0.3, 0.12):
             return []
@@ -2422,11 +2615,15 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(note, web_research, calendar),
                     enrichment_sources=self._enrichment_sources(note, web_research, calendar),
                     timing_window=timing_window,
+                    generated_by="local_heuristic",
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
 
-    def _weekly_reflection(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _weekly_reflection(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         thread_rollup = packet.get("threadRollup", [])
         if not thread_rollup:
             return []
@@ -2451,10 +2648,9 @@ class AdvisoryRuntime:
         ]
 
         # Try provider CLI for richer weekly synthesis
-        weekly_provider = self._current_provider_name()
         generated_by = "local_heuristic"
         provider_output: str | None = None
-        if weekly_provider:
+        if binding.provider_name:
             thread_titles = [t.get("title", "") for t in thread_rollup[:5]]
             prompt = (
                 "You are a weekly reflection advisor. Synthesize this week's thread movement into "
@@ -2468,9 +2664,17 @@ class AdvisoryRuntime:
             if continuity_items:
                 open_loops = [item.get("title", "") for item in continuity_items[:3]]
                 prompt += f"Open loops: {', '.join(open_loops)}\n"
-            provider_output = self._call_provider_cli(weekly_provider, prompt)
+            provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
             if provider_output:
                 generated_by = "provider_cli"
+            else:
+                generated_by = "local_heuristic_fallback"
+                self.provider_diagnostics._record_provider_failure_locked(
+                    provider=binding.provider_name,
+                    status="cli_generation_failed",
+                    detail=f"{binding.provider_name} CLI returned no output for {recipe_name}",
+                    now=time.time(),
+                )
 
         if provider_output:
             body = provider_output
@@ -2530,12 +2734,14 @@ class AdvisoryRuntime:
                     enrichment_sources=self._enrichment_sources(note, web_research, calendar, reminder),
                     timing_window=timing_window,
                     generated_by=generated_by,
-                    provider=weekly_provider,
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
 
-    def _focus_reflection(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _focus_reflection(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         focus_turbulence = self._signal(packet, "focus_turbulence")
         if focus_turbulence < self._adjusted_minimum_signal(packet, 0.32, 0.2):
             return []
@@ -2598,11 +2804,15 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(rhythm, calendar, reminder),
                     enrichment_sources=self._enrichment_sources(rhythm, calendar, reminder),
                     timing_window=timing_window,
+                    generated_by="local_heuristic",
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
 
-    def _social_signal(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _social_signal(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         if self._signal(packet, "social_pull") < self._adjusted_minimum_signal(packet, 0.34, 0.2):
             return []
         web_research = self._enrichment_item(packet, "web_research")
@@ -2666,11 +2876,15 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(web_research, calendar, reminder),
                     enrichment_sources=self._enrichment_sources(web_research, calendar, reminder),
                     timing_window=timing_window,
+                    generated_by="local_heuristic",
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
 
-    def _health_pulse(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _health_pulse(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         if self._signal(packet, "health_pressure") < self._adjusted_minimum_signal(packet, 0.36, 0.24):
             return []
         calendar = self._enrichment_item(packet, "calendar")
@@ -2725,11 +2939,15 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(rhythm, calendar, reminder),
                     enrichment_sources=self._enrichment_sources(rhythm, calendar, reminder),
                     timing_window=timing_window,
+                    generated_by="local_heuristic",
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
 
-    def _decision_review(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _decision_review(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         decision_density = self._signal(packet, "decision_density")
         if decision_density < self._adjusted_minimum_signal(packet, 0.24, 0.16):
             return []
@@ -2805,11 +3023,15 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(reminder, calendar),
                     enrichment_sources=self._enrichment_sources(reminder, calendar),
                     timing_window=timing_window,
+                    generated_by="local_heuristic",
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
 
-    def _life_admin_review(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
+    def _life_admin_review(self, packet: dict[str, Any], recipe_name: str, binding: ExecutionBinding) -> list[dict[str, Any]]:
         if self._signal(packet, "life_admin_pressure") < self._adjusted_minimum_signal(packet, 0.24, 0.14):
             return []
         reminder_item = self._enrichment_item(packet, "reminders")
@@ -2869,6 +3091,10 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(reminder_item, calendar),
                     enrichment_sources=self._enrichment_sources(reminder_item, calendar),
                     timing_window=timing_window,
+                    generated_by="local_heuristic",
+                    provider=binding.provider_name,
+                    account=binding.account_name,
+                    route_reason=binding.route_reason,
                 ),
             )
         ]
@@ -2964,6 +3190,8 @@ class AdvisoryRuntime:
         timing_window: str | None = None,
         generated_by: str | None = None,
         provider: str | None = None,
+        account: str | None = None,
+        route_reason: str | None = None,
     ) -> str:
         metadata = {
             "summary": summary,
@@ -2984,6 +3212,8 @@ class AdvisoryRuntime:
             "timingWindow": timing_window,
             "generatedBy": generated_by,
             "provider": provider,
+            "account": account,
+            "routeReason": route_reason,
         }
         return json.dumps(metadata, ensure_ascii=False)
 
@@ -3425,12 +3655,18 @@ class AdvisoryRequestHandler(socketserver.StreamRequestHandler):
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        stream=sys.stderr,
+    )
     parser = argparse.ArgumentParser(description="Memograph advisory sidecar")
     parser.add_argument("--socket", required=True, help="Unix domain socket path")
     parser.add_argument("--probe-timeout-seconds", type=int, default=6)
     args = parser.parse_args()
 
     socket_path = Path(args.socket).expanduser()
+    pidfile_path = Path(str(socket_path) + ".pid")
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     if socket_path.exists():
         socket_path.unlink()
@@ -3438,6 +3674,23 @@ def main() -> int:
     runtime = AdvisoryRuntime(probe_timeout_seconds=args.probe_timeout_seconds)
     server = ThreadedUnixStreamServer(str(socket_path), AdvisoryRequestHandler)
     server.runtime = runtime  # type: ignore[attr-defined]
+
+    # Write pidfile so the Swift supervisor can verify socket ownership
+    try:
+        pidfile_path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+
+    def cleanup() -> None:
+        try:
+            pidfile_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            if socket_path.exists():
+                socket_path.unlink()
+        except OSError:
+            pass
 
     def shutdown(*_: Any) -> None:
         server.shutdown()
@@ -3449,11 +3702,7 @@ def main() -> int:
         server.serve_forever(poll_interval=0.2)
     finally:
         server.server_close()
-        try:
-            if socket_path.exists():
-                socket_path.unlink()
-        except OSError:
-            pass
+        cleanup()
     return 0
 
 

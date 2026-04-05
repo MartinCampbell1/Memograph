@@ -205,9 +205,19 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
     }
 
     /// Summary of the best available provider health tier (none / degraded / ready).
+    ///
+    /// When the sidecar runtime is unreachable the provider statuses list will
+    /// be empty because the sidecar cannot report them. In that case the summary
+    /// falls back to the filesystem-based CLI profiles inventory so the UI does
+    /// not incorrectly claim "none configured" while account cards are visible.
     var providerStatusSummary: String {
         let statuses = bridgeHealth.providerStatuses
         if statuses.isEmpty {
+            // Runtime is down or returned no provider info — check filesystem inventory.
+            let inventoryCount = Self.filesystemAccountCount()
+            if inventoryCount > 0 {
+                return "Provider inventory: \(inventoryCount) account\(inventoryCount == 1 ? "" : "s") found, runtime verification unavailable"
+            }
             return "Provider: none configured"
         }
         if let active = bridgeHealth.activeProviderName, !active.isEmpty {
@@ -222,6 +232,19 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
             return "Provider: session needed"
         }
         return "Provider: unavailable"
+    }
+
+    /// Counts accounts visible in the filesystem CLI profiles inventory.
+    /// This is intentionally a lightweight, synchronous check so the UI
+    /// can distinguish "no accounts at all" from "accounts exist but the
+    /// runtime cannot verify them right now".
+    private static func filesystemAccountCount() -> Int {
+        let settings = AppSettings()
+        let profiles = AdvisoryCLIProfilesStore.discoverProfiles(
+            profilesPath: settings.advisoryCLIProfilesPath,
+            selectedAccounts: AdvisoryCLIProfilesStore.selectedAccounts(settings: settings)
+        )
+        return profiles.values.reduce(0) { $0 + $1.count }
     }
 
     var title: String {

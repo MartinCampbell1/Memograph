@@ -9,9 +9,29 @@ enum AdvisoryProviderSessionActionPlanKind: Equatable {
 
 struct AdvisoryProviderSessionActionPlan: Equatable {
     let providerName: String
+    /// The specific account being acted on (e.g. "acc1"). When set, recovery
+    /// polling validates this exact account rather than any account for the provider.
+    let accountName: String?
     let action: AdvisoryProviderSessionAction
     let kind: AdvisoryProviderSessionActionPlanKind
     let guidance: String
+    let environment: [String: String]
+
+    init(
+        providerName: String,
+        accountName: String? = nil,
+        action: AdvisoryProviderSessionAction,
+        kind: AdvisoryProviderSessionActionPlanKind,
+        guidance: String,
+        environment: [String: String] = [:]
+    ) {
+        self.providerName = providerName
+        self.accountName = accountName
+        self.action = action
+        self.kind = kind
+        self.guidance = guidance
+        self.environment = environment
+    }
 }
 
 enum AdvisoryProviderSessionControlError: LocalizedError {
@@ -78,12 +98,14 @@ enum AdvisoryProviderSessionControl {
             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             NSWorkspace.shared.activateFileViewerSelecting([url])
         case let .terminalCommand(command):
-            try launchCommandInTerminal(command: command)
+            try launchCommandInTerminal(command: command, environment: plan.environment)
         }
     }
 
-    /// Launch the plan and monitor for session recovery.
-    /// Polls health every 3s. Calls completion(true) when session is detected, or completion(false) on timeout.
+    /// Launch the plan and monitor for session recovery of the **target provider**.
+    /// Polls the target provider's account status every 3s via the accounts RPC.
+    /// Calls completion(true) when the target provider has a verified/available account,
+    /// or completion(false) on timeout.
     static func launchAndMonitorRecovery(
         _ plan: AdvisoryProviderSessionActionPlan,
         bridge: AdvisoryBridgeClient,
@@ -97,16 +119,47 @@ enum AdvisoryProviderSessionControl {
         }
 
         let providerName = plan.providerName
+        let targetAccountName = plan.accountName
         // Poll on a background queue — bridge methods are internally synchronized
         DispatchQueue.global(qos: .utility).async {
             let timeout: TimeInterval = 120
             let startTime = Date()
+            var sidecarRestarted = false
 
             while Date().timeIntervalSince(startTime) < timeout {
                 Thread.sleep(forTimeInterval: 3)
 
-                let health = bridge.health(forceRefresh: true)
-                if health.status == "ok" {
+                // Check the TARGET account's status via accounts RPC, not global
+                // health. Global health may already be "ok" (e.g. Claude is fine)
+                // while the provider being re-logged-in (e.g. Gemini) hasn't recovered.
+                // When accountName is specified, only that exact account counts.
+                guard let snapshot = try? bridge.accounts(forceRefresh: true) else {
+                    // Accounts RPC failed. Distinguish "sidecar is dead" from
+                    // "sidecar is alive but busy" before taking destructive action.
+                    let health = bridge.health(forceRefresh: false)
+                    let status = health.status.lowercased()
+                    if !sidecarRestarted && (status == "socket_missing" || status == "transport_failure") {
+                        // Sidecar truly unreachable — restart once to clear backoff
+                        bridge.restartSidecar()
+                        sidecarRestarted = true
+                    }
+                    // If sidecar is reachable but busy/slow, just keep polling
+                    continue
+                }
+
+                let providerAccounts = snapshot.accounts(for: providerName)
+                let targetRecovered: Bool
+                if let targetAccountName {
+                    // Specific account — only that one must be available
+                    targetRecovered = providerAccounts.contains {
+                        $0.accountName == targetAccountName && $0.available
+                    }
+                } else {
+                    // No specific account — any available account counts
+                    targetRecovered = providerAccounts.contains { $0.available }
+                }
+
+                if targetRecovered {
                     let recovered = bridge.recoverAfterRelogin(provider: providerName)
                     completion(recovered.status == "ok")
                     return

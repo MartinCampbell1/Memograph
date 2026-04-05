@@ -18,7 +18,7 @@ struct AdvisoryActionPanelView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Advisor Surfaces")
                         .font(.headline)
-                    Text("Ручной pull по доменам остаётся одним advisor, но даёт явный вход в research, focus, social, health и admin without chat UI.")
+                    Text("Ручной pull по core-доменам: continuity resume, writing seed, weekly reflection.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(snapshot.advisorGuidanceLine)
@@ -150,7 +150,7 @@ struct AdvisoryActionPanelView: View {
     }
 
     private var recommendationItems: [(action: AdvisoryManualRecipeSpec, recommendation: AdvisoryManualPullRecommendation)] {
-        let actionsByDomain = Dictionary(uniqueKeysWithValues: AdvisoryRecipeCatalog.manualDomainActions.map { ($0.domain, $0) })
+        let actionsByDomain = Dictionary(uniqueKeysWithValues: AdvisoryRecipeCatalog.v1ManualDomainActions.map { ($0.domain, $0) })
         return snapshot.manualPullRecommendations.compactMap { recommendation in
             guard let action = actionsByDomain[recommendation.domain] else { return nil }
             return (action, recommendation)

@@ -342,6 +342,32 @@ enum AdvisoryCLIProfilesStore {
                 return ""
             }
             return active.trimmingCharacters(in: .whitespacesAndNewlines)
+        case "codex":
+            let authURL = accountURL.appendingPathComponent("auth.json")
+            if let payload = readJSON(authURL) as? [String: Any] {
+                if let email = payload["email"] as? String,
+                   !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return email.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                if let user = payload["user"] as? String,
+                   !user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return user.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+            // Try config.toml as fallback
+            let configURL = accountURL.appendingPathComponent("config.toml")
+            if let content = try? String(contentsOf: configURL, encoding: .utf8) {
+                for line in content.components(separatedBy: .newlines) {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("email"), trimmed.contains("=") {
+                        let value = trimmed.components(separatedBy: "=").dropFirst().joined(separator: "=")
+                            .trimmingCharacters(in: .whitespaces)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                        if !value.isEmpty { return value }
+                    }
+                }
+            }
+            return ""
         default:
             return ""
         }

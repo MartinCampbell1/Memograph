@@ -838,7 +838,7 @@ final class AdvisoryEngine {
         dayContext: AdvisoryDayContext
     ) -> [AdvisoryRecipeSpec] {
         let signals = Dictionary(uniqueKeysWithValues: packet.attentionSignals.map { ($0.name, $0.score) })
-        return AdvisoryRecipeCatalog.all.filter { spec in
+        return AdvisoryRecipeCatalog.v1Core.filter { spec in
             guard settings.advisoryEnabledDomains.contains(spec.domain) else {
                 return false
             }

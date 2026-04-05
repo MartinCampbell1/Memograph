@@ -169,7 +169,20 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
         guard let primaryServer else {
             throw AdvisoryBridgeError.unavailable("Accounts control requires memograph-advisor.")
         }
-        return try primaryServer.setPreferredAccount(providerName: providerName, accountName: accountName)
+        let result = try primaryServer.setPreferredAccount(providerName: providerName, accountName: accountName)
+        // Sync back to AppSettings so it remains the single source of truth
+        var settings = AppSettings()
+        switch providerName.lowercased() {
+        case "claude":
+            settings.advisorySelectedClaudeAccount = accountName
+        case "gemini":
+            settings.advisorySelectedGeminiAccount = accountName
+        case "codex":
+            settings.advisorySelectedCodexAccount = accountName
+        default:
+            break
+        }
+        return result
     }
 
     func executeRecipe(_ request: AdvisoryRecipeRequest) throws -> AdvisoryBridgeExecution {
@@ -357,9 +370,11 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
 
     private func preparePrimaryRetry(for status: String) {
         switch AdvisoryBridgeStatusInterpreter.normalizedStatus(status) {
-        case "timeout", "transport_failure", "socket_missing":
+        case "socket_missing", "transport_failure":
+            // Transport-level failure — sidecar likely dead, restart is appropriate
             supervisor?.restart()
-        case "starting", "unavailable":
+        case "timeout", "starting", "unavailable":
+            // Timeout may mean sidecar is busy, not dead — don't kill it
             supervisor?.prepareForExecution()
         default:
             break
@@ -519,9 +534,15 @@ private enum AdvisorySidecarProcessJanitor {
             }
 
             _ = kill(parsed.pid, SIGTERM)
-            if let socketPath = parsed.socketPath,
-               FileManager.default.fileExists(atPath: socketPath) {
-                try? FileManager.default.removeItem(atPath: socketPath)
+            if let socketPath = parsed.socketPath {
+                if FileManager.default.fileExists(atPath: socketPath) {
+                    try? FileManager.default.removeItem(atPath: socketPath)
+                }
+                // Clean up pidfile associated with this socket
+                let pidfilePath = socketPath + ".pid"
+                if FileManager.default.fileExists(atPath: pidfilePath) {
+                    try? FileManager.default.removeItem(atPath: pidfilePath)
+                }
             }
         }
     }
@@ -715,6 +736,7 @@ private enum AdvisoryBridgeStatusInterpreter {
 private final class AdvisorySidecarSupervisor: @unchecked Sendable {
     private var autoStart: Bool
     private let socketPath: String
+    private var pidfilePath: String { socketPath + ".pid" }
     private var healthCheckIntervalSeconds: Int
     private var maxConsecutiveFailures: Int
     private var runtimeStatus: AdvisorySidecarRuntimeStatus
@@ -837,6 +859,8 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: socketPath) {
             try? FileManager.default.removeItem(atPath: socketPath)
         }
+        // Clean up pidfile
+        try? FileManager.default.removeItem(atPath: pidfilePath)
     }
 
     func restart() {
@@ -962,6 +986,23 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
                 lastKnownStatus = "ok"
                 lock.unlock()
                 return
+            }
+
+            // Check pidfile for existing owner before probing or launching
+            if let pidString = try? String(contentsOfFile: pidfilePath, encoding: .utf8),
+               let pid = Int32(pidString.trimmingCharacters(in: .whitespacesAndNewlines)),
+               pid > 0 {
+                if kill(pid, 0) == 0 {
+                    // Process is alive — it owns this socket, do not launch a competitor
+                    lock.lock()
+                    lastKnownStatus = "ok"
+                    lastError = nil
+                    lock.unlock()
+                    return
+                } else {
+                    // Stale pidfile — process is dead, clean up
+                    try? FileManager.default.removeItem(atPath: pidfilePath)
+                }
             }
 
             let parentDirectory = (socketPath as NSString).deletingLastPathComponent
@@ -1197,7 +1238,7 @@ final class LocalAdvisoryBridgeStub: AdvisoryBridgeServerProtocol {
             sourcePacketId: request.packet.packetId,
             sourceRecipe: request.recipeName,
             confidence: 0.1,
-            metadataJson: "{\"source\": \"stub\", \"stubFallback\": true}",
+            metadataJson: "{\"source\": \"stub\", \"stubFallback\": true, \"ephemeral\": true, \"nonAuthoritative\": true}",
             language: "ru",
             status: .candidate
         )

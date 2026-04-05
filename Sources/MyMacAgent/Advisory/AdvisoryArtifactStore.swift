@@ -205,14 +205,34 @@ final class AdvisoryArtifactStore {
 
     @discardableResult
     func upsertArtifact(_ candidate: AdvisoryArtifactCandidate) throws -> AdvisoryArtifactRecord {
-        let id = candidate.id ?? AdvisorySupport.stableIdentifier(
+        // Ephemeral artifacts (e.g. stub fallbacks) are stored with zero confidence
+        // so they don't surface in recommendations or ranked views.
+        let effectiveCandidate: AdvisoryArtifactCandidate
+        if let meta = candidate.metadataJson, meta.contains("\"ephemeral\": true") || meta.contains("\"ephemeral\":true") {
+            effectiveCandidate = AdvisoryArtifactCandidate(
+                domain: candidate.domain,
+                kind: candidate.kind,
+                title: candidate.title,
+                body: candidate.body,
+                threadId: candidate.threadId,
+                sourcePacketId: candidate.sourcePacketId,
+                sourceRecipe: candidate.sourceRecipe,
+                confidence: 0,
+                metadataJson: candidate.metadataJson,
+                language: candidate.language,
+                status: candidate.status
+            )
+        } else {
+            effectiveCandidate = candidate
+        }
+        let id = effectiveCandidate.id ?? AdvisorySupport.stableIdentifier(
             prefix: "advart",
             components: [
-                candidate.domain.rawValue,
-                candidate.kind.rawValue,
-                candidate.threadId ?? "-",
-                candidate.sourcePacketId,
-                AdvisorySupport.slug(for: candidate.title)
+                effectiveCandidate.domain.rawValue,
+                effectiveCandidate.kind.rawValue,
+                effectiveCandidate.threadId ?? "-",
+                effectiveCandidate.sourcePacketId,
+                AdvisorySupport.slug(for: effectiveCandidate.title)
             ]
         )
         let timestamp = dateSupport.isoString(from: now())
@@ -224,23 +244,23 @@ final class AdvisoryArtifactStore {
                     confidence = ?, why_now = ?, evidence_json = ?, metadata_json = ?, language = ?, expires_at = ?
                 WHERE id = ?
             """, params: [
-                .text(candidate.domain.rawValue),
-                .text(candidate.kind.rawValue),
-                .text(candidate.title),
-                .text(candidate.body),
-                candidate.threadId.map(SQLiteValue.text) ?? .null,
-                .text(candidate.sourcePacketId),
-                .text(candidate.sourceRecipe),
-                .real(candidate.confidence),
-                candidate.whyNow.map(SQLiteValue.text) ?? .null,
-                candidate.evidenceJson.map(SQLiteValue.text) ?? .null,
-                candidate.metadataJson.map(SQLiteValue.text) ?? .null,
-                .text(candidate.language),
-                candidate.expiresAt.map(SQLiteValue.text) ?? .null,
+                .text(effectiveCandidate.domain.rawValue),
+                .text(effectiveCandidate.kind.rawValue),
+                .text(effectiveCandidate.title),
+                .text(effectiveCandidate.body),
+                effectiveCandidate.threadId.map(SQLiteValue.text) ?? .null,
+                .text(effectiveCandidate.sourcePacketId),
+                .text(effectiveCandidate.sourceRecipe),
+                .real(effectiveCandidate.confidence),
+                effectiveCandidate.whyNow.map(SQLiteValue.text) ?? .null,
+                effectiveCandidate.evidenceJson.map(SQLiteValue.text) ?? .null,
+                effectiveCandidate.metadataJson.map(SQLiteValue.text) ?? .null,
+                .text(effectiveCandidate.language),
+                effectiveCandidate.expiresAt.map(SQLiteValue.text) ?? .null,
                 .text(id)
             ])
-            if let threadId = candidate.threadId {
-                try touchThreadArtifact(threadId: threadId, at: candidate.surfacedAt ?? candidate.createdAt ?? timestamp)
+            if let threadId = effectiveCandidate.threadId {
+                try touchThreadArtifact(threadId: threadId, at: effectiveCandidate.surfacedAt ?? effectiveCandidate.createdAt ?? timestamp)
             }
             return try artifact(id: id) ?? existing
         }
@@ -253,29 +273,29 @@ final class AdvisoryArtifactStore {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, params: [
             .text(id),
-            .text(candidate.domain.rawValue),
-            .text(candidate.kind.rawValue),
-            .text(candidate.title),
-            .text(candidate.body),
-            candidate.threadId.map(SQLiteValue.text) ?? .null,
-            .text(candidate.sourcePacketId),
-            .text(candidate.sourceRecipe),
-            .real(candidate.confidence),
-            candidate.whyNow.map(SQLiteValue.text) ?? .null,
-            candidate.evidenceJson.map(SQLiteValue.text) ?? .null,
-            candidate.metadataJson.map(SQLiteValue.text) ?? .null,
-            .text(candidate.language),
-            .text(candidate.status.rawValue),
+            .text(effectiveCandidate.domain.rawValue),
+            .text(effectiveCandidate.kind.rawValue),
+            .text(effectiveCandidate.title),
+            .text(effectiveCandidate.body),
+            effectiveCandidate.threadId.map(SQLiteValue.text) ?? .null,
+            .text(effectiveCandidate.sourcePacketId),
+            .text(effectiveCandidate.sourceRecipe),
+            .real(effectiveCandidate.confidence),
+            effectiveCandidate.whyNow.map(SQLiteValue.text) ?? .null,
+            effectiveCandidate.evidenceJson.map(SQLiteValue.text) ?? .null,
+            effectiveCandidate.metadataJson.map(SQLiteValue.text) ?? .null,
+            .text(effectiveCandidate.language),
+            .text(effectiveCandidate.status.rawValue),
             .real(0),
-            .text(candidate.createdAt ?? timestamp),
-            candidate.surfacedAt.map(SQLiteValue.text) ?? .null,
-            candidate.expiresAt.map(SQLiteValue.text) ?? .null,
+            .text(effectiveCandidate.createdAt ?? timestamp),
+            effectiveCandidate.surfacedAt.map(SQLiteValue.text) ?? .null,
+            effectiveCandidate.expiresAt.map(SQLiteValue.text) ?? .null,
             .null,
             .null
         ])
 
-        if let threadId = candidate.threadId {
-            try touchThreadArtifact(threadId: threadId, at: candidate.surfacedAt ?? candidate.createdAt ?? timestamp)
+        if let threadId = effectiveCandidate.threadId {
+            try touchThreadArtifact(threadId: threadId, at: effectiveCandidate.surfacedAt ?? effectiveCandidate.createdAt ?? timestamp)
         }
 
         return try artifact(id: id)!

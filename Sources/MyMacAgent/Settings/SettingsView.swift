@@ -706,8 +706,18 @@ struct SettingsView: View {
                 HStack(spacing: 8) {
                     Button {
                         isRefreshingAccounts = true
+                        // Full auth check cycle:
+                        // 1. Refresh filesystem profiles
+                        refreshAdvisoryProviderProfiles()
+                        // 2. Force-refresh sidecar health (verifies account snapshots + provider runnable state)
                         advisoryHealthMonitor.refresh(forceRefresh: true)
+                        // 3. Rebind sidecar if it was stopped or degraded
+                        if advisoryHealthMonitor.snapshot.isDegraded {
+                            advisoryHealthMonitor.restartSidecar()
+                        }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            // 4. Post-check profile refresh to pick up any changes from sidecar
+                            refreshAdvisoryProviderProfiles()
                             isRefreshingAccounts = false
                         }
                     } label: {
@@ -845,7 +855,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Action opened in Terminal")
                     .font(.subheadline.weight(.semibold))
-                Text("Finish the flow in Terminal for \(pendingTerminalProvider.capitalized), then click Refresh to update status.")
+                Text("Complete the flow in Terminal for \(pendingTerminalProvider.capitalized). Status will refresh automatically when the session is detected.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1700,13 +1710,25 @@ struct SettingsView: View {
                 advisoryAccountActionFeedback[diagnostic.providerName] = error.localizedDescription
             }
         case .terminalCommand:
-            do {
-                try AdvisoryProviderSessionControl.launch(plan)
-                pendingTerminalProvider = diagnostic.providerName
-                advisoryAccountActionFeedback[diagnostic.providerName] = plan.guidance
-                scheduleAdvisoryHealthRefresh()
-            } catch {
-                advisoryAccountActionFeedback[diagnostic.providerName] = error.localizedDescription
+            let providerName = diagnostic.providerName
+            pendingTerminalProvider = providerName
+            advisoryAccountActionFeedback[providerName] = plan.guidance
+
+            let bridge = AdvisoryBridgeClient(settings: AppSettings())
+            AdvisoryProviderSessionControl.launchAndMonitorRecovery(
+                plan,
+                bridge: bridge
+            ) { recovered in
+                DispatchQueue.main.async {
+                    pendingTerminalProvider = ""
+                    if recovered {
+                        advisoryAccountActionFeedback[providerName] = "\(diagnostic.displayName) session recovered successfully."
+                    } else {
+                        advisoryAccountActionFeedback[providerName] = "Recovery timed out for \(diagnostic.displayName). Try running a full auth check."
+                    }
+                    refreshAdvisoryProviderProfiles()
+                    advisoryHealthMonitor.refresh(forceRefresh: true)
+                }
             }
         }
     }
@@ -1750,21 +1772,44 @@ struct SettingsView: View {
                 profilesPath: advisoryCLIProfilesPath
             )
             persistSelectedAccount(profile.accountName, providerName: providerName)
-            guard let command = AdvisoryProviderSessionControl.command(forProvider: providerName, action: providerName == "gemini" ? .openCLI : .login) else {
+            let action: AdvisoryProviderSessionAction = providerName == "gemini" ? .openCLI : .login
+            guard let command = AdvisoryProviderSessionControl.command(forProvider: providerName, action: action) else {
                 advisoryAccountActionFeedback[providerName] = "No interactive login command is available for \(providerName.capitalized)."
                 return
             }
-            try AdvisoryProviderSessionControl.launchCommandInTerminal(
-                command: command,
+
+            let plan = AdvisoryProviderSessionActionPlan(
+                providerName: providerName,
+                accountName: profile.accountName,
+                action: action,
+                kind: .terminalCommand(command),
+                guidance: "Login in progress for \(providerName.capitalized) \(profile.accountName)…",
                 environment: AdvisoryCLIProfilesStore.loginEnvironment(
                     provider: providerName,
                     profilePath: profile.path
                 )
             )
+
             pendingTerminalProvider = providerName
             refreshAdvisoryProviderProfiles()
-            advisoryAccountActionFeedback[providerName] = "Opened isolated login flow for \(providerName.capitalized) \(profile.accountName). Finish auth in Terminal, then run auth check."
-            scheduleAdvisoryHealthRefresh()
+            advisoryAccountActionFeedback[providerName] = plan.guidance
+
+            let bridge = AdvisoryBridgeClient(settings: AppSettings())
+            AdvisoryProviderSessionControl.launchAndMonitorRecovery(
+                plan,
+                bridge: bridge
+            ) { recovered in
+                DispatchQueue.main.async {
+                    pendingTerminalProvider = ""
+                    if recovered {
+                        advisoryAccountActionFeedback[providerName] = "\(providerName.capitalized) \(profile.accountName) session established successfully."
+                    } else {
+                        advisoryAccountActionFeedback[providerName] = "Login monitoring timed out for \(providerName.capitalized) \(profile.accountName). Try running a full auth check."
+                    }
+                    refreshAdvisoryProviderProfiles()
+                    advisoryHealthMonitor.refresh(forceRefresh: true)
+                }
+            }
         } catch {
             advisoryAccountActionFeedback[providerName] = error.localizedDescription
         }
@@ -1780,24 +1825,43 @@ struct SettingsView: View {
     }
 
     private func handleReauthorizeProviderAccount(_ profile: AdvisoryCLIAccountProfile) {
-        do {
-            let action: AdvisoryProviderSessionAction = profile.providerName == "gemini" ? .openCLI : .relogin
-            guard let command = AdvisoryProviderSessionControl.command(forProvider: profile.providerName, action: action) else {
-                advisoryAccountActionFeedback[profile.providerName] = "No re-login flow is available for \(profile.providerName.capitalized)."
-                return
-            }
-            try AdvisoryProviderSessionControl.launchCommandInTerminal(
-                command: command,
-                environment: AdvisoryCLIProfilesStore.loginEnvironment(
-                    provider: profile.providerName,
-                    profilePath: profile.path
-                )
+        let providerName = profile.providerName
+        let action: AdvisoryProviderSessionAction = providerName == "gemini" ? .openCLI : .relogin
+        guard let command = AdvisoryProviderSessionControl.command(forProvider: providerName, action: action) else {
+            advisoryAccountActionFeedback[providerName] = "No re-login flow is available for \(providerName.capitalized)."
+            return
+        }
+
+        let plan = AdvisoryProviderSessionActionPlan(
+            providerName: providerName,
+            accountName: profile.accountName,
+            action: action,
+            kind: .terminalCommand(command),
+            guidance: "Re-login in progress for \(providerName.capitalized) \(profile.accountName)…",
+            environment: AdvisoryCLIProfilesStore.loginEnvironment(
+                provider: providerName,
+                profilePath: profile.path
             )
-            pendingTerminalProvider = profile.providerName
-            advisoryAccountActionFeedback[profile.providerName] = "Opened re-login flow for \(profile.providerName.capitalized) \(profile.accountName). Finish auth in Terminal, then click Refresh above."
-            scheduleAdvisoryHealthRefresh()
-        } catch {
-            advisoryAccountActionFeedback[profile.providerName] = error.localizedDescription
+        )
+
+        pendingTerminalProvider = providerName
+        advisoryAccountActionFeedback[providerName] = plan.guidance
+
+        let bridge = AdvisoryBridgeClient(settings: AppSettings())
+        AdvisoryProviderSessionControl.launchAndMonitorRecovery(
+            plan,
+            bridge: bridge
+        ) { recovered in
+            DispatchQueue.main.async {
+                pendingTerminalProvider = ""
+                if recovered {
+                    advisoryAccountActionFeedback[providerName] = "\(providerName.capitalized) \(profile.accountName) session recovered successfully."
+                } else {
+                    advisoryAccountActionFeedback[providerName] = "Recovery timed out for \(providerName.capitalized) \(profile.accountName). Try running a full auth check."
+                }
+                refreshAdvisoryProviderProfiles()
+                advisoryHealthMonitor.refresh(forceRefresh: true)
+            }
         }
     }
 

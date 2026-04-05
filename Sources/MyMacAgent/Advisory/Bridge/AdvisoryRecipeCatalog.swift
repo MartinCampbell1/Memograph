@@ -37,6 +37,8 @@ enum AdvisoryRecipeCatalog {
 
     static let all: [AdvisoryRecipeSpec] = v1Core + extended
 
+    static let v1Domains: Set<AdvisoryDomain> = Set(v1Core.map(\.domain))
+
     static let manualDomainActions: [AdvisoryManualRecipeSpec] = [
         AdvisoryManualRecipeSpec(
             domain: .writingExpression,
@@ -88,6 +90,9 @@ enum AdvisoryRecipeCatalog {
             triggerKind: .userInvokedWrite
         )
     ]
+
+    static let v1ManualDomainActions: [AdvisoryManualRecipeSpec] =
+        manualDomainActions.filter { v1Domains.contains($0.domain) }
 
     static func spec(named name: String) -> AdvisoryRecipeSpec? {
         all.first(where: { $0.name == name })
