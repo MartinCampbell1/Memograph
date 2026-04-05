@@ -953,8 +953,11 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
             }
 
             if let previousProcess, !previousProcess.isRunning, FileManager.default.fileExists(atPath: socketPath) {
+                // Process we launched is dead — safe to clean up its socket
                 try? FileManager.default.removeItem(atPath: socketPath)
             } else if FileManager.default.fileExists(atPath: socketPath) {
+                // Socket exists but we didn't launch the process (or it predates us).
+                // Probe it — if responsive OR merely busy (timeout), do not delete.
                 if probeExistingSocketIsResponsive() {
                     lock.lock()
                     lastKnownStatus = "ok"
@@ -962,6 +965,38 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
                     lock.unlock()
                     return
                 }
+                // Probe returned socket_missing / transport_failure / unavailable.
+                // Check if another process owns this socket via connect attempt.
+                // Only delete if connect truly fails (not just slow).
+                let connectFd = socket(AF_UNIX, SOCK_STREAM, 0)
+                var canConnect = false
+                if connectFd >= 0 {
+                    var address = sockaddr_un()
+                    address.sun_family = sa_family_t(AF_UNIX)
+                    socketPath.withCString { pathPointer in
+                        withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
+                            rawBuffer.initializeMemory(as: UInt8.self, repeating: 0)
+                            memcpy(rawBuffer.baseAddress, pathPointer, strlen(pathPointer))
+                        }
+                    }
+                    var addressCopy = address
+                    let result = withUnsafePointer(to: &addressCopy) { pointer in
+                        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                            Darwin.connect(connectFd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                        }
+                    }
+                    canConnect = result == 0
+                    close(connectFd)
+                }
+                if canConnect {
+                    // Socket is connectable — something is listening. Treat as busy.
+                    lock.lock()
+                    lastKnownStatus = "busy"
+                    lastError = nil
+                    lock.unlock()
+                    return
+                }
+                // Socket is truly dead — remove and proceed to launch
                 try? FileManager.default.removeItem(atPath: socketPath)
             }
 
@@ -1019,12 +1054,15 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
     }
 
     private func probeExistingSocketIsResponsive() -> Bool {
-        let probe = JSONRPCAdvisoryBridgeServer(socketPath: socketPath, defaultTimeoutSeconds: 2)
+        // Use a generous timeout — sidecar may be busy with a long recipe run
+        // or provider probe.  A slow response is not a dead process.
+        let probe = JSONRPCAdvisoryBridgeServer(socketPath: socketPath, defaultTimeoutSeconds: 20)
         let health = probe.health()
         switch health.status {
-        case "socket_missing", "transport_failure", "unavailable", "timeout":
+        case "socket_missing", "transport_failure", "unavailable":
             return false
         default:
+            // "timeout" means sidecar is likely busy, not dead — treat as alive
             return true
         }
     }
