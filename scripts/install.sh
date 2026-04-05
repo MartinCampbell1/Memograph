@@ -50,4 +50,7 @@ xattr -dr com.apple.quarantine "$DEST_APP" >/dev/null 2>&1 || true
 
 echo "Installed ${APP_NAME} to ${DEST_APP}"
 echo "Launching ${APP_NAME}..."
-open "$DEST_APP"
+if ! open -n "$DEST_APP"; then
+  echo "open -n failed; falling back to direct executable launch." >&2
+  "${DEST_APP}/Contents/MacOS/${APP_NAME}" >/dev/null 2>&1 &
+fi

@@ -58,6 +58,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<EOF
   <string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key>
   <string>15.0</string>
+  <key>LSUIElement</key>
+  <true/>
   <key>NSAccessibilityUsageDescription</key>
   <string>Accessibility access improves context extraction for active windows and focused UI.</string>
   <key>NSMicrophoneUsageDescription</key>
