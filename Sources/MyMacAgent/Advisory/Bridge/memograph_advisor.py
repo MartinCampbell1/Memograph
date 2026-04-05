@@ -1624,6 +1624,19 @@ class AdvisoryRuntime:
         self.provider_diagnostics = ProviderDiagnostics(probe_timeout_seconds=probe_timeout_seconds)
         self._cancelled_runs: set[str] = set()
         self._lock = threading.Lock()
+        self._recipe_routing: dict[str, list[str]] = {
+            "continuity_resume":   ["claude", "gemini", "codex"],
+            "thread_maintenance":  ["claude", "gemini", "codex"],
+            "writing_seed":        ["claude", "codex", "gemini"],
+            "tweet_from_thread":   ["claude", "codex", "gemini"],
+            "research_direction":  ["gemini", "claude", "codex"],
+            "weekly_reflection":   ["gemini", "claude", "codex"],
+            "focus_reflection":    ["claude", "gemini", "codex"],
+            "social_signal":       ["claude", "codex", "gemini"],
+            "health_pulse":        ["claude", "gemini", "codex"],
+            "decision_review":     ["claude", "gemini", "codex"],
+            "life_admin_review":   ["claude", "gemini", "codex"],
+        }
 
     def health(self, force_refresh: bool = False) -> dict[str, Any]:
         return self.provider_diagnostics.health(force_refresh=force_refresh)
@@ -1810,6 +1823,39 @@ class AdvisoryRuntime:
             health = self.provider_diagnostics.health()
         return str(health.get("activeProviderName") or "").strip().lower() or None
 
+    def _select_provider_for_recipe(
+        self,
+        recipe_name: str,
+        health: dict[str, Any],
+    ) -> str | None:
+        """Select the best provider for a recipe based on routing preference and availability."""
+        preferred_order = self._recipe_routing.get(recipe_name, [])
+        available = set(
+            str(p).strip().lower()
+            for p in (health.get("availableProviders") or [])
+        )
+        statuses = {
+            str(s.get("provider", "")).strip().lower(): s
+            for s in (health.get("providerStatuses") or [])
+            if isinstance(s, dict)
+        }
+        now = time.time()
+
+        for provider in preferred_order:
+            if provider not in available:
+                continue
+            status = statuses.get(provider, {})
+            if str(status.get("status", "")).strip().lower() not in ("ok", ""):
+                continue
+            with self.provider_diagnostics._lock:
+                state = self.provider_diagnostics._provider_state.get(provider, {})
+                if now < float(state.get("cooldown_until", 0.0)):
+                    continue
+            return provider
+
+        # Fallback to global active provider
+        return str(health.get("activeProviderName") or "").strip().lower() or None
+
     def run_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
         run_id = str(request.get("runId", "")).strip()
         with self._lock:
@@ -1854,9 +1900,16 @@ class AdvisoryRuntime:
                     raise JsonRPCMethodError(-32001, f"Advisory runtime unavailable ({runtime_tier}): {detail}")
                 raise JsonRPCMethodError(-32002, f"Advisory provider unavailable ({provider_tier}): {detail}")
 
-            provider_name = str(health.get("activeProviderName") or "").strip().lower()
+            # Use recipe-specific routing instead of global activeProviderName
+            provider_name = self._select_provider_for_recipe(recipe_name, health)
             if not provider_name:
                 break
+
+            routing_type = "recipe_preferred" if provider_name in self._recipe_routing.get(recipe_name, [])[:1] else "fallback"
+            logger.info(
+                "recipe=%s provider=%s attempt=%d routing=%s",
+                recipe_name, provider_name, attempt + 1, routing_type,
+            )
 
             failure = self.provider_diagnostics._consume_fake_run_failure(provider_name)
             failure_status = str((failure or {}).get("status") or "").strip().lower()
