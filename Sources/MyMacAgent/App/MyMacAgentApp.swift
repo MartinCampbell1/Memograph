@@ -4,23 +4,8 @@ import SwiftUI
 @main
 struct MyMacAgentApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var permissionsManager = PermissionsManager()
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarPopover(
-                permissionsManager: permissionsManager,
-                db: appDelegate.databaseManager
-            )
-        } label: {
-            HStack(spacing: 4) {
-                MemographGlyph()
-                Text("Mem")
-                    .font(.caption2.weight(.semibold))
-            }
-        }
-        .menuBarExtraStyle(.window)
-
         WindowGroup("Timeline", id: "timeline") {
             if let db = appDelegate.databaseManager {
                 TimelineView(db: db)

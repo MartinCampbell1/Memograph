@@ -1,10 +1,12 @@
 import AppKit
 import os
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger.app
     private let dateSupport = LocalDateSupport()
+    private let menuBarPermissionsManager = PermissionsManager()
     private(set) var databaseManager: DatabaseManager?
     private var appMonitor: AppMonitor?
     private var windowMonitor: WindowMonitor?
@@ -39,6 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let captureGate = CaptureGate(maxConcurrent: 1)
     private var privacyGuard = PrivacyGuard.fromSettings()
     private var summaryWindowsInFlight = Set<String>()
+    private var statusItem: NSStatusItem?
+    private let statusPopover = NSPopover()
+    private var timelineWindow: NSWindow?
+    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.applicationIconImage = AppIconArtwork.makeImage()
@@ -97,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         logger.info("MyMacAgent launched")
+        installStatusItem()
         let settings = AppSettings()
         let advisorySocketPath = AdvisorySidecarSocketPathResolver.resolve(settings.advisorySidecarSocketPath)
         DispatchQueue.global(qos: .utility).async {
@@ -111,8 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         initializePhase5()
 
         DispatchQueue.main.async { [weak self] in
-            NSApp.activate(ignoringOtherApps: true)
             self?.restorePrimaryWindows()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.presentStartupWindowIfNeeded()
         }
     }
 
@@ -131,6 +140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         idleDetector?.stop()
         audioCaptureEngine?.stop()
         systemAudioEngine?.stop()
+        statusPopover.performClose(nil)
+        if let statusItem {
+            NSStatusBar.system.removeStatusItem(statusItem)
+        }
         AdvisoryBridgeClient.shutdownAllManagedSidecars()
         if let sessionId = sessionManager?.currentSessionId {
             try? sessionManager?.endSession(sessionId)
@@ -172,14 +185,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func restorePrimaryWindows() {
-        let candidateWindows = NSApp.windows.filter { window in
-            !window.isVisible || window.isMiniaturized || !window.canBecomeKey
+        let candidateWindows = [timelineWindow, settingsWindow].compactMap { $0 }.filter { window in
+            !window.isVisible || window.isMiniaturized
         }
 
-        if candidateWindows.isEmpty {
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
+        guard !candidateWindows.isEmpty else { return }
 
         NSApp.activate(ignoringOtherApps: true)
         for window in candidateWindows {
@@ -238,10 +248,176 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ])
             try runner.runPending()
             databaseManager = db
+            refreshManagedWindowContent()
             logger.info("Database initialized at \(dbPath)")
         } catch {
             logger.error("Database initialization failed: \(error.localizedDescription)")
         }
+    }
+
+    private func installStatusItem() {
+        guard statusItem == nil else {
+            refreshManagedWindowContent()
+            return
+        }
+
+        statusPopover.behavior = .transient
+        statusPopover.animates = true
+        statusPopover.contentSize = NSSize(width: 300, height: 420)
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.autosaveName = "com.memograph.app.status"
+        item.isVisible = true
+        guard let button = item.button else {
+            logger.error("Failed to create menu bar status button")
+            return
+        }
+
+        button.title = "M"
+        button.toolTip = "Memograph"
+        button.target = self
+        button.action = #selector(toggleStatusPopover(_:))
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
+        statusItem = item
+        refreshManagedWindowContent()
+        logger.info("Installed AppKit status item")
+    }
+
+    private func refreshManagedWindowContent() {
+        statusPopover.contentViewController = NSHostingController(rootView: makeMenuBarPopover())
+
+        if let timelineWindow,
+           let db = databaseManager {
+            timelineWindow.contentViewController = NSHostingController(rootView: TimelineView(db: db))
+        }
+
+        if let settingsWindow {
+            settingsWindow.contentViewController = NSHostingController(rootView: SettingsView())
+        }
+    }
+
+    private func makeMenuBarPopover() -> MenuBarPopover {
+        MenuBarPopover(
+            permissionsManager: menuBarPermissionsManager,
+            db: databaseManager,
+            onOpenTimeline: { [weak self] in
+                self?.statusPopover.performClose(nil)
+                self?.showTimelineWindow()
+            },
+            onOpenSettings: { [weak self] in
+                self?.statusPopover.performClose(nil)
+                self?.showSettingsWindow(selectedTab: nil)
+            },
+            onOpenAccounts: { [weak self] in
+                self?.statusPopover.performClose(nil)
+                self?.showSettingsWindow(selectedTab: 6)
+            }
+        )
+    }
+
+    @objc
+    private func toggleStatusPopover(_ sender: Any?) {
+        guard let button = statusItem?.button else { return }
+
+        if statusPopover.isShown {
+            statusPopover.performClose(sender)
+            return
+        }
+
+        refreshManagedWindowContent()
+        statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showTimelineWindow() {
+        guard let db = databaseManager else {
+            logger.error("Cannot open timeline window: database is not ready")
+            return
+        }
+
+        let window = timelineWindow ?? makeManagedWindow(
+            title: "Timeline",
+            autosaveName: "MemographTimelineWindow",
+            frame: NSRect(x: 0, y: 0, width: 1240, height: 760)
+        )
+        window.contentViewController = NSHostingController(rootView: TimelineView(db: db))
+        timelineWindow = window
+        presentManagedWindow(window)
+    }
+
+    private func showSettingsWindow(selectedTab: Int?) {
+        let initialTab = selectedTab ?? 0
+        let window = settingsWindow ?? makeManagedWindow(
+            title: "Settings",
+            autosaveName: "MemographSettingsWindow",
+            frame: NSRect(x: 0, y: 0, width: 920, height: 760)
+        )
+
+        if settingsWindow == nil {
+            window.contentViewController = NSHostingController(rootView: SettingsView(initialTab: initialTab))
+            settingsWindow = window
+        }
+
+        presentManagedWindow(window)
+
+        if settingsWindow != nil, let selectedTab {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .settingsSwitchToTab,
+                    object: nil,
+                    userInfo: ["tab": selectedTab]
+                )
+            }
+        }
+    }
+
+    private func makeManagedWindow(title: String, autosaveName: String, frame: NSRect) -> NSWindow {
+        let window = NSWindow(
+            contentRect: frame,
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = title
+        window.isReleasedWhenClosed = false
+        window.setFrameAutosaveName(autosaveName)
+        window.center()
+        return window
+    }
+
+    private func presentManagedWindow(_ window: NSWindow) {
+        NSApp.activate(ignoringOtherApps: true)
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
+
+    private func presentStartupWindowIfNeeded() {
+        guard timelineWindow?.isVisible != true,
+              settingsWindow?.isVisible != true else {
+            return
+        }
+
+        logger.info("Opening settings window as startup fallback")
+        showSettingsWindow(selectedTab: nil)
+    }
+
+    @objc
+    func showTimelineWindowFromMenuBar() {
+        showTimelineWindow()
+    }
+
+    @objc
+    func showSettingsWindowFromMenuBar() {
+        showSettingsWindow(selectedTab: nil)
+    }
+
+    @objc
+    func showAccountsWindowFromMenuBar() {
+        showSettingsWindow(selectedTab: 6)
     }
 
     private func initializeMonitors() {

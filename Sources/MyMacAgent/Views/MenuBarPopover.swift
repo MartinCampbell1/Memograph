@@ -3,9 +3,11 @@ import SwiftUI
 struct MenuBarPopover: View {
     @ObservedObject var permissionsManager: PermissionsManager
     let db: DatabaseManager?
+    let onOpenTimeline: (() -> Void)?
+    let onOpenSettings: (() -> Void)?
+    let onOpenAccounts: (() -> Void)?
     @ObservedObject private var audioHealthMonitor = AudioHealthMonitor.shared
     @ObservedObject private var advisoryHealthMonitor = AdvisoryHealthMonitor.shared
-    @Environment(\.openWindow) private var openWindow
     @State private var isPaused = false
     @State private var resumeArtifact: AdvisoryArtifactRecord?
     @State private var resumeThread: AdvisoryThreadRecord?
@@ -190,8 +192,7 @@ struct MenuBarPopover: View {
             }
 
             Button("Settings") {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "settings")
+                openSettings()
             }
 
             Button("Accounts & Sessions") {
@@ -235,16 +236,33 @@ struct MenuBarPopover: View {
     }
 
     private func openTimeline() {
+        if let onOpenTimeline {
+            onOpenTimeline()
+            return
+        }
+
         NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: "timeline")
+        NSApp.sendAction(#selector(AppDelegate.showTimelineWindowFromMenuBar), to: nil, from: nil)
+    }
+
+    private func openSettings() {
+        if let onOpenSettings {
+            onOpenSettings()
+            return
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(#selector(AppDelegate.showSettingsWindowFromMenuBar), to: nil, from: nil)
     }
 
     private func openAccounts() {
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: "settings")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            NotificationCenter.default.post(name: .settingsSwitchToTab, object: nil, userInfo: ["tab": 6])
+        if let onOpenAccounts {
+            onOpenAccounts()
+            return
         }
+
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(#selector(AppDelegate.showAccountsWindowFromMenuBar), to: nil, from: nil)
     }
 
     private func loadResumeSurfaceIfNeeded(force: Bool = false) {
