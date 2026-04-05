@@ -136,8 +136,8 @@ class ProviderDiagnostics:
         self._save_preferred_accounts(preferred_accounts)
         self._invalidate_cache_locked()
 
-    def _record_account_use_locked(self, provider: str) -> None:
-        account_name = self._selected_profile_name(provider)
+    def _record_account_use_locked(self, provider: str, account_name: str | None = None) -> None:
+        account_name = account_name or self._selected_profile_name(provider)
         if not account_name:
             return
         state_key = self._profile_account_key(provider, account_name)
@@ -1775,11 +1775,14 @@ class AdvisoryRuntime:
         self,
         provider: str,
         prompt: str,
+        account_name: str | None = None,
         timeout_seconds: int = 60,
+        max_output_length: int = 8000,
     ) -> str | None:
         """Call the active CLI provider with a prompt and return its output.
 
-        Uses the provider's CLI binary. Returns None if the call fails.
+        Uses the provider's CLI binary with the specified account's profile
+        environment. Returns None if the call fails.
         """
         binary = shutil.which(self.provider_diagnostics._provider_binary(provider))
         if not binary:
@@ -1795,12 +1798,21 @@ class AdvisoryRuntime:
             return None
 
         env = dict(os.environ)
-        config_dir = self.provider_diagnostics._provider_config_dir(provider)
-        if config_dir:
-            if provider == "claude":
-                env["CLAUDE_CONFIG_DIR"] = config_dir
-            elif provider == "codex":
-                env["CODEX_HOME"] = config_dir
+        # Use account-specific profile directory if available
+        if account_name:
+            profile_dir = self.provider_diagnostics._profile_directory(provider, account_name)
+            if profile_dir.exists():
+                if provider == "claude":
+                    env["CLAUDE_CONFIG_DIR"] = str(profile_dir / "home" / ".claude")
+                elif provider == "codex":
+                    env["CODEX_HOME"] = str(profile_dir)
+        else:
+            config_dir = self.provider_diagnostics._provider_config_dir(provider)
+            if config_dir:
+                if provider == "claude":
+                    env["CLAUDE_CONFIG_DIR"] = config_dir
+                elif provider == "codex":
+                    env["CODEX_HOME"] = config_dir
 
         try:
             result = subprocess.run(
@@ -1811,16 +1823,26 @@ class AdvisoryRuntime:
                 timeout=timeout_seconds,
             )
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                output = result.stdout.strip()
+                # Bound output length to prevent unbounded artifacts
+                if len(output) > max_output_length:
+                    output = output[:max_output_length] + "\n\n[truncated]"
+                return output
             return None
         except (subprocess.TimeoutExpired, OSError):
             return None
 
     def _current_provider_name(self) -> str | None:
-        """Return the currently active provider name from cached health."""
+        """Return the currently active provider name from cached health.
+        Never triggers a full provider probe — uses quick check only."""
         health = self.provider_diagnostics._quick_provider_check()
         if health is None:
-            health = self.provider_diagnostics.health()
+            # Only use cached health, never force a full probe here
+            with self.provider_diagnostics._lock:
+                if self.provider_diagnostics._cached_health is not None:
+                    health = dict(self.provider_diagnostics._cached_health)
+        if health is None:
+            return None
         return str(health.get("activeProviderName") or "").strip().lower() or None
 
     def _select_account_for_provider(self, provider: str) -> str | None:
@@ -1959,7 +1981,7 @@ class AdvisoryRuntime:
                 continue
 
             with self.provider_diagnostics._lock:
-                self.provider_diagnostics._record_account_use_locked(provider_name)
+                self.provider_diagnostics._record_account_use_locked(provider_name, account_name)
             proposals = handler(packet, recipe_name) if handler else []
             return {
                 "runId": run_id,
