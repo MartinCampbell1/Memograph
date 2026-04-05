@@ -229,6 +229,14 @@ final class AdvisoryBridgeClient {
         supervisor?.restart()
     }
 
+    /// Called after a re-login action completes. Restarts sidecar
+    /// and triggers a lightweight health refresh to pick up new credentials.
+    func recoverAfterRelogin(provider: String) async {
+        restartSidecar()
+        try? await Task.sleep(for: .seconds(2))
+        _ = health(forceRefresh: true)
+    }
+
     static func shutdownAllManagedSidecars() {
         AdvisorySidecarSupervisorRegistry.shared.shutdownAll()
     }

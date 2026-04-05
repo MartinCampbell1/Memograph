@@ -82,6 +82,43 @@ enum AdvisoryProviderSessionControl {
         }
     }
 
+    /// Launch the plan and monitor for session recovery.
+    /// Polls health every 3s. Calls completion(true) when session is detected, or completion(false) on timeout.
+    static func launchAndMonitorRecovery(
+        _ plan: AdvisoryProviderSessionActionPlan,
+        bridge: AdvisoryBridgeClient,
+        completion: @escaping @Sendable (Bool) -> Void
+    ) {
+        do {
+            try launch(plan)
+        } catch {
+            completion(false)
+            return
+        }
+
+        let providerName = plan.providerName
+        // Poll on a background queue — bridge methods are internally synchronized
+        DispatchQueue.global(qos: .utility).async {
+            let timeout: TimeInterval = 120
+            let startTime = Date()
+
+            while Date().timeIntervalSince(startTime) < timeout {
+                Thread.sleep(forTimeInterval: 3)
+
+                let health = bridge.health(forceRefresh: true)
+                if health.status == "ok" {
+                    bridge.restartSidecar()
+                    // Allow sidecar to restart before final refresh
+                    Thread.sleep(forTimeInterval: 2)
+                    _ = bridge.health(forceRefresh: true)
+                    completion(true)
+                    return
+                }
+            }
+            completion(false)
+        }
+    }
+
     static func launchCommandInTerminal(
         command: [String],
         environment: [String: String] = [:],
