@@ -22,6 +22,21 @@ from typing import Any
 
 logger = logging.getLogger("memograph_advisor")
 
+RETRYABLE_ACCOUNT_FAILURE_STATUSES = {
+    "timeout",
+    "unavailable",
+    "cli_generation_failed",
+    "cooldown",
+    "empty_output",
+    "rate_limited",
+}
+
+TERMINAL_ACCOUNT_FAILURE_STATUSES = {
+    "binary_missing",
+    "session_expired",
+    "session_missing",
+}
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -151,7 +166,7 @@ class ProviderDiagnostics:
             state = self._account_state.setdefault(state_key, {"cooldown_until": 0.0, "failure_count": 0, "requests_made": 0})
             state["requests_made"] = int(state.get("requests_made", 0)) + 1
             state["last_used_at"] = int(time.time())
-            self._invalidate_cache()
+            self._invalidate_accounts_cache_locked()
 
     def _profile_account_key(self, provider: str, account_name: str) -> str:
         return f"{provider}:{account_name}"
@@ -219,7 +234,6 @@ class ProviderDiagnostics:
                     if maybe_email:
                         return maybe_email
         if provider == "codex":
-            # Try auth.json for codex identity
             auth_data = _read_json_file(profile_path / "auth.json")
             if isinstance(auth_data, dict):
                 email = str(auth_data.get("email", "")).strip()
@@ -228,7 +242,6 @@ class ProviderDiagnostics:
                 user = str(auth_data.get("user", "")).strip()
                 if user:
                     return user
-            # Try config.toml
             config_path = profile_path / "config.toml"
             if config_path.exists():
                 try:
@@ -275,6 +288,27 @@ class ProviderDiagnostics:
         except OSError:
             return
 
+    def _starting_health_snapshot(self, now: float | None = None, refresh_in_progress: bool = True) -> dict[str, Any]:
+        checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now or time.time()))
+        provider_order = self._provider_order()
+        result = self._make_health(
+            status="starting",
+            provider_name="sidecar_jsonrpc_uds",
+            status_detail="Initial advisory health refresh in progress.",
+            last_error=None,
+            active_provider_name=None,
+            provider_order=provider_order,
+            available_providers=[],
+            provider_statuses=[],
+            checked_at=checked_at,
+            runtime_health_tier="starting",
+            provider_health_tier="starting",
+        )
+        result["isStale"] = True
+        result["stalenessSeconds"] = 0
+        result["refreshInProgress"] = refresh_in_progress
+        return result
+
     def health(self, force_refresh: bool = False) -> dict[str, Any]:
         with self._snapshot_lock:
             now = time.time()
@@ -287,12 +321,18 @@ class ProviderDiagnostics:
             result = dict(cached)
             if stale and not refresh_running:
                 self._trigger_background_refresh()
+                refresh_running = True
             result["isStale"] = stale
             result["stalenessSeconds"] = int(now - checked_at) if checked_at else 0
             result["refreshInProgress"] = refresh_running
             return result
 
-        # force_refresh requested, or no cache at all — synchronous refresh
+        if not force_refresh:
+            if not refresh_running:
+                self._trigger_background_refresh()
+                refresh_running = True
+            return self._starting_health_snapshot(now=now, refresh_in_progress=refresh_running)
+
         return self._do_synchronous_refresh()
 
     def _trigger_background_refresh(self) -> None:
@@ -317,16 +357,17 @@ class ProviderDiagnostics:
                 self._refresh_in_progress = False
 
     def _do_synchronous_refresh(self) -> dict[str, Any]:
-        with self._snapshot_lock:
-            if self._refresh_in_progress:
-                # Another thread is already refreshing; return stale cache if available
-                if self._cached_health is not None:
-                    result = dict(self._cached_health)
-                    result["isStale"] = True
-                    result["stalenessSeconds"] = int(time.time() - self._checked_at) if self._checked_at else 0
-                    result["refreshInProgress"] = True
-                    return result
-            self._refresh_in_progress = True
+        claimed_refresh_slot = False
+        deadline = time.time() + min(1.0, max(0.25, self.probe_timeout_seconds * 0.25))
+        while True:
+            with self._snapshot_lock:
+                if not self._refresh_in_progress:
+                    self._refresh_in_progress = True
+                    claimed_refresh_slot = True
+                    break
+            if time.time() >= deadline:
+                break
+            time.sleep(0.02)
 
         try:
             computed = self._compute_health()  # OUTSIDE lock
@@ -340,8 +381,9 @@ class ProviderDiagnostics:
             result["refreshInProgress"] = False
             return result
         finally:
-            with self._snapshot_lock:
-                self._refresh_in_progress = False
+            if claimed_refresh_slot:
+                with self._snapshot_lock:
+                    self._refresh_in_progress = False
 
     def _quick_provider_check(self) -> dict[str, Any] | None:
         """Return cached health if a runnable provider exists, else None."""
@@ -435,11 +477,21 @@ class ProviderDiagnostics:
         detail = self._normalize_optional_text(state.get("last_failure_detail"))
         last_error = detail if state.get("last_failure_status") else None
         auth_state = "unknown"
+        last_failure_status = str(state.get("last_failure_status") or "").strip().lower()
+        should_probe = (
+            binary_present
+            and session_detected
+            and (
+                force_refresh
+                or not state.get("last_checked_at")
+                or (cooldown_remaining == 0 and self._account_failure_is_retryable(last_failure_status))
+            )
+        )
 
         if provider == "gemini":
             self._ensure_gemini_auth_settings(profile_path / "home")
 
-        if binary_present and session_detected and (force_refresh or not state.get("last_checked_at")):
+        if should_probe:
             result = self._probe_profile_account(provider, profile_path, now)
             binary_present = bool(result["binaryPresent"])
             session_detected = bool(result["sessionDetected"])
@@ -449,7 +501,7 @@ class ProviderDiagnostics:
             if result.get("identity"):
                 identity_hint = result["identity"]
         else:
-            if not binary_present or not session_detected or state.get("last_failure_status"):
+            if not binary_present or not session_detected or last_failure_status:
                 auth_state = "error"
             elif state.get("last_checked_at"):
                 auth_state = "verified"
@@ -1179,6 +1231,15 @@ class ProviderDiagnostics:
     def _status_triggers_cooldown(self, status: str) -> bool:
         return status in {"session_expired", "timeout", "unavailable", "cooldown"}
 
+    def _account_failure_is_retryable(self, status: str | None) -> bool:
+        return str(status or "").strip().lower() in RETRYABLE_ACCOUNT_FAILURE_STATUSES
+
+    def _account_failure_is_terminal(self, status: str | None) -> bool:
+        normalized = str(status or "").strip().lower()
+        if not normalized:
+            return False
+        return normalized in TERMINAL_ACCOUNT_FAILURE_STATUSES
+
     def _cooldown_snapshot(self, state: dict[str, Any], now: float) -> tuple[int, str | None]:
         cooldown_until = float(state.get("cooldown_until", 0.0) or 0.0)
         if cooldown_until <= now:
@@ -1241,6 +1302,10 @@ class ProviderDiagnostics:
             state["failure_count"] = int(state.get("failure_count", 0)) + 1
             state["last_checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
             self._invalidate_cache()
+
+    def _invalidate_accounts_cache_locked(self) -> None:
+        self._cached_accounts = None
+        self._accounts_checked_at = 0.0
 
     def _invalidate_cache(self) -> None:
         self._cached_health = None
@@ -1671,46 +1736,6 @@ class ProviderDiagnostics:
                 env["NVM_DIR"] = str(nvm_dir)
         return env
 
-    def _profile_identity_hint(self, provider: str, profile_root: Path | None) -> str | None:
-        if profile_root is None:
-            return None
-        if provider == "claude":
-            credentials_path = profile_root / "home" / ".claude" / ".credentials.json"
-            payload = self._read_json_file(credentials_path)
-            if isinstance(payload, dict):
-                oauth = payload.get("claudeAiOauth")
-                if isinstance(oauth, dict):
-                    email = str(oauth.get("email", "")).strip()
-                    if email:
-                        return email
-        if provider == "gemini":
-            accounts_path = profile_root / "home" / ".gemini" / "google_accounts.json"
-            payload = self._read_json_file(accounts_path)
-            if isinstance(payload, dict):
-                active = str(payload.get("active", "")).strip()
-                if active:
-                    return active
-        if provider == "codex":
-            codex_dir = profile_root / "home" / ".codex"
-            auth_data = self._read_json_file(codex_dir / "auth.json")
-            if isinstance(auth_data, dict):
-                email = str(auth_data.get("email", "")).strip()
-                if email:
-                    return email
-                user = str(auth_data.get("user", "")).strip()
-                if user:
-                    return user
-            config_path = codex_dir / "config.toml"
-            if config_path.exists():
-                try:
-                    content = config_path.read_text(encoding="utf-8")
-                    for line in content.splitlines():
-                        if line.strip().startswith("email") and "=" in line:
-                            return line.split("=", 1)[1].strip().strip('"').strip("'")
-                except OSError:
-                    pass
-        return None
-
     def _read_json_file(self, path: Path) -> Any:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
@@ -1752,8 +1777,23 @@ class ExecutionBinding:
     """Immutable binding from routing to execution — ensures handlers use the routed provider."""
     provider_name: str
     account_name: str | None
-    route_reason: str  # "recipe_preferred" | "fallback" | "only_available"
+    route_reason: str  # "recipe_primary" | "recipe_secondary" | "provider_fallback" | "only_available"
     attempt_index: int
+
+
+@dataclass(frozen=True)
+class ProviderCLIResult:
+    status: str
+    detail: str
+    output: str | None = None
+    account_name: str | None = None
+    returncode: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
 
 
 class AdvisoryRuntime:
@@ -1781,6 +1821,27 @@ class AdvisoryRuntime:
 
     def accounts(self, force_refresh: bool = False) -> dict[str, Any]:
         return self.provider_diagnostics.accounts(force_refresh=force_refresh)
+
+    def _should_use_provider_cli(self, provider_name: str | None) -> bool:
+        if not provider_name:
+            return False
+        if os.getenv("MEMOGRAPH_ADVISOR_FAKE_PROVIDER", "").strip():
+            return False
+        if self.provider_diagnostics._uses_fake_routing_mode():
+            return False
+        return True
+
+    def auth_check(
+        self,
+        provider_name: str,
+        account_name: str | None = None,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        return self.check_provider_auth(
+            provider_name,
+            account_name=account_name,
+            force_refresh=force_refresh,
+        )
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         with self._lock:
@@ -1908,6 +1969,193 @@ class AdvisoryRuntime:
             "snapshot": self.provider_diagnostics.accounts(force_refresh=force_refresh),
         }
 
+    def check_provider_auth(self, provider_name: str, account_name: str | None = None, force_refresh: bool = False) -> dict[str, Any]:
+        provider = provider_name.strip().lower()
+        if provider not in VALID_PROVIDERS:
+            raise JsonRPCMethodError(-32602, f"Unknown provider: {provider_name}")
+
+        now = time.time()
+        checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        target_account = account_name.strip() if account_name else None
+        if not target_account:
+            target_account = self._select_account_for_provider(provider)
+
+        if target_account:
+            try:
+                profile_path = self.provider_diagnostics._profile_directory(provider, target_account)
+            except FileNotFoundError as exc:
+                raise JsonRPCMethodError(-32021, str(exc)) from exc
+
+            preferred_accounts = self.provider_diagnostics._load_preferred_accounts()
+            snapshot = self.provider_diagnostics._profile_account_snapshot(
+                provider=provider,
+                profile_path=profile_path,
+                preferred_account_name=preferred_accounts.get(provider),
+                now=now,
+                checked_at=checked_at,
+                force_refresh=force_refresh,
+            )
+            verified = bool(snapshot.get("available"))
+            status = "ok" if verified else str(snapshot.get("authState") or "error").strip().lower() or "error"
+            detail = str(snapshot.get("detail") or snapshot.get("lastError") or status).strip()
+            return {
+                "providerName": provider,
+                "accountName": snapshot.get("accountName") or target_account,
+                "verified": verified,
+                "status": status,
+                "detail": detail,
+                "checkedAt": checked_at,
+            }
+
+        try:
+            probe = self.provider_diagnostics._probe_provider(provider)
+        except subprocess.TimeoutExpired:
+            return {
+                "providerName": provider,
+                "accountName": None,
+                "verified": False,
+                "status": "timeout",
+                "detail": f"{provider} auth probe timed out.",
+                "checkedAt": checked_at,
+            }
+        except Exception as exc:
+            return {
+                "providerName": provider,
+                "accountName": None,
+                "verified": False,
+                "status": "unavailable",
+                "detail": f"{provider} auth probe failed: {exc}",
+                "checkedAt": checked_at,
+            }
+
+        status = str(probe.get("status") or "unavailable").strip().lower() or "unavailable"
+        verified = status == "ok"
+        account_name_result = target_account or self.provider_diagnostics._selected_profile_name(provider)
+        return {
+            "providerName": provider,
+            "accountName": account_name_result,
+            "verified": verified,
+            "status": "ok" if verified else status,
+            "detail": str(probe.get("detail") or probe.get("lastError") or status).strip(),
+            "checkedAt": checked_at,
+        }
+
+    def _candidate_accounts_for_provider(self, provider: str, preferred_account_name: str | None = None) -> list[str]:
+        profiles = self.provider_diagnostics._profile_directories(provider)
+        if not profiles:
+            selected = preferred_account_name or self.provider_diagnostics._selected_profile_name(provider)
+            return [selected] if selected else []
+
+        preferred = preferred_account_name or self.provider_diagnostics._load_preferred_accounts().get(provider)
+        binary_present = shutil.which(self.provider_diagnostics._provider_binary(provider)) is not None
+        now = time.time()
+        candidates: list[tuple[int, float, str]] = []
+
+        with self.provider_diagnostics._snapshot_lock:
+            for profile_path in profiles:
+                account_name = profile_path.name
+                if not binary_present or not self.provider_diagnostics._profile_has_session_marker(provider, profile_path):
+                    continue
+
+                state_key = self.provider_diagnostics._profile_account_key(provider, account_name)
+                state = self.provider_diagnostics._account_state.get(state_key, {})
+                if now < float(state.get("cooldown_until", 0.0)):
+                    continue
+
+                failure_status = str(state.get("last_failure_status") or "").strip().lower()
+                if failure_status and not self.provider_diagnostics._account_failure_is_retryable(failure_status):
+                    continue
+
+                last_used = float(state.get("last_used_at", 0.0))
+                preferred_rank = 0 if preferred and account_name == preferred else 1
+                candidates.append((preferred_rank, last_used, account_name))
+
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        return [account_name for _, _, account_name in candidates]
+
+    def _run_provider_cli_with_failover(
+        self,
+        provider: str,
+        prompt: str,
+        account_name: str | None = None,
+        timeout_seconds: int = 60,
+        max_output_length: int = 8000,
+        recipe_name: str | None = None,
+    ) -> ProviderCLIResult:
+        fake_provider = os.getenv("MEMOGRAPH_ADVISOR_FAKE_PROVIDER", "").strip().lower()
+        if fake_provider or self.provider_diagnostics._uses_fake_routing_mode():
+            return ProviderCLIResult(
+                status="ok",
+                detail=f"{provider} fake routing mode skipped live CLI invocation.",
+                output=None,
+                account_name=account_name or self.provider_diagnostics._selected_profile_name(provider) or "acc1",
+            )
+
+        candidates = self._candidate_accounts_for_provider(provider, preferred_account_name=account_name)
+        if not candidates:
+            profiles_exist = bool(self.provider_diagnostics._profile_directories(provider))
+            if profiles_exist and account_name is None:
+                return ProviderCLIResult(
+                    status="no_runnable",
+                    detail=f"No runnable {provider} accounts available.",
+                    account_name=None,
+                )
+            elif account_name is not None:
+                candidates = [account_name]
+            else:
+                candidates = [None]
+
+        last_result: ProviderCLIResult | None = None
+        for candidate in candidates:
+            result = self._call_provider_cli(
+                provider,
+                prompt,
+                account_name=candidate,
+                timeout_seconds=timeout_seconds,
+                max_output_length=max_output_length,
+            )
+            last_result = result
+            if result.ok:
+                self.provider_diagnostics._record_account_use_locked(provider, result.account_name or candidate)
+                return result
+
+            if candidate:
+                if result.status not in {"binary_missing", "unsupported"}:
+                    state_key = self.provider_diagnostics._profile_account_key(provider, candidate)
+                    self.provider_diagnostics._record_account_failure_locked(
+                        state_key=state_key,
+                        status=result.status,
+                        detail=result.detail,
+                        now=time.time(),
+                    )
+
+            if result.status in {"binary_missing", "unsupported"}:
+                break
+
+        if last_result is None:
+            last_result = ProviderCLIResult(
+                status="unavailable",
+                detail=f"{provider} CLI call did not start.",
+                account_name=account_name,
+            )
+
+        self.provider_diagnostics._record_provider_failure_locked(
+            provider=provider,
+            status=last_result.status,
+            detail=last_result.detail,
+            now=time.time(),
+        )
+        if recipe_name:
+            self._logger.info(
+                "provider_cli_exhausted recipe=%s provider=%s status=%s account=%s detail=%s",
+                recipe_name,
+                provider,
+                last_result.status,
+                last_result.account_name or account_name,
+                last_result.detail,
+            )
+        return last_result
+
     def _call_provider_cli(
         self,
         provider: str,
@@ -1915,15 +2163,14 @@ class AdvisoryRuntime:
         account_name: str | None = None,
         timeout_seconds: int = 60,
         max_output_length: int = 8000,
-    ) -> str | None:
-        """Call the active CLI provider with a prompt and return its output.
-
-        Uses the provider's CLI binary with the specified account's profile
-        environment. Returns None if the call fails.
-        """
+    ) -> ProviderCLIResult:
         binary = shutil.which(self.provider_diagnostics._provider_binary(provider))
         if not binary:
-            return None
+            return ProviderCLIResult(
+                status="binary_missing",
+                detail=f"{provider} CLI is not installed.",
+                account_name=account_name,
+            )
 
         if provider == "claude":
             cmd = [binary, "-p", prompt, "--no-input"]
@@ -1932,24 +2179,28 @@ class AdvisoryRuntime:
         elif provider == "codex":
             cmd = [binary, "-p", prompt, "--quiet"]
         else:
-            return None
+            return ProviderCLIResult(
+                status="unsupported",
+                detail=f"Unsupported provider: {provider}",
+                account_name=account_name,
+            )
 
-        env = dict(os.environ)
-        # Use account-specific profile directory if available
         if account_name:
-            profile_dir = self.provider_diagnostics._profile_directory(provider, account_name)
-            if profile_dir.exists():
-                if provider == "claude":
-                    env["CLAUDE_CONFIG_DIR"] = str(profile_dir / "home" / ".claude")
-                elif provider == "codex":
-                    env["CODEX_HOME"] = str(profile_dir)
+            try:
+                profile_dir = self.provider_diagnostics._profile_directory(provider, account_name)
+            except FileNotFoundError as exc:
+                return ProviderCLIResult(
+                    status="session_missing",
+                    detail=str(exc),
+                    account_name=account_name,
+                )
+            env = profile_login_environment(
+                provider,
+                profile_dir,
+                real_home=self.provider_diagnostics.source_home(),
+            )
         else:
-            config_dir = self.provider_diagnostics._provider_config_dir(provider)
-            if config_dir:
-                if provider == "claude":
-                    env["CLAUDE_CONFIG_DIR"] = config_dir
-                elif provider == "codex":
-                    env["CODEX_HOME"] = config_dir
+            env = self.provider_diagnostics._provider_env(provider)
 
         try:
             result = subprocess.run(
@@ -1959,15 +2210,59 @@ class AdvisoryRuntime:
                 text=True,
                 timeout=timeout_seconds,
             )
-            if result.returncode == 0 and result.stdout.strip():
-                output = result.stdout.strip()
-                # Bound output length to prevent unbounded artifacts
-                if len(output) > max_output_length:
-                    output = output[:max_output_length] + "\n\n[truncated]"
-                return output
-            return None
-        except (subprocess.TimeoutExpired, OSError):
-            return None
+        except subprocess.TimeoutExpired:
+            return ProviderCLIResult(
+                status="timeout",
+                detail=f"{provider} CLI call timed out after {timeout_seconds}s.",
+                account_name=account_name,
+            )
+        except OSError as exc:
+            return ProviderCLIResult(
+                status="unavailable",
+                detail=f"{provider} CLI call failed: {exc}",
+                account_name=account_name,
+            )
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        combined = "\n".join(part for part in [stdout, stderr] if part).strip()
+        if result.returncode == 0 and stdout:
+            output = stdout
+            if len(output) > max_output_length:
+                output = output[:max_output_length] + "\n\n[truncated]"
+            return ProviderCLIResult(
+                status="ok",
+                detail=combined or f"{provider} CLI call succeeded.",
+                output=output,
+                account_name=account_name,
+                returncode=result.returncode,
+                stdout=stdout or None,
+                stderr=stderr or None,
+            )
+
+        status, detail = self._classify_cli_failure(provider, combined, result.returncode)
+        return ProviderCLIResult(
+            status=status,
+            detail=detail,
+            account_name=account_name,
+            returncode=result.returncode,
+            stdout=stdout or None,
+            stderr=stderr or None,
+        )
+
+    def _classify_cli_failure(self, provider: str, message: str, returncode: int | None = None) -> tuple[str, str]:
+        lowered = message.lower()
+        if any(token in lowered for token in ["timed out", "timeout"]):
+            return "timeout", f"{provider} CLI call timed out."
+        if any(token in lowered for token in ["not logged", "login", "auth", "expired", "reauth", "credential"]):
+            return "session_expired", f"{provider}: {message}" if message else f"{provider} auth expired."
+        if any(token in lowered for token in ["rate limit", "too many requests", "429"]):
+            return "rate_limited", f"{provider}: {message}" if message else f"{provider} rate limited."
+        if returncode == 0 and not message:
+            return "empty_output", f"{provider} CLI returned no output."
+        if not message:
+            return "empty_output" if returncode == 0 else "unavailable", f"{provider} CLI returned no output."
+        return "unavailable", f"{provider}: {message}"
 
     def _select_account_for_provider(self, provider: str) -> str | None:
         """Select the best runnable account for a provider.
@@ -1981,65 +2276,35 @@ class AdvisoryRuntime:
         Preferred account is used as bias (tried first if runnable), not a hard
         blocker.  Among runnable accounts, the least-recently-used wins.
         """
-        profiles = self.provider_diagnostics._profile_directories(provider)
-        if not profiles:
-            return self.provider_diagnostics._selected_profile_name(provider)
-
-        preferred = self.provider_diagnostics._load_preferred_accounts().get(provider)
-        binary_present = shutil.which(self.provider_diagnostics._provider_binary(provider)) is not None
-        now = time.time()
-
-        # Collect per-profile filesystem checks outside the lock
-        profile_fs: list[tuple[str, bool]] = []
-        for profile_path in profiles:
-            session_detected = self.provider_diagnostics._profile_has_session_marker(provider, profile_path)
-            profile_fs.append((profile_path.name, session_detected))
-
-        # Evaluate runnable criteria under the lock (only _account_state reads)
-        runnable: list[tuple[str, float]] = []
-        with self.provider_diagnostics._snapshot_lock:
-            for acc_name, session_detected in profile_fs:
-                if not binary_present or not session_detected:
-                    continue
-                state_key = self.provider_diagnostics._profile_account_key(provider, acc_name)
-                state = self.provider_diagnostics._account_state.get(state_key, {})
-                if now < float(state.get("cooldown_until", 0.0)):
-                    continue
-                if state.get("last_failure_status"):
-                    continue
-                last_used = float(state.get("last_used_at", 0.0))
-                runnable.append((acc_name, last_used))
-
-        if not runnable:
+        candidates = self._candidate_accounts_for_provider(provider)
+        if not candidates:
             return None
 
-        # Preferred as bias: use it if it is runnable
-        if preferred and any(acc[0] == preferred for acc in runnable):
-            return preferred
-
-        # Otherwise least-recently-used among runnable accounts
-        runnable.sort(key=lambda x: x[1])
-        return runnable[0][0]
+        return candidates[0]
 
     def _select_provider_for_recipe(
         self,
         recipe_name: str,
         health: dict[str, Any],
+        excluded_providers: set[str] | None = None,
     ) -> str | None:
         """Select the best provider for a recipe based on routing preference and availability."""
+        excluded = {provider.strip().lower() for provider in (excluded_providers or set()) if provider.strip()}
         preferred_order = self._recipe_routing.get(recipe_name, [])
         available = set(
             str(p).strip().lower()
             for p in (health.get("availableProviders") or [])
         )
         statuses = {
-            str(s.get("provider", "")).strip().lower(): s
+            str(s.get("providerName") or s.get("provider") or s.get("name") or "").strip().lower(): s
             for s in (health.get("providerStatuses") or [])
             if isinstance(s, dict)
         }
         now = time.time()
 
         for provider in preferred_order:
+            if provider in excluded:
+                continue
             if provider not in available:
                 continue
             status = statuses.get(provider, {})
@@ -2052,7 +2317,108 @@ class AdvisoryRuntime:
             return provider
 
         # Fallback to global active provider
-        return str(health.get("activeProviderName") or "").strip().lower() or None
+        fallback_provider = str(health.get("activeProviderName") or "").strip().lower() or None
+        if fallback_provider in excluded:
+            return next((provider for provider in available if provider not in excluded), None)
+        return fallback_provider
+
+    def _post_run_health_snapshot(
+        self,
+        health: dict[str, Any],
+        active_provider: str,
+        excluded_providers: set[str],
+    ) -> dict[str, Any]:
+        snapshot = json.loads(json.dumps(health))
+        provider_order = [
+            str(provider).strip().lower()
+            for provider in (snapshot.get("providerOrder") or self.provider_diagnostics._provider_order())
+            if str(provider).strip()
+        ]
+        normalized_active = active_provider.strip().lower()
+        normalized_excluded = {
+            provider.strip().lower()
+            for provider in excluded_providers
+            if provider.strip() and provider.strip().lower() != normalized_active
+        }
+        provider_statuses = snapshot.get("providerStatuses") or []
+        now = time.time()
+        active_detail: str | None = None
+        available: list[str] = []
+
+        for diagnostic in provider_statuses:
+            if not isinstance(diagnostic, dict):
+                continue
+            provider_name = str(
+                diagnostic.get("providerName")
+                or diagnostic.get("provider")
+                or diagnostic.get("name")
+                or ""
+            ).strip().lower()
+            if not provider_name:
+                continue
+
+            if provider_name == normalized_active:
+                diagnostic["status"] = "ok"
+                diagnostic["runnable"] = True
+                diagnostic.pop("cooldownRemainingSeconds", None)
+                diagnostic.pop("cooldownUntil", None)
+                detail = str(diagnostic.get("detail") or f"{provider_name} selected for advisory run.").strip()
+                diagnostic["detail"] = detail
+                active_detail = detail
+                available.append(provider_name)
+                continue
+
+            if provider_name not in normalized_excluded:
+                if str(diagnostic.get("status") or "").strip().lower() == "ok":
+                    diagnostic["runnable"] = True
+                    available.append(provider_name)
+                continue
+
+            state = self.provider_diagnostics._provider_state.get(provider_name, {})
+            failure_status = str(
+                state.get("last_failure_status")
+                or diagnostic.get("status")
+                or "cooldown"
+            ).strip().lower() or "cooldown"
+            failure_detail = str(
+                state.get("last_failure_detail")
+                or diagnostic.get("detail")
+                or f"{provider_name} temporarily unavailable."
+            ).strip()
+            cooldown_remaining, cooldown_until = self.provider_diagnostics._cooldown_snapshot(state, now)
+            if cooldown_remaining <= 0:
+                cooldown_remaining = 1
+                cooldown_until = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 1))
+            diagnostic["status"] = failure_status
+            diagnostic["detail"] = self.provider_diagnostics._with_cooldown_detail(
+                failure_detail,
+                cooldown_until,
+                now,
+            )
+            diagnostic["runnable"] = False
+            diagnostic["failureCount"] = max(
+                1,
+                int(state.get("failure_count", 0) or diagnostic.get("failureCount") or 0),
+            )
+            diagnostic["cooldownRemainingSeconds"] = cooldown_remaining
+            diagnostic["cooldownUntil"] = cooldown_until
+
+        deduped_available: list[str] = []
+        for provider in [normalized_active, *provider_order, *available]:
+            if provider in normalized_excluded or provider in deduped_available:
+                continue
+            if provider == normalized_active or provider in available:
+                deduped_available.append(provider)
+
+        snapshot["status"] = "ok"
+        snapshot["activeProviderName"] = normalized_active
+        snapshot["availableProviders"] = deduped_available
+        snapshot["providerStatuses"] = provider_statuses
+        snapshot["statusDetail"] = active_detail or f"{normalized_active} selected for advisory run."
+        snapshot["lastError"] = None
+        snapshot["runtimeHealthTier"] = "ok"
+        snapshot["providerHealthTier"] = "ok"
+        return snapshot
 
     def run_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
         run_id = str(request.get("runId", "")).strip()
@@ -2085,6 +2451,8 @@ class AdvisoryRuntime:
         last_health: dict[str, Any] | None = None
         last_failure_detail: str | None = None
         last_failure_status: str | None = None
+        excluded_providers: set[str] = set()
+        preserved_health_snapshot: dict[str, Any] | None = None
 
         for attempt in range(attempt_budget):
             start_time = time.time()
@@ -2092,6 +2460,9 @@ class AdvisoryRuntime:
             if health is None:
                 health = self.provider_diagnostics.health(force_refresh=(attempt > 0))
             last_health = health
+            status = str(health.get("status") or "").strip().lower()
+            if status in {"starting", "refreshing"} or bool(health.get("refreshInProgress")):
+                continue
             if health["status"] != "ok":
                 detail = str(health.get("statusDetail") or health["status"]).strip()
                 runtime_tier = health.get("runtimeHealthTier", "ok")
@@ -2101,16 +2472,31 @@ class AdvisoryRuntime:
                 raise JsonRPCMethodError(-32002, f"Advisory provider unavailable ({provider_tier}): {detail}")
 
             # Use recipe-specific routing instead of global activeProviderName
-            provider_name = self._select_provider_for_recipe(recipe_name, health)
+            provider_name = self._select_provider_for_recipe(
+                recipe_name,
+                health,
+                excluded_providers=excluded_providers,
+            )
             if not provider_name:
                 break
 
             account_name = self._select_account_for_provider(provider_name)
-            routing_type = "recipe_preferred" if provider_name in self._recipe_routing.get(recipe_name, [])[:1] else "fallback"
+            preferred_order = self._recipe_routing.get(recipe_name, [])
+            if provider_name in preferred_order:
+                routing_type = "recipe_primary" if preferred_order and provider_name == preferred_order[0] else "recipe_secondary"
+            else:
+                active_provider = str(health.get("activeProviderName") or "").strip().lower()
+                routing_type = "only_available" if active_provider == provider_name else "provider_fallback"
             self._logger.info(
                 "recipe_start run_id=%s recipe=%s provider=%s account=%s attempt=%d routing=%s",
                 run_id, recipe_name, provider_name, account_name, attempt + 1, routing_type,
             )
+
+            if account_name is None and self.provider_diagnostics._profile_directories(provider_name):
+                last_failure_detail = f"No runnable {provider_name} accounts available."
+                last_failure_status = "no_runnable"
+                excluded_providers.add(provider_name)
+                continue
 
             failure = self.provider_diagnostics._consume_fake_run_failure(provider_name)
             failure_status = str((failure or {}).get("status") or "").strip().lower()
@@ -2129,6 +2515,8 @@ class AdvisoryRuntime:
                 )
                 last_failure_detail = failure_detail
                 last_failure_status = failure_status
+                preserved_health_snapshot = self.provider_diagnostics.health(force_refresh=True)
+                excluded_providers.add(provider_name)
                 continue
 
             binding = ExecutionBinding(
@@ -2137,13 +2525,20 @@ class AdvisoryRuntime:
                 route_reason=routing_type,
                 attempt_index=attempt + 1,
             )
-            self.provider_diagnostics._record_account_use_locked(provider_name, account_name)
             proposals = handler(packet, recipe_name, binding) if handler else []
+            with self.provider_diagnostics._snapshot_lock:
+                cached_health = self._post_run_health_snapshot(
+                    preserved_health_snapshot or health,
+                    active_provider=provider_name,
+                    excluded_providers=excluded_providers,
+                )
+                self.provider_diagnostics._cached_health = dict(cached_health)
+                self.provider_diagnostics._checked_at = time.time()
             elapsed_ms = int((time.time() - start_time) * 1000)
             self._logger.info(
                 "recipe_done run_id=%s recipe=%s provider=%s account=%s latency_ms=%d fallback=%s",
                 run_id, recipe_name, provider_name, account_name, elapsed_ms,
-                "false" if routing_type == "recipe_preferred" else "true",
+                "false" if routing_type == "recipe_primary" else "true",
             )
             return {
                 "runId": run_id,
@@ -2192,7 +2587,8 @@ class AdvisoryRuntime:
         cli_generation_failed: bool | None = None
         generated_by = "fallback:heuristic"
         provider_output: str | None = None
-        if binding.provider_name:
+        actual_account_name = binding.account_name
+        if self._should_use_provider_cli(binding.provider_name):
             context_parts = [
                 f"Thread: {thread['title']}",
                 f"Summary: {thread.get('summary', 'N/A')}",
@@ -2208,17 +2604,18 @@ class AdvisoryRuntime:
                 "return to their main thread. Include 3 concrete re-entry points.\n\n"
                 + "\n".join(context_parts)
             )
-            provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
-            if provider_output:
+            cli_result = self._run_provider_cli_with_failover(
+                binding.provider_name,
+                prompt,
+                account_name=binding.account_name,
+                recipe_name=recipe_name,
+            )
+            provider_output = cli_result.output
+            actual_account_name = cli_result.account_name or actual_account_name
+            if cli_result.ok:
                 generated_by = f"cli:{binding.provider_name}"
             else:
                 cli_generation_failed = True
-                self.provider_diagnostics._record_provider_failure_locked(
-                    provider=binding.provider_name,
-                    status="cli_generation_failed",
-                    detail=f"{binding.provider_name} CLI returned no output for {recipe_name}",
-                    now=time.time(),
-                )
 
         if provider_output:
             body = provider_output
@@ -2271,7 +2668,7 @@ class AdvisoryRuntime:
                     generated_by=generated_by,
                     provider=binding.provider_name,
                     cli_generation_failed=cli_generation_failed,
-                    account=binding.account_name,
+                    account=actual_account_name,
                     route_reason=binding.route_reason,
                 ),
             )
@@ -2481,7 +2878,8 @@ class AdvisoryRuntime:
         tweet_cli_generation_failed: bool | None = None
         generated_by = "fallback:heuristic"
         provider_output: str | None = None
-        if binding.provider_name:
+        actual_account_name = binding.account_name
+        if self._should_use_provider_cli(binding.provider_name):
             prompt = (
                 "You are a tweet ghostwriter. Based on the context below, suggest 3 tweet angles "
                 "grounded in the thread evidence. Each angle: one sentence + a draft tweet (280 chars max). "
@@ -2492,17 +2890,18 @@ class AdvisoryRuntime:
             )
             if voice_examples:
                 prompt += f"Voice examples: {' | '.join(voice_examples)}\n"
-            provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
-            if provider_output:
+            cli_result = self._run_provider_cli_with_failover(
+                binding.provider_name,
+                prompt,
+                account_name=binding.account_name,
+                recipe_name=recipe_name,
+            )
+            provider_output = cli_result.output
+            actual_account_name = cli_result.account_name or actual_account_name
+            if cli_result.ok:
                 generated_by = f"cli:{binding.provider_name}"
             else:
                 tweet_cli_generation_failed = True
-                self.provider_diagnostics._record_provider_failure_locked(
-                    provider=binding.provider_name,
-                    status="cli_generation_failed",
-                    detail=f"{binding.provider_name} CLI returned no output for {recipe_name}",
-                    now=time.time(),
-                )
 
         if provider_output:
             body = provider_output
@@ -2533,7 +2932,7 @@ class AdvisoryRuntime:
         metadata["provider"] = binding.provider_name
         if tweet_cli_generation_failed is not None:
             metadata["cliGenerationFailed"] = tweet_cli_generation_failed
-        metadata["account"] = binding.account_name
+        metadata["account"] = actual_account_name
         metadata["routeReason"] = binding.route_reason
         return [
             self._artifact(
@@ -2656,7 +3055,8 @@ class AdvisoryRuntime:
         weekly_cli_generation_failed: bool | None = None
         generated_by = "fallback:heuristic"
         provider_output: str | None = None
-        if binding.provider_name:
+        actual_account_name = binding.account_name
+        if self._should_use_provider_cli(binding.provider_name):
             thread_titles = [t.get("title", "") for t in thread_rollup[:5]]
             prompt = (
                 "You are a weekly reflection advisor. Synthesize this week's thread movement into "
@@ -2670,17 +3070,18 @@ class AdvisoryRuntime:
             if continuity_items:
                 open_loops = [item.get("title", "") for item in continuity_items[:3]]
                 prompt += f"Open loops: {', '.join(open_loops)}\n"
-            provider_output = self._call_provider_cli(binding.provider_name, prompt, account_name=binding.account_name)
-            if provider_output:
+            cli_result = self._run_provider_cli_with_failover(
+                binding.provider_name,
+                prompt,
+                account_name=binding.account_name,
+                recipe_name=recipe_name,
+            )
+            provider_output = cli_result.output
+            actual_account_name = cli_result.account_name or actual_account_name
+            if cli_result.ok:
                 generated_by = f"cli:{binding.provider_name}"
             else:
                 weekly_cli_generation_failed = True
-                self.provider_diagnostics._record_provider_failure_locked(
-                    provider=binding.provider_name,
-                    status="cli_generation_failed",
-                    detail=f"{binding.provider_name} CLI returned no output for {recipe_name}",
-                    now=time.time(),
-                )
 
         if provider_output:
             body = provider_output
@@ -2742,7 +3143,7 @@ class AdvisoryRuntime:
                     generated_by=generated_by,
                     provider=binding.provider_name,
                     cli_generation_failed=weekly_cli_generation_failed,
-                    account=binding.account_name,
+                    account=actual_account_name,
                     route_reason=binding.route_reason,
                 ),
             )
@@ -3602,6 +4003,13 @@ class AdvisoryRequestHandler(socketserver.StreamRequestHandler):
 
             if method == "advisor.health":
                 result = self.server.runtime.health(force_refresh=bool(params.get("forceRefresh")))
+            elif method == "advisor.auth.checkProvider":
+                account_name = str(params.get("accountName", "")).strip() or None
+                result = self.server.runtime.auth_check(
+                    str(params.get("providerName", "")).strip(),
+                    account_name=account_name,
+                    force_refresh=bool(params.get("forceRefresh")),
+                )
             elif method == "advisor.accounts.list":
                 result = self.server.runtime.accounts(force_refresh=bool(params.get("forceRefresh")))
             elif method == "advisor.accounts.openLogin":

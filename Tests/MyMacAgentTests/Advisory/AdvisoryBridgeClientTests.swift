@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import MyMacAgent
@@ -56,6 +57,32 @@ struct AdvisoryBridgeClientTests {
         #expect(snapshot.statusLines.contains(where: { $0.contains("No provider available") }))
     }
 
+    @Test("Busy runtime remains busy instead of collapsing into transport failure")
+    func busyRuntimeRemainsBusy() throws {
+        let primary = StaticHealthBridgeServer(
+            bridgeHealth: AdvisoryBridgeHealth(
+                runtimeName: "memograph-advisor",
+                status: "busy",
+                providerName: "sidecar_jsonrpc_uds",
+                transport: "jsonrpc_uds",
+                statusDetail: "Provider auth check in progress",
+                lastError: "Provider auth check in progress"
+            )
+        )
+        let client = AdvisoryBridgeClient(
+            primaryServer: primary,
+            fallbackServer: LocalAdvisoryBridgeStub(),
+            mode: .requireSidecar
+        )
+
+        let snapshot = client.runtimeSnapshot()
+
+        #expect(snapshot.effectiveStatus == "busy")
+        #expect(snapshot.title.contains("busy"))
+        #expect(snapshot.statusLines.contains(where: { $0.contains("busy") }))
+        #expect(!snapshot.statusLines.contains(where: { $0.contains("transport failure") }))
+    }
+
     @Test("Stub only runtime snapshot stays nominal")
     func stubOnlySnapshot() throws {
         let client = AdvisoryBridgeClient(
@@ -79,6 +106,52 @@ struct AdvisoryBridgeClientTests {
         #expect(resolved != longPath)
         #expect(resolved.hasPrefix("/tmp/memograph-advisor-"))
         #expect(resolved.utf8.count < 100)
+    }
+
+    @Test("UDS read timeout normalizes to timeout instead of transport failure")
+    func udsReadTimeoutNormalizesToTimeout() throws {
+        let socketPath = temporarySocketPath()
+        let server = try StallingUnixSocketServer(socketPath: socketPath)
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(atPath: socketPath)
+        }
+
+        let bridge = JSONRPCAdvisoryBridgeServer(socketPath: socketPath, defaultTimeoutSeconds: 1)
+        let resultQueue = DispatchQueue(label: "memograph.tests.uds.read-timeout")
+        let group = DispatchGroup()
+        var health: AdvisoryBridgeHealth?
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let response = bridge.health()
+            resultQueue.sync {
+                health = response
+            }
+            group.leave()
+        }
+
+        #expect(server.waitUntilAccepted(timeoutSeconds: 2))
+        #expect(group.wait(timeout: .now() + 5) == .success)
+        let resolvedHealth = try #require(resultQueue.sync { health })
+
+        #expect(resolvedHealth.status == "timeout")
+        #expect(resolvedHealth.recommendedAction?.contains("не ответил вовремя") == true)
+    }
+
+    @Test("Stale UDS socket with no listener normalizes to transport failure")
+    func udsConnectFailureNormalizesToTransportFailure() throws {
+        let socketPath = temporarySocketPath()
+        try makeStaleUnixSocketFile(at: socketPath)
+        defer {
+            try? FileManager.default.removeItem(atPath: socketPath)
+        }
+
+        let bridge = JSONRPCAdvisoryBridgeServer(socketPath: socketPath, defaultTimeoutSeconds: 1)
+        let health = bridge.health()
+
+        #expect(health.status == "transport_failure")
+        #expect(health.recommendedAction?.contains("Проверь socket") == true)
+        #expect(health.lastError?.contains("connect") == true || health.statusDetail?.contains("connect") == true)
     }
 
     @Test("Prefer sidecar auto-starts real memograph-advisor and executes continuity resume")
@@ -165,6 +238,28 @@ struct AdvisoryBridgeClientTests {
         #expect(claude?.configDirectory?.hasSuffix(".claude") == true)
         #expect(claude?.supportedActions.contains(.relogin) == true)
         #expect(claude?.supportedActions.contains(.logout) == true)
+    }
+
+    @Test("Targeted auth check uses provider account RPC instead of global health refresh")
+    func targetedAuthCheckUsesProviderAccountRpc() throws {
+        let server = RecordingAuthCheckBridgeServer()
+        let client = AdvisoryBridgeClient(
+            primaryServer: server,
+            fallbackServer: LocalAdvisoryBridgeStub(),
+            mode: .requireSidecar
+        )
+
+        let result = client.checkProviderAuth(provider: "claude", accountName: "acc2", forceRefresh: true)
+
+        #expect(result.verified)
+        #expect(result.status == "ok")
+        #expect(result.accountName == "acc2")
+        #expect(server.authCheckCallCount == 1)
+        #expect(server.lastAuthCheckProviderName == "claude")
+        #expect(server.lastAuthCheckAccountName == "acc2")
+        #expect(server.lastAuthCheckForceRefresh)
+        #expect(server.healthCallCount == 1)
+        #expect(server.refreshHealthCallCount == 0)
     }
 
     @Test("Stub continuity resume uses external enrichment anchors and timing")
@@ -2565,6 +2660,209 @@ private func makeWeeklyReviewRecipeRequest() -> AdvisoryRecipeRequest {
         accessLevel: .deepContext,
         timeoutSeconds: 5
     )
+}
+
+private final class RecordingAuthCheckBridgeServer: AdvisoryBridgeServerProtocol {
+    private(set) var authCheckCallCount = 0
+    private(set) var healthCallCount = 0
+    private(set) var refreshHealthCallCount = 0
+    private(set) var lastAuthCheckProviderName: String?
+    private(set) var lastAuthCheckAccountName: String?
+    private(set) var lastAuthCheckForceRefresh = false
+
+    func health() -> AdvisoryBridgeHealth {
+        healthCallCount += 1
+        return AdvisoryBridgeHealth(
+            runtimeName: "memograph-advisor",
+            status: "ok",
+            providerName: "sidecar_jsonrpc_uds",
+            transport: "jsonrpc_uds",
+            statusDetail: "claude ready",
+            activeProviderName: "claude",
+            providerStatuses: [
+                AdvisoryProviderDiagnostic(
+                    providerName: "claude",
+                    status: "ok",
+                    detail: "claude ready",
+                    binaryPresent: true,
+                    sessionDetected: true,
+                    priority: 0
+                )
+            ]
+        )
+    }
+
+    func refreshHealth() -> AdvisoryBridgeHealth {
+        refreshHealthCallCount += 1
+        return health()
+    }
+
+    func authCheck(providerName: String, accountName: String?, forceRefresh: Bool) throws -> AdvisoryProviderAuthCheckResponse {
+        authCheckCallCount += 1
+        lastAuthCheckProviderName = providerName
+        lastAuthCheckAccountName = accountName
+        lastAuthCheckForceRefresh = forceRefresh
+        return AdvisoryProviderAuthCheckResponse(
+            providerName: providerName,
+            accountName: accountName,
+            verified: accountName == "acc2",
+            status: accountName == "acc2" ? "ok" : "session_missing",
+            detail: accountName == "acc2" ? "Account acc2 verified." : "Account not ready.",
+            checkedAt: "2026-04-05T08:30:00Z"
+        )
+    }
+
+    func runRecipe(_ request: AdvisoryRecipeRequest) throws -> AdvisoryRecipeResult {
+        AdvisoryRecipeResult(runId: request.runId, artifactProposals: [], continuityProposals: [])
+    }
+
+    func cancelRun(runId: String) {}
+}
+
+private final class StallingUnixSocketServer: @unchecked Sendable {
+    private let socketPath: String
+    private let listenFD: Int32
+    private let acceptQueue = DispatchQueue(label: "memograph.tests.uds.accept")
+    private let acceptedSemaphore = DispatchSemaphore(value: 0)
+    private let stopSemaphore = DispatchSemaphore(value: 0)
+    private var acceptedFD: Int32 = -1
+    private let lock = NSLock()
+    private var stopped = false
+
+    init(socketPath: String) throws {
+        self.socketPath = socketPath
+        try? FileManager.default.removeItem(atPath: socketPath)
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errno))])
+        }
+
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        try socketPath.withCString { pathPointer in
+            let pathLength = strlen(pathPointer)
+            let maxLength = MemoryLayout.size(ofValue: address.sun_path)
+            guard pathLength < maxLength else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL), userInfo: [NSLocalizedDescriptionKey: "Socket path too long."])
+            }
+            withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
+                rawBuffer.initializeMemory(as: UInt8.self, repeating: 0)
+                memcpy(rawBuffer.baseAddress, pathPointer, pathLength)
+            }
+        }
+
+        var addressCopy = address
+        let bindResult = withUnsafePointer(to: &addressCopy) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            let error = String(cString: strerror(errno))
+            close(fd)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: error])
+        }
+
+        guard listen(fd, 1) == 0 else {
+            let error = String(cString: strerror(errno))
+            close(fd)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: error])
+        }
+
+        self.listenFD = fd
+
+        acceptQueue.async { [weak self] in
+            self?.acceptLoop()
+        }
+    }
+
+    func waitUntilAccepted(timeoutSeconds: TimeInterval) -> Bool {
+        acceptedSemaphore.wait(timeout: .now() + timeoutSeconds) == .success
+    }
+
+    func stop() {
+        lock.lock()
+        if stopped {
+            lock.unlock()
+            return
+        }
+        stopped = true
+        let acceptedFD = self.acceptedFD
+        self.acceptedFD = -1
+        lock.unlock()
+
+        if acceptedFD >= 0 {
+            close(acceptedFD)
+        }
+        close(listenFD)
+        try? FileManager.default.removeItem(atPath: socketPath)
+        stopSemaphore.signal()
+    }
+
+    private func acceptLoop() {
+        var clientAddress = sockaddr()
+        var clientLength = socklen_t(MemoryLayout<sockaddr>.size)
+        let fd = accept(listenFD, &clientAddress, &clientLength)
+        if fd < 0 {
+            acceptedSemaphore.signal()
+            return
+        }
+
+        lock.lock()
+        acceptedFD = fd
+        lock.unlock()
+        acceptedSemaphore.signal()
+        _ = stopSemaphore.wait(timeout: .distantFuture)
+        close(fd)
+    }
+}
+
+private func temporarySocketPath() -> String {
+    "/tmp/memograph-advisor-\(UUID().uuidString).sock"
+}
+
+private func makeStaleUnixSocketFile(at path: String) throws {
+    try? FileManager.default.removeItem(atPath: path)
+
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(errno))])
+    }
+
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    try path.withCString { pathPointer in
+        let pathLength = strlen(pathPointer)
+        let maxLength = MemoryLayout.size(ofValue: address.sun_path)
+        guard pathLength < maxLength else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL), userInfo: [NSLocalizedDescriptionKey: "Socket path too long."])
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
+            rawBuffer.initializeMemory(as: UInt8.self, repeating: 0)
+            memcpy(rawBuffer.baseAddress, pathPointer, pathLength)
+        }
+    }
+
+    var addressCopy = address
+    let bindResult = withUnsafePointer(to: &addressCopy) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard bindResult == 0 else {
+        let error = String(cString: strerror(errno))
+        close(fd)
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: error])
+    }
+
+    guard listen(fd, 1) == 0 else {
+        let error = String(cString: strerror(errno))
+        close(fd)
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: error])
+    }
+
+    close(fd)
 }
 
 private func waitUntil(timeoutSeconds: TimeInterval, check: () -> Bool) -> Bool {

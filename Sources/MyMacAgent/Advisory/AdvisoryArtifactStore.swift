@@ -238,8 +238,11 @@ final class AdvisoryArtifactStore {
         let timestamp = dateSupport.isoString(from: now())
 
         if let existing = try artifact(id: id) {
-            // Don't overwrite a CLI-successful artifact with a failed-generation fallback.
-            if candidateHasCliFailure(effectiveCandidate) && existingHasCliSuccess(existing) {
+            let existingRank = artifactAuthorityRank(metadataJson: existing.metadataJson)
+            let candidateRank = artifactAuthorityRank(metadataJson: effectiveCandidate.metadataJson)
+
+            // Preserve higher-authority artifacts when a degraded fallback tries to reuse the same id.
+            if candidateRank < existingRank {
                 return existing
             }
             try db.execute("""
@@ -1094,22 +1097,31 @@ final class AdvisoryArtifactStore {
         ])
     }
 
-    /// Returns true when the candidate's metadataJson indicates CLI generation failed.
-    private func candidateHasCliFailure(_ candidate: AdvisoryArtifactCandidate) -> Bool {
-        guard let json = candidate.metadataJson,
+    /// Higher values represent more authoritative artifact generations.
+    /// cli:* should win over fallback heuristics, which should win over local stubs.
+    private func artifactAuthorityRank(metadataJson: String?) -> Int {
+        guard let json = metadataJson,
               let data = json.data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return false }
-        return dict["cliGenerationFailed"] as? Bool == true
-    }
+        else { return 0 }
 
-    /// Returns true when the existing record's metadataJson shows a successful CLI generation.
-    private func existingHasCliSuccess(_ existing: AdvisoryArtifactRecord) -> Bool {
-        guard let json = existing.metadataJson,
-              let data = json.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let generatedBy = dict["generatedBy"] as? String
-        else { return false }
-        return generatedBy.hasPrefix("cli:")
+        if dict["cliGenerationFailed"] as? Bool == true {
+            return 0
+        }
+
+        guard let generatedBy = dict["generatedBy"] as? String else {
+            return 0
+        }
+
+        if generatedBy.hasPrefix("cli:") {
+            return 3
+        }
+        if generatedBy.hasPrefix("fallback:") {
+            return 2
+        }
+        if generatedBy.hasPrefix("stub:") {
+            return 1
+        }
+        return 0
     }
 }

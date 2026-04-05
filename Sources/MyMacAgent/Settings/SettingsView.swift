@@ -565,16 +565,7 @@ struct SettingsView: View {
                 }
 
                 settingRow("Runtime status") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(advisoryHealthMonitor.snapshot.statusTitle)
-                            .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
-                        Text(advisoryHealthMonitor.snapshot.runtimeSnapshot.runtimeStatusSummary)
-                            .font(.caption)
-                            .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
-                        Text(advisoryHealthMonitor.snapshot.runtimeSnapshot.providerStatusSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    advisoryControlPlaneStatusView(runtimeSnapshot: advisoryHealthMonitor.snapshot.runtimeSnapshot)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
@@ -694,16 +685,7 @@ struct SettingsView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(advisoryHealthMonitor.snapshot.statusTitle)
-                        .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
-                    Text(advisoryHealthMonitor.snapshot.runtimeSnapshot.runtimeStatusSummary)
-                        .font(.caption)
-                        .foregroundStyle(advisoryHealthMonitor.snapshot.isDegraded ? .orange : .secondary)
-                    Text(advisoryHealthMonitor.snapshot.runtimeSnapshot.providerStatusSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                advisoryControlPlaneStatusView(runtimeSnapshot: advisoryHealthMonitor.snapshot.runtimeSnapshot)
 
                 HStack(spacing: 8) {
                     Button {
@@ -1413,6 +1395,41 @@ struct SettingsView: View {
         case .wearable:
             return $advisoryWearableEnrichmentEnabled
         }
+    }
+
+    private func advisoryControlPlaneStatusView(runtimeSnapshot: AdvisoryBridgeRuntimeSnapshot) -> some View {
+        let inventoryCount = advisoryProviderProfiles.values.reduce(0) { $0 + $1.count }
+        let providerDiagnostics = runtimeSnapshot.bridgeHealth.providerStatuses.count
+
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(runtimeSnapshot.runtimeStatusSummary)
+                .foregroundStyle(runtimeSnapshot.isDegraded ? .orange : .secondary)
+
+            Text(inventoryCount == 0
+                 ? "Inventory: no accounts on disk"
+                 : "Inventory: \(inventoryCount) account\(inventoryCount == 1 ? "" : "s") on disk")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(verificationSummary(for: runtimeSnapshot, providerDiagnosticsCount: providerDiagnostics))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func verificationSummary(
+        for runtimeSnapshot: AdvisoryBridgeRuntimeSnapshot,
+        providerDiagnosticsCount: Int
+    ) -> String {
+        guard providerDiagnosticsCount > 0 else {
+            return "Verification: runtime verification unavailable"
+        }
+
+        let checkedAt = runtimeSnapshot.bridgeHealth.checkedAt ?? "unknown time"
+        if let activeProvider = runtimeSnapshot.bridgeHealth.activeProviderName, !activeProvider.isEmpty {
+            return "Verification: \(activeProvider.capitalized) last checked at \(checkedAt)"
+        }
+        return "Verification: last runtime probe at \(checkedAt)"
     }
 
     private func providerSessionCard(

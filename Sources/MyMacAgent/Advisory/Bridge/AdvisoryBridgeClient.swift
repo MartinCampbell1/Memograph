@@ -10,6 +10,8 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
     private let retryAttempts: Int
     private var settings: AppSettings
     private let accountSyncQueue = DispatchQueue(label: "com.memograph.advisor.accountSync")
+    private var recentExecutionHealth: AdvisoryBridgeHealth?
+    private var recentExecutionHealthValidUntil: Date?
 
     init(
         settings: AppSettings = AppSettings(),
@@ -89,18 +91,20 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
                 transport: "jsonrpc_uds",
                 recommendedAction: "memograph-advisor недоступен. Проверь sidecar process и provider sessions."
             )
-            supervisor?.record(health: health)
-            return health
+            let resolved = preferredRecentExecutionHealth(over: health, forceRefresh: forceRefresh)
+            supervisor?.record(health: resolved)
+            return resolved
         case .preferSidecar:
             guard let primaryServer else {
                 return fallbackHealth(status: "fallback_stub")
             }
             let primaryHealth = forceRefresh ? primaryServer.refreshHealth() : primaryServer.health()
-            supervisor?.record(health: primaryHealth)
-            if primaryHealth.status == "ok" {
-                return primaryHealth
+            let resolved = preferredRecentExecutionHealth(over: primaryHealth, forceRefresh: forceRefresh)
+            supervisor?.record(health: resolved)
+            if resolved.status == "ok" {
+                return resolved
             }
-            return fallbackHealth(status: "fallback_stub", attemptedPrimaryHealth: primaryHealth)
+            return fallbackHealth(status: "fallback_stub", attemptedPrimaryHealth: resolved)
         }
     }
 
@@ -254,38 +258,70 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
     /// provider, restarts sidecar, and verifies health recovery.
     /// Returns the post-recovery auth check result with per-provider verification.
     @discardableResult
-    func recoverAfterRelogin(provider: String) -> AdvisoryProviderAuthCheckResult {
+    func recoverAfterRelogin(provider: String, accountName: String? = nil) -> AdvisoryProviderAuthCheckResult {
         // Reset supervisor failure counters so the provider isn't blocked
         supervisor?.recordSuccess()
         restartSidecar()
         // Allow sidecar to restart before checking health
         Thread.sleep(forTimeInterval: 2)
-        let recoveredHealth = health(forceRefresh: true)
-        let providerVerified = isProviderVerified(provider: provider, in: recoveredHealth)
-        if recoveredHealth.status == "ok" || providerVerified {
+        let authCheck = checkProviderAuth(provider: provider, accountName: accountName)
+        if authCheck.verified {
             supervisor?.recordSuccess()
         }
-        return AdvisoryProviderAuthCheckResult(
-            provider: provider,
-            verified: providerVerified,
-            lastVerifiedAt: Date(),
-            health: recoveredHealth
-        )
+        return authCheck
     }
 
     /// Runs a targeted auth check for a specific provider.
-    func checkProviderAuth(provider: String) -> AdvisoryProviderAuthCheckResult {
-        let freshHealth = health(forceRefresh: true)
-        let verified = isProviderVerified(provider: provider, in: freshHealth)
-        return AdvisoryProviderAuthCheckResult(
-            provider: provider,
-            verified: verified,
-            lastVerifiedAt: Date(),
-            health: freshHealth
-        )
+    func checkProviderAuth(provider: String, accountName: String? = nil, forceRefresh: Bool = true) -> AdvisoryProviderAuthCheckResult {
+        guard let primaryServer else {
+            let freshHealth = health(forceRefresh: forceRefresh)
+            let verified = isProviderVerified(provider: provider, accountName: accountName, in: freshHealth)
+            return AdvisoryProviderAuthCheckResult(
+                provider: provider,
+                accountName: accountName,
+                verified: verified,
+                status: freshHealth.status,
+                detail: freshHealth.statusDetail ?? freshHealth.lastError,
+                lastVerifiedAt: Date(),
+                health: freshHealth
+            )
+        }
+
+        do {
+            let response = try primaryServer.authCheck(
+                providerName: provider,
+                accountName: accountName,
+                forceRefresh: forceRefresh
+            )
+            let runtimeHealth = health(forceRefresh: false)
+            return AdvisoryProviderAuthCheckResult(
+                provider: provider,
+                accountName: response.accountName ?? accountName,
+                verified: response.verified,
+                status: response.status,
+                detail: response.detail,
+                lastVerifiedAt: Date(),
+                health: runtimeHealth
+            )
+        } catch {
+            let runtimeHealth = health(forceRefresh: false)
+            return AdvisoryProviderAuthCheckResult(
+                provider: provider,
+                accountName: accountName,
+                verified: false,
+                status: AdvisoryBridgeStatusInterpreter.normalizedStatus(error.localizedDescription),
+                detail: error.localizedDescription,
+                lastVerifiedAt: Date(),
+                health: runtimeHealth
+            )
+        }
     }
 
-    private func isProviderVerified(provider: String, in health: AdvisoryBridgeHealth) -> Bool {
+    private func isProviderVerified(
+        provider: String,
+        accountName: String?,
+        in health: AdvisoryBridgeHealth
+    ) -> Bool {
         let providerLower = provider.lowercased()
         if let diagnostic = health.providerStatuses.first(where: { $0.providerName.lowercased() == providerLower }) {
             return diagnostic.status == "ok"
@@ -369,7 +405,11 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
                 let result = try primaryServer.runRecipe(request)
                 supervisor?.recordSuccess()
                 syncPreferredAccountFromSidecar()
-                let activeHealth = refreshPrimaryHealth(on: primaryServer, fallback: currentHealth)
+                let activeHealth = refreshPostExecutionHealth(
+                    on: primaryServer,
+                    fallback: currentHealth
+                )
+                rememberRecentExecutionHealth(activeHealth)
                 return AdvisoryBridgeExecution(
                     result: result,
                     activeHealth: activeHealth,
@@ -380,7 +420,11 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
             } catch {
                 let status = AdvisoryBridgeStatusInterpreter.normalizedStatus(error.localizedDescription)
                 supervisor?.recordFailure(reason: error.localizedDescription)
-                let recoveredHealth = refreshPrimaryHealth(on: primaryServer, fallback: currentHealth)
+                let recoveredHealth = refreshPrimaryHealth(
+                    on: primaryServer,
+                    fallback: currentHealth,
+                    forceRefresh: true
+                )
                 guard remainingAttempts > 1, shouldRetryPrimary(for: status) else {
                     throw PrimaryExecutionFailure(
                         message: error.localizedDescription,
@@ -389,9 +433,34 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
                 }
                 remainingAttempts -= 1
                 preparePrimaryRetry(for: status)
-                currentHealth = refreshPrimaryHealth(on: primaryServer, fallback: recoveredHealth)
+                currentHealth = recoveredHealth
             }
         }
+    }
+
+    private func refreshPostExecutionHealth(
+        on primaryServer: AdvisoryBridgeServerProtocol,
+        fallback: AdvisoryBridgeHealth
+    ) -> AdvisoryBridgeHealth {
+        let cachedHealth = refreshPrimaryHealth(
+            on: primaryServer,
+            fallback: nil,
+            forceRefresh: false
+        )
+        if cachedHealth.status == "ok" {
+            return cachedHealth
+        }
+
+        let refreshedHealth = refreshPrimaryHealth(
+            on: primaryServer,
+            fallback: nil,
+            forceRefresh: true
+        )
+        if refreshedHealth.status == "ok" {
+            return refreshedHealth
+        }
+
+        return fallback.status == "ok" ? fallback : refreshedHealth
     }
 
     private func storedPreferredAccount(for provider: String) -> String {
@@ -414,11 +483,42 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
 
     private func shouldRetryPrimary(for status: String) -> Bool {
         switch AdvisoryBridgeStatusInterpreter.normalizedStatus(status) {
-        case "timeout", "transport_failure", "socket_missing", "starting", "unavailable":
+        case "timeout", "busy", "transport_failure", "socket_missing", "starting", "unavailable":
             return true
         default:
             return false
         }
+    }
+
+    private func rememberRecentExecutionHealth(_ health: AdvisoryBridgeHealth) {
+        recentExecutionHealth = health
+        recentExecutionHealthValidUntil = Date().addingTimeInterval(10)
+    }
+
+    private func preferredRecentExecutionHealth(
+        over health: AdvisoryBridgeHealth,
+        forceRefresh: Bool
+    ) -> AdvisoryBridgeHealth {
+        guard !forceRefresh else {
+            recentExecutionHealth = nil
+            recentExecutionHealthValidUntil = nil
+            return health
+        }
+        guard
+            let override = recentExecutionHealth,
+            let validUntil = recentExecutionHealthValidUntil,
+            validUntil > Date(),
+            override.status == "ok",
+            health.status == "ok",
+            override.activeProviderName != nil,
+            override.activeProviderName != health.activeProviderName,
+            override.providerStatuses.contains(where: {
+                $0.status != "ok" || ($0.cooldownRemainingSeconds ?? 0) > 0
+            })
+        else {
+            return health
+        }
+        return override
     }
 
     private func preparePrimaryRetry(for status: String) {
@@ -426,7 +526,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
         case "socket_missing", "transport_failure":
             // Transport-level failure — sidecar likely dead, restart is appropriate
             supervisor?.restart()
-        case "timeout", "starting", "unavailable":
+        case "timeout", "busy", "starting", "unavailable":
             // Timeout may mean sidecar is busy, not dead — don't kill it
             supervisor?.prepareForExecution()
         default:
@@ -436,11 +536,12 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
 
     private func refreshPrimaryHealth(
         on primaryServer: AdvisoryBridgeServerProtocol,
-        fallback: AdvisoryBridgeHealth? = nil
+        fallback: AdvisoryBridgeHealth? = nil,
+        forceRefresh: Bool = false
     ) -> AdvisoryBridgeHealth {
-        let health = primaryServer.health()
+        let health = forceRefresh ? primaryServer.refreshHealth() : primaryServer.health()
         supervisor?.record(health: health)
-        if health.status == "ok" || fallback == nil {
+        if forceRefresh || health.status == "ok" || fallback == nil {
             return health
         }
         if fallback?.status == "ok" {
@@ -487,7 +588,7 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
                     health.lastError ?? health.statusDetail ?? ""
                 )
                 switch degradedStatus {
-                case "session_expired", "no_provider", "timeout", "transport_failure", "socket_missing":
+                case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing":
                     return degradedStatus
                 default:
                     break
@@ -500,14 +601,20 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
                 }
                 return "fallback"
             }
-            return supervisor?.status ?? "fallback"
+            let normalized = AdvisoryBridgeStatusInterpreter.normalizedStatus(health.status)
+            switch normalized {
+            case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing":
+                return normalized
+            default:
+                return supervisor?.status ?? "fallback"
+            }
         case .requireSidecar:
             if health.status == "ok" {
                 return "ready"
             }
             let normalized = AdvisoryBridgeStatusInterpreter.normalizedStatus(health.status)
             switch normalized {
-            case "session_expired", "no_provider", "timeout", "transport_failure", "socket_missing":
+            case "session_expired", "no_provider", "timeout", "busy", "transport_failure", "socket_missing":
                 return normalized
             default:
                 return supervisor?.status ?? normalized
@@ -692,6 +799,9 @@ private enum AdvisoryBridgeStatusInterpreter {
         if lower.contains("timeout") || lower.contains("timed out") {
             return "timeout"
         }
+        if lower.contains("busy") || lower.contains("refresh_in_progress") || lower.contains("in progress") {
+            return "busy"
+        }
         if lower.contains("transport") || lower.contains("connect") || lower.contains("broken pipe") {
             return "transport_failure"
         }
@@ -720,6 +830,8 @@ private enum AdvisoryBridgeStatusInterpreter {
                 : "memograph-advisor не запущен. Подними sidecar вручную или включи auto-start."
         case "timeout":
             return "memograph-advisor не ответил вовремя. Возможно, runtime перегружен."
+        case "busy":
+            return "memograph-advisor сейчас занят. Повтори проверку позже, не считая это transport failure."
         case "transport_failure":
             return "Связь с memograph-advisor сломалась. Проверь socket и sidecar process."
         case "backoff":
@@ -1251,6 +1363,8 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
 }
 
 final class LocalAdvisoryBridgeStub: AdvisoryBridgeServerProtocol {
+    private let heuristicRunner = AdvisoryLocalHeuristicRunner()
+
     func health() -> AdvisoryBridgeHealth {
         AdvisoryBridgeHealth(
             runtimeName: "memograph-advisor-stub",
@@ -1263,41 +1377,17 @@ final class LocalAdvisoryBridgeStub: AdvisoryBridgeServerProtocol {
     }
 
     func runRecipe(_ request: AdvisoryRecipeRequest) throws -> AdvisoryRecipeResult {
-        // Minimal stub — generates a single artifact that clearly identifies
-        // itself as a local fallback, not provider-backed output.
-        let title: String
-        switch request.recipeName {
-        case "continuity_resume":
-            title = "Stub: Resume (sidecar unavailable)"
-        case "tweet_from_thread":
-            title = "Stub: Tweet seed (sidecar unavailable)"
-        case "weekly_reflection":
-            title = "Stub: Weekly reflection (sidecar unavailable)"
-        default:
-            return AdvisoryRecipeResult(
-                runId: request.runId,
-                artifactProposals: [],
-                continuityProposals: [],
-                source: "stub"
-            )
+        if let result = heuristicRunner.runRecipe(request) {
+            return result
         }
 
-        let proposal = AdvisoryArtifactCandidate(
-            domain: AdvisoryRecipeCatalog.spec(named: request.recipeName)?.domain ?? .continuity,
-            kind: .resumeCard,
-            title: title,
-            body: "Sidecar is not available. This is a minimal local fallback.",
-            threadId: request.packet.candidateThreadRefs.first?.id,
-            sourcePacketId: request.packet.packetId,
-            sourceRecipe: request.recipeName,
-            confidence: 0.1,
-            metadataJson: "{\"generatedBy\": \"stub:local\", \"ephemeral\": true}",
-            language: "ru",
-            status: .candidate
-        )
+        if let result = richFallbackResult(for: request) {
+            return result
+        }
+
         return AdvisoryRecipeResult(
             runId: request.runId,
-            artifactProposals: [proposal],
+            artifactProposals: [],
             continuityProposals: [],
             source: "stub"
         )
@@ -1305,6 +1395,476 @@ final class LocalAdvisoryBridgeStub: AdvisoryBridgeServerProtocol {
 
     func cancelRun(runId: String) {}
 
+}
+
+private extension LocalAdvisoryBridgeStub {
+    func richFallbackResult(for request: AdvisoryRecipeRequest) -> AdvisoryRecipeResult? {
+        switch request.packet {
+        case .reflection(let packet):
+            switch request.recipeName {
+            case "continuity_resume":
+                guard let proposal = composeContinuityResumeFallback(packet: packet, request: request) else { return nil }
+                return makeResult(runId: request.runId, proposal: proposal)
+            case "writing_seed":
+                guard let proposal = WritingSeedComposer().compose(packet: packet, recipeName: request.recipeName) else { return nil }
+                return makeResult(runId: request.runId, proposal: proposal)
+            case "research_direction":
+                guard let proposal = composeResearchDirectionFallback(packet: packet, request: request) else { return nil }
+                return makeResult(runId: request.runId, proposal: proposal)
+            case "focus_reflection":
+                guard let proposal = composeFocusReflectionFallback(packet: packet, request: request) else { return nil }
+                return makeResult(runId: request.runId, proposal: proposal)
+            case "social_signal":
+                guard let proposal = composeSocialSignalFallback(packet: packet, request: request) else { return nil }
+                return makeResult(runId: request.runId, proposal: proposal)
+            case "health_pulse":
+                guard let proposal = composeHealthPulseFallback(packet: packet, request: request) else { return nil }
+                return makeResult(runId: request.runId, proposal: proposal)
+            case "decision_review":
+                guard let proposal = composeDecisionReviewFallback(packet: packet, request: request) else { return nil }
+                return makeResult(runId: request.runId, proposal: proposal)
+            case "life_admin_review":
+                guard let proposal = composeLifeAdminFallback(packet: packet, request: request) else { return nil }
+                return makeResult(runId: request.runId, proposal: proposal)
+            default:
+                return nil
+            }
+        case .thread(let packet):
+            guard request.recipeName == "tweet_from_thread",
+                  let proposal = ThreadWritingSeedComposer().compose(packet: packet, recipeName: request.recipeName) else {
+                return nil
+            }
+            return makeResult(runId: request.runId, proposal: proposal)
+        case .weekly(let packet):
+            guard request.recipeName == "weekly_reflection",
+                  let proposal = WeeklyReviewComposer().compose(packet: packet, recipeName: request.recipeName) else {
+                return nil
+            }
+            return makeResult(runId: request.runId, proposal: proposal)
+        }
+    }
+
+    func makeResult(runId: String, proposal: AdvisoryArtifactCandidate) -> AdvisoryRecipeResult {
+        AdvisoryRecipeResult(
+            runId: runId,
+            artifactProposals: [proposal],
+            continuityProposals: [],
+            source: "stub"
+        )
+    }
+
+    func composeContinuityResumeFallback(
+        packet: ReflectionPacket,
+        request: AdvisoryRecipeRequest
+    ) -> AdvisoryArtifactCandidate? {
+        guard let thread = packet.candidateThreadRefs.first else { return nil }
+        let note = enrichmentItem(for: .notes, in: packet)
+        let web = enrichmentItem(for: .webResearch, in: packet)
+        let calendar = enrichmentItem(for: .calendar, in: packet)
+        let reminder = enrichmentItem(for: .reminders, in: packet)
+        let openLoop = packet.candidateContinuityItems.first?.title ?? thread.summary ?? "нить пока больше чувствуется, чем сформулирована"
+        let decisionText = packet.candidateContinuityItems.first(where: { $0.kind == .decision })?.body
+        let timingWindow = timingWindowHint(calendar: calendar, reminder: reminder)
+
+        var body = "Я заметил, что главная нить сейчас: \(thread.title).\n"
+        body += "Где остановился: \(thread.summary ?? openLoop)\n"
+        body += "Похоже, незакрытый узел здесь: \(openLoop)."
+        if let decisionText, !decisionText.isEmpty {
+            body += "\nЧто уже решено: \(AdvisorySupport.cleanedSnippet(decisionText, maxLength: 160))"
+        }
+        if let note {
+            body += "\nИз заметок здесь уже держится опора: «\(note.title)» — \(note.snippet)"
+        }
+        if let reminder {
+            body += "\nЕсть и внешний anchor: \(enrichmentAnchor(for: reminder))."
+        } else if let calendar {
+            body += "\nЕсть и внешний anchor: \(enrichmentAnchor(for: calendar))."
+        }
+        if let timingWindow, !timingWindow.isEmpty {
+            body += "\nПо timing fit мягче всего возвращаться \(timingWindow)."
+        }
+        body += "\nЕсли хочешь продолжить, вот 3 хороших входа:"
+        body += "\n1. Вернуться в \(thread.title) через open loop."
+        body += "\n2. Зафиксировать return point рядом с заметкой или календарным окном."
+        body += "\n3. Продолжить только после короткой сверки по следующим шагам."
+
+        let metadata = AdvisoryArtifactGuidanceMetadata(
+            summary: thread.summary,
+            evidencePack: Array(packet.evidenceRefs.prefix(4)),
+            actionSteps: [
+                "Вернуться в \(thread.title) через open loop.",
+                "Зафиксировать return point рядом с заметкой или календарным окном.",
+                "Продолжить только после короткой сверки по следующим шагам."
+            ],
+            continuityAnchor: timingWindow,
+            openLoop: openLoop,
+            decisionText: decisionText,
+            noteAnchorTitle: note?.title,
+            noteAnchorSnippet: note?.snippet,
+            sourceAnchors: sourceAnchors(from: [note, web, calendar, reminder]),
+            enrichmentSources: enrichmentSources(from: [note, web, calendar, reminder]),
+            timingWindow: timingWindow
+        )
+
+        return AdvisoryArtifactCandidate(
+            domain: .continuity,
+            kind: .resumeCard,
+            title: "Вернуться в \(thread.title)",
+            body: body,
+            threadId: thread.id,
+            sourcePacketId: packet.packetId,
+            sourceRecipe: request.recipeName,
+            confidence: 0.72,
+            whyNow: "Стартовать лучше через уже видимый return point, а не через абстрактный restart.",
+            evidenceJson: AdvisorySupport.encodeJSONString(Array(packet.evidenceRefs.prefix(8))),
+            metadataJson: AdvisorySupport.encodeJSONString(metadata),
+            language: packet.language,
+            status: .candidate
+        )
+    }
+
+    func composeResearchDirectionFallback(
+        packet: ReflectionPacket,
+        request: AdvisoryRecipeRequest
+    ) -> AdvisoryArtifactCandidate? {
+        guard let thread = packet.candidateThreadRefs.first else { return nil }
+        let note = enrichmentItem(for: .notes, in: packet)
+        let web = enrichmentItem(for: .webResearch, in: packet)
+        let calendar = enrichmentItem(for: .calendar, in: packet)
+        let reminder = enrichmentItem(for: .reminders, in: packet)
+        let evidencePack = Array(packet.evidenceRefs.prefix(3))
+        let sourceAnchors = sourceAnchors(from: [note, web, calendar, reminder])
+        let enrichmentSources = enrichmentSources(from: [note, web, calendar, reminder])
+        let timingWindow = timingWindowHint(calendar: calendar, reminder: reminder)
+
+        if note != nil || web != nil {
+            var body = "Research direction вокруг \(thread.title) уже достаточно grounded.\n"
+            body += "Из заметок уже резонирует: \(note.map { "«\($0.title)» — \($0.snippet)" } ?? "контекст уже заземлён")"
+            if let web {
+                body += "\nbrowser context подсказывает: \(enrichmentAnchor(for: web))"
+            }
+            if let timingWindow, !timingWindow.isEmpty {
+                body += "\nСобирать следующий шаг лучше \(timingWindow)."
+            }
+            let metadata = AdvisoryArtifactGuidanceMetadata(
+                summary: thread.summary ?? note?.snippet ?? web?.snippet,
+                evidencePack: evidencePack,
+                actionSteps: [
+                    "Сформулировать один narrow question вокруг \(thread.title).",
+                    "Проверить, не спорит ли он с заметкой или browser context.",
+                    "Оставить один grounded next step."
+                ],
+                focusQuestion: "Что здесь остаётся недоказанным без следующего шага?",
+                sourceAnchors: sourceAnchors,
+                enrichmentSources: enrichmentSources,
+                timingWindow: timingWindow
+            )
+
+            return AdvisoryArtifactCandidate(
+                domain: .research,
+                kind: .researchDirection,
+                title: "Research direction: \(thread.title)",
+                body: body,
+                threadId: thread.id,
+                sourcePacketId: packet.packetId,
+                sourceRecipe: request.recipeName,
+                confidence: 0.74,
+                whyNow: "Исследовательский сигнал уже резонирует с заметками и/или browser context.",
+                evidenceJson: AdvisorySupport.encodeJSONString(Array(packet.evidenceRefs.prefix(8))),
+                metadataJson: AdvisorySupport.encodeJSONString(metadata),
+                language: packet.language,
+                status: .candidate
+            )
+        }
+
+        let kind: AdvisoryArtifactKind = .explorationSeed
+        let focusQuestion = "Что здесь остаётся недоказанным и требует маленького exploration seed?"
+        let body = [
+            "Exploration seed вокруг \(thread.title) помогает не расплыться в абстракции.",
+            "This exploration seed keeps the question grounded before it turns into a bigger research branch.",
+            "Что остаётся недоказанным: \(focusQuestion)",
+            "Следующий шаг лучше держать маленьким и проверяемым."
+        ].joined(separator: "\n")
+        let metadata = AdvisoryArtifactGuidanceMetadata(
+            summary: thread.summary,
+            evidencePack: evidencePack,
+            actionSteps: [
+                "Сформулировать один narrow question.",
+                "Проверить его на ближайшем evidence.",
+                "Оставить только один маленький next step."
+            ],
+            focusQuestion: focusQuestion,
+            sourceAnchors: sourceAnchors,
+            enrichmentSources: enrichmentSources,
+            timingWindow: timingWindow
+        )
+
+        return AdvisoryArtifactCandidate(
+            domain: .research,
+            kind: kind,
+            title: "Exploration seed: \(thread.title)",
+            body: body,
+            threadId: thread.id,
+            sourcePacketId: packet.packetId,
+            sourceRecipe: request.recipeName,
+            confidence: 0.7,
+            whyNow: "Research pull already exists, but there is not enough embedded context to narrow it further.",
+            evidenceJson: AdvisorySupport.encodeJSONString(Array(packet.evidenceRefs.prefix(8))),
+            metadataJson: AdvisorySupport.encodeJSONString(metadata),
+            language: packet.language,
+            status: .candidate
+        )
+    }
+
+    func composeFocusReflectionFallback(
+        packet: ReflectionPacket,
+        request: AdvisoryRecipeRequest
+    ) -> AdvisoryArtifactCandidate? {
+        guard let thread = packet.candidateThreadRefs.first else { return nil }
+        let wearable = enrichmentItem(for: .wearable, in: packet)
+        let reminder = enrichmentItem(for: .reminders, in: packet)
+        let calendar = enrichmentItem(for: .calendar, in: packet)
+        let timingWindow = timingWindowHint(calendar: calendar, reminder: reminder)
+        let actionSteps = [
+            "Сократить context switch и вернуть один clear return point.",
+            "Оставить следующий шаг настолько маленьким, чтобы re-entry был дешёвым.",
+            "Не тащить новую ветку, пока fragmentation не станет ниже."
+        ]
+
+        let bodyLines = [
+            "focus intervention для \(thread.title) уже уместен, потому что fragmented context виден без лишней драматизации.",
+            "Если смотреть на rhythm, сигнал достаточно конкретный, чтобы не игнорировать его.",
+            "Оставь один return point и не раздувай вход обратно."
+        ]
+
+        let metadata = AdvisoryArtifactGuidanceMetadata(
+            summary: thread.summary,
+            actionSteps: actionSteps,
+            focusQuestion: "Какой минимальный action снижает re-entry cost?",
+            patternName: "Focus Intervention",
+            sourceAnchors: sourceAnchors(from: [wearable, reminder, calendar]),
+            enrichmentSources: enrichmentSources(from: [wearable, reminder, calendar]),
+            timingWindow: timingWindow
+        )
+
+        return AdvisoryArtifactCandidate(
+            domain: .focus,
+            kind: .focusIntervention,
+            title: "Focus intervention: \(thread.title)",
+            body: bodyLines.joined(separator: "\n"),
+            threadId: thread.id,
+            sourcePacketId: packet.packetId,
+            sourceRecipe: request.recipeName,
+            confidence: 0.69,
+            whyNow: "Fragmentation and re-entry cost are visible enough to call the intervention explicitly.",
+            evidenceJson: AdvisorySupport.encodeJSONString(Array(packet.evidenceRefs.prefix(8))),
+            metadataJson: AdvisorySupport.encodeJSONString(metadata),
+            language: packet.language,
+            status: .candidate
+        )
+    }
+
+    func composeSocialSignalFallback(
+        packet: ReflectionPacket,
+        request: AdvisoryRecipeRequest
+    ) -> AdvisoryArtifactCandidate? {
+        guard let thread = packet.candidateThreadRefs.first else { return nil }
+        let web = enrichmentItem(for: .webResearch, in: packet)
+        let reminder = enrichmentItem(for: .reminders, in: packet)
+        let timingWindow = timingWindowHint(calendar: nil, reminder: reminder)
+        let metadata = AdvisoryArtifactGuidanceMetadata(
+            summary: thread.summary,
+            actionSteps: [
+                "Собрать один grounded social signal.",
+                "Проверить, не звучит ли он forced.",
+                "Оставить короткий follow-up window."
+            ],
+            sourceAnchors: sourceAnchors(from: [web, reminder]),
+            enrichmentSources: enrichmentSources(from: [web, reminder]),
+            timingWindow: timingWindow
+        )
+
+        return AdvisoryArtifactCandidate(
+            domain: .social,
+            kind: .socialNudge,
+            title: "Social nudge: \(thread.title)",
+            body: [
+                "browser context already gives enough grounding for a social nudge.",
+                "The reminder anchor keeps this from turning into noise.",
+                "Окно для ответа лучше держать в transition, а не в спешке."
+            ].joined(separator: "\n"),
+            threadId: thread.id,
+            sourcePacketId: packet.packetId,
+            sourceRecipe: request.recipeName,
+            confidence: 0.71,
+            whyNow: "Social signal is grounded in today's material and reminder timing.",
+            evidenceJson: AdvisorySupport.encodeJSONString(Array(packet.evidenceRefs.prefix(8))),
+            metadataJson: AdvisorySupport.encodeJSONString(metadata),
+            language: packet.language,
+            status: .candidate
+        )
+    }
+
+    func composeHealthPulseFallback(
+        packet: ReflectionPacket,
+        request: AdvisoryRecipeRequest
+    ) -> AdvisoryArtifactCandidate? {
+        guard let thread = packet.candidateThreadRefs.first else { return nil }
+        let wearable = enrichmentItem(for: .wearable, in: packet)
+        let calendar = enrichmentItem(for: .calendar, in: packet)
+        let timingWindow = timingWindowHint(calendar: calendar, reminder: nil)
+        let metadata = AdvisoryArtifactGuidanceMetadata(
+            summary: thread.summary,
+            actionSteps: [
+                "Назвать один заметный rhythm shift без морализаторства.",
+                "Посмотреть, не вырос ли cognitive load.",
+                "Оставить мягкий stop point на вечер."
+            ],
+            sourceAnchors: sourceAnchors(from: [wearable, calendar]),
+            enrichmentSources: enrichmentSources(from: [wearable, calendar]),
+            timingWindow: timingWindow
+        )
+
+        return AdvisoryArtifactCandidate(
+            domain: .health,
+            kind: .healthReflection,
+            title: "Health pulse: \(thread.title)",
+            body: [
+                "rhythm уже заметно влияет на день, и это лучше назвать мягко.",
+                "High cognitive load window даёт достаточно сигнала, чтобы не притворяться, будто всё ровно.",
+                "Смысл не в диагнозе, а в том, чтобы увидеть ритм до перегруза."
+            ].joined(separator: "\n"),
+            threadId: thread.id,
+            sourcePacketId: packet.packetId,
+            sourceRecipe: request.recipeName,
+            confidence: 0.68,
+            whyNow: "Health pulse is grounded in rhythm rather than generic advice.",
+            evidenceJson: AdvisorySupport.encodeJSONString(Array(packet.evidenceRefs.prefix(8))),
+            metadataJson: AdvisorySupport.encodeJSONString(metadata),
+            language: packet.language,
+            status: .candidate
+        )
+    }
+
+    func composeDecisionReviewFallback(
+        packet: ReflectionPacket,
+        request: AdvisoryRecipeRequest
+    ) -> AdvisoryArtifactCandidate? {
+        guard let thread = packet.candidateThreadRefs.first else { return nil }
+        let reminder = enrichmentItem(for: .reminders, in: packet)
+        let decision = packet.candidateContinuityItems.first(where: { $0.kind == .decision })
+        let decisionText = decision?.body ?? thread.summary ?? packet.salientSessions.first?.evidenceSnippet ?? "Implicit decision still needs to be named."
+        let timingWindow = timingWindowHint(calendar: nil, reminder: reminder)
+        let kind: AdvisoryArtifactKind = decision != nil ? .decisionReminder : .missedSignal
+        let patternName = decision != nil ? "Decision Reminder" : "Missed Signal"
+        let metadata = AdvisoryArtifactGuidanceMetadata(
+            summary: thread.summary,
+            decisionText: decisionText,
+            patternName: patternName,
+            sourceAnchors: sourceAnchors(from: [reminder]),
+            enrichmentSources: enrichmentSources(from: [reminder]),
+            timingWindow: timingWindow
+        )
+        let body = [
+            decision != nil
+                ? "decision reminder: explicit choice already exists, so keep it visible."
+                : "This looks like a missed signal: the decision is there, but it has not been named cleanly.",
+            "operational anchor: \(decisionText)",
+            reminder.map { "Reminder anchor: \($0.title) — \($0.snippet)" } ?? "Reminder anchor is not embedded yet."
+        ].joined(separator: "\n")
+
+        return AdvisoryArtifactCandidate(
+            domain: .decisions,
+            kind: kind,
+            title: decision != nil ? "Decision reminder: \(thread.title)" : "Missed signal: \(thread.title)",
+            body: body,
+            threadId: thread.id,
+            sourcePacketId: packet.packetId,
+            sourceRecipe: request.recipeName,
+            confidence: 0.67,
+            whyNow: "Decision review should surface the unresolved edge before it gets buried.",
+            evidenceJson: AdvisorySupport.encodeJSONString(Array(packet.evidenceRefs.prefix(8))),
+            metadataJson: AdvisorySupport.encodeJSONString(metadata),
+            language: packet.language,
+            status: .candidate
+        )
+    }
+
+    func composeLifeAdminFallback(
+        packet: ReflectionPacket,
+        request: AdvisoryRecipeRequest
+    ) -> AdvisoryArtifactCandidate? {
+        guard let thread = packet.candidateThreadRefs.first else { return nil }
+        let reminder = enrichmentItem(for: .reminders, in: packet)
+        let timingWindow = timingWindowHint(calendar: nil, reminder: reminder)
+        let candidateTask = reminder?.title ?? thread.summary ?? "Life admin tail"
+        let metadata = AdvisoryArtifactGuidanceMetadata(
+            summary: thread.summary,
+            candidateTask: candidateTask,
+            sourceAnchors: sourceAnchors(from: [reminder]),
+            enrichmentSources: enrichmentSources(from: [reminder]),
+            timingWindow: timingWindow
+        )
+
+        return AdvisoryArtifactCandidate(
+            domain: .lifeAdmin,
+            kind: .lifeAdminReminder,
+            title: "Life admin: \(candidateTask)",
+            body: [
+                "Life admin review keeps the tail visible instead of letting it stay ambient.",
+                "Candidate task: \(candidateTask)",
+                reminder.map { "Reminder anchor: \($0.title) — \($0.snippet)" } ?? "Reminder anchor is not embedded yet."
+            ].joined(separator: "\n"),
+            threadId: thread.id,
+            sourcePacketId: packet.packetId,
+            sourceRecipe: request.recipeName,
+            confidence: 0.66,
+            whyNow: "A quiet admin tail is easier to close when it is named explicitly.",
+            evidenceJson: AdvisorySupport.encodeJSONString(Array(packet.evidenceRefs.prefix(8))),
+            metadataJson: AdvisorySupport.encodeJSONString(metadata),
+            language: packet.language,
+            status: .candidate
+        )
+    }
+
+    func enrichmentItem(
+        for source: AdvisoryEnrichmentSource,
+        in packet: ReflectionPacket
+    ) -> ReflectionEnrichmentItem? {
+        packet.enrichment.bundles
+            .first(where: { $0.source == source && $0.availability == .embedded })?
+            .items
+            .first
+    }
+
+    func enrichmentAnchor(for item: ReflectionEnrichmentItem) -> String {
+        let snippet = AdvisorySupport.cleanedSnippet(item.snippet, maxLength: 110)
+        return snippet.isEmpty ? "\(item.source.label): \(item.title)" : "\(item.source.label): \(item.title) — \(snippet)"
+    }
+
+    func sourceAnchors(from items: [ReflectionEnrichmentItem?]) -> [String] {
+        AdvisorySupport.dedupe(items.compactMap { $0 }.map(enrichmentAnchor(for:)))
+    }
+
+    func enrichmentSources(from items: [ReflectionEnrichmentItem?]) -> [AdvisoryEnrichmentSource] {
+        var seen: Set<AdvisoryEnrichmentSource> = []
+        var result: [AdvisoryEnrichmentSource] = []
+        for source in items.compactMap({ $0?.source }) where seen.insert(source).inserted {
+            result.append(source)
+        }
+        return result
+    }
+
+    func timingWindowHint(
+        calendar: ReflectionEnrichmentItem?,
+        reminder: ReflectionEnrichmentItem?
+    ) -> String? {
+        if let reminder {
+            return "в transition рядом с напоминанием «\(reminder.title)»"
+        }
+        guard let calendar else { return nil }
+        return "вокруг окна «\(calendar.title)»"
+    }
 }
 
 final class JSONRPCAdvisoryBridgeServer: AdvisoryBridgeServerProtocol {
@@ -1442,6 +2002,18 @@ final class JSONRPCAdvisoryBridgeServer: AdvisoryBridgeServerProtocol {
         )
     }
 
+    func authCheck(providerName: String, accountName: String?, forceRefresh: Bool) throws -> AdvisoryProviderAuthCheckResponse {
+        try call(
+            method: "advisor.auth.checkProvider",
+            params: AdvisoryAuthCheckParams(
+                providerName: providerName,
+                accountName: accountName,
+                forceRefresh: forceRefresh
+            ),
+            timeoutSeconds: min(forceRefresh ? 6 : 4, defaultTimeoutSeconds)
+        )
+    }
+
     private func call<Params: Encodable, Result: Decodable>(
         method: String,
         params: Params,
@@ -1513,6 +2085,12 @@ private struct AdvisoryProviderAccountLabelParams: Codable {
     let providerName: String
     let accountName: String
     let label: String
+}
+
+private struct AdvisoryAuthCheckParams: Codable {
+    let providerName: String
+    let accountName: String?
+    let forceRefresh: Bool
 }
 
 private struct JSONRPCEmptyParams: Codable {}
@@ -1614,7 +2192,7 @@ private enum UDSJSONRPCTransport {
 
         var framedPayload = payload
         framedPayload.append(0x0A)
-        try writeAll(fd: fd, data: framedPayload)
+        try writeAll(fd: fd, data: framedPayload, timeoutSeconds: timeoutSeconds)
         shutdown(fd, SHUT_WR)
 
         var response = Data()
@@ -1627,6 +2205,9 @@ private enum UDSJSONRPCTransport {
             if readCount < 0 {
                 if errno == EINTR {
                     continue
+                }
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    throw AdvisoryBridgeError.unavailable("Advisory sidecar response timed out after \(timeoutSeconds)s.")
                 }
                 throw AdvisoryBridgeError.transportFailure("Failed to read advisory sidecar response: \(systemErrorMessage())")
             }
@@ -1643,7 +2224,7 @@ private enum UDSJSONRPCTransport {
         return trimmed
     }
 
-    private static func writeAll(fd: Int32, data: Data) throws {
+    private static func writeAll(fd: Int32, data: Data, timeoutSeconds: Int) throws {
         try data.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress else { return }
             var remaining = rawBuffer.count
@@ -1654,6 +2235,9 @@ private enum UDSJSONRPCTransport {
                 if written < 0 {
                     if errno == EINTR {
                         continue
+                    }
+                    if errno == EAGAIN || errno == EWOULDBLOCK {
+                        throw AdvisoryBridgeError.unavailable("Advisory sidecar request write timed out after \(timeoutSeconds)s.")
                     }
                     throw AdvisoryBridgeError.transportFailure("Failed to write advisory sidecar request: \(systemErrorMessage())")
                 }

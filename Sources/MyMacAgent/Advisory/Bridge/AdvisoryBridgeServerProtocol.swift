@@ -92,6 +92,8 @@ struct AdvisoryProviderDiagnostic: Codable, Equatable, Identifiable {
         switch status {
         case "ok":
             return "ready"
+        case "busy":
+            return "busy"
         case "session_expired":
             return "session expired"
         case "session_missing":
@@ -195,6 +197,8 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
             return "Runtime: backing off"
         case "timeout":
             return "Runtime: timed out"
+        case "busy":
+            return "Runtime: busy"
         case "transport_failure":
             return "Runtime: transport failure"
         case "fallback":
@@ -253,6 +257,8 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
             return "Advisory sidecar ready"
         case "stub_only":
             return "Advisory stub only"
+        case "busy":
+            return "Advisory sidecar busy"
         case "session_expired":
             return "Advisory provider session expired"
         case "no_provider":
@@ -291,6 +297,8 @@ struct AdvisoryBridgeRuntimeSnapshot: Equatable {
             lines.append("advisor: sidecar ready")
         case "stub_only":
             lines.append("advisor: local stub only")
+        case "busy":
+            lines.append("advisor: sidecar busy, advisory will retry")
         case "session_expired":
             lines.append("advisor: provider session expired, работает degraded path")
         case "no_provider":
@@ -370,9 +378,21 @@ struct AdvisoryBridgeExecution {
 
 struct AdvisoryProviderAuthCheckResult {
     let provider: String
+    let accountName: String?
     let verified: Bool
+    let status: String
+    let detail: String?
     let lastVerifiedAt: Date
     let health: AdvisoryBridgeHealth
+}
+
+struct AdvisoryProviderAuthCheckResponse: Codable, Equatable {
+    let providerName: String
+    let accountName: String?
+    let verified: Bool
+    let status: String
+    let detail: String?
+    let checkedAt: String?
 }
 
 enum AdvisoryBridgeError: LocalizedError {
@@ -395,6 +415,7 @@ enum AdvisoryBridgeError: LocalizedError {
 protocol AdvisoryBridgeServerProtocol {
     func health() -> AdvisoryBridgeHealth
     func refreshHealth() -> AdvisoryBridgeHealth
+    func authCheck(providerName: String, accountName: String?, forceRefresh: Bool) throws -> AdvisoryProviderAuthCheckResponse
     func accounts(forceRefresh: Bool) throws -> AdvisoryProviderAccountsSnapshot
     func openLogin(providerName: String) throws -> AdvisoryProviderAccountActionResponse
     func importCurrentSession(providerName: String, accountName: String?) throws -> AdvisoryProviderAccountActionResponse
@@ -408,6 +429,22 @@ protocol AdvisoryBridgeServerProtocol {
 extension AdvisoryBridgeServerProtocol {
     func refreshHealth() -> AdvisoryBridgeHealth {
         health()
+    }
+
+    func authCheck(providerName: String, accountName: String?, forceRefresh: Bool) throws -> AdvisoryProviderAuthCheckResponse {
+        let runtimeHealth = forceRefresh ? refreshHealth() : health()
+        let providerLower = providerName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let providerDiagnostic = runtimeHealth.providerStatuses.first(where: { $0.providerName.lowercased() == providerLower })
+        let status = providerDiagnostic?.status ?? runtimeHealth.status
+        let detail = providerDiagnostic?.detail ?? runtimeHealth.statusDetail ?? runtimeHealth.lastError
+        return AdvisoryProviderAuthCheckResponse(
+            providerName: providerName,
+            accountName: accountName,
+            verified: status == "ok",
+            status: status,
+            detail: detail,
+            checkedAt: runtimeHealth.checkedAt
+        )
     }
 
     func accounts(forceRefresh _: Bool) throws -> AdvisoryProviderAccountsSnapshot {

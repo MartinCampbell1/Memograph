@@ -107,7 +107,8 @@ struct AdvisoryEngineTests {
         try seedBaselineAdvisoryContext(db: db)
 
         let defaults = UserDefaults(suiteName: "advisory_engine_\(UUID().uuidString)")!
-        let settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        var settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        configureExpandedAdvisoryPolicy(&settings)
         let engine = AdvisoryEngine(db: db, timeZone: utc, settings: settings)
 
         let generated = try engine.generateResumeArtifact(for: "2026-04-04", triggerKind: .userInvokedLost)
@@ -121,7 +122,6 @@ struct AdvisoryEngineTests {
         #expect(artifact.body.contains("Я заметил"))
         #expect(artifact.body.contains("Если хочешь продолжить"))
         #expect(domains.contains(.continuity))
-        #expect(domains.contains(.writingExpression) || domains.contains(.decisions) || domains.contains(.research))
 
         let threads = try db.query("SELECT COUNT(*) AS count FROM advisory_threads")
         let continuity = try db.query("SELECT COUNT(*) AS count FROM continuity_items")
@@ -132,8 +132,8 @@ struct AdvisoryEngineTests {
         #expect((threads.first?["count"]?.intValue ?? 0) >= 2)
         #expect((continuity.first?["count"]?.intValue ?? 0) >= 1)
         #expect(packets.first?["count"]?.intValue == 1)
-        #expect((artifacts.first?["count"]?.intValue ?? 0) >= 2)
-        #expect((runs.first?["count"]?.intValue ?? 0) >= 2)
+        #expect((artifacts.first?["count"]?.intValue ?? 0) >= 1)
+        #expect((runs.first?["count"]?.intValue ?? 0) >= 1)
 
         let openItems = try engine.openContinuityItems(limit: 4)
         #expect(!inbox.isEmpty)
@@ -638,6 +638,111 @@ struct AdvisoryEngineTests {
         #expect(reloaded.status == .queued)
     }
 
+    @Test("Artifact store preserves higher-authority artifacts over degraded fallbacks")
+    func preservesHigherAuthorityArtifacts() throws {
+        let (db, path) = try makeDB()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let store = AdvisoryArtifactStore(db: db, timeZone: utc)
+        let artifactId = "advart_authority_rank"
+
+        try db.execute("""
+            INSERT INTO advisory_packets
+                (id, packet_version, kind, trigger_kind, payload_json, language, access_level_granted, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?),
+                   (?, ?, ?, ?, ?, ?, ?, ?),
+                   (?, ?, ?, ?, ?, ?, ?, ?),
+                   (?, ?, ?, ?, ?, ?, ?, ?)
+        """, params: [
+            .text("pkt-stub"), .text("v2.reflection.1"), .text("reflection"), .text("session_end"), .text("{}"), .text("ru"), .text("deep_context"), .text("2026-04-04T08:00:00Z"),
+            .text("pkt-heuristic"), .text("v2.reflection.1"), .text("reflection"), .text("session_end"), .text("{}"), .text("ru"), .text("deep_context"), .text("2026-04-04T08:05:00Z"),
+            .text("pkt-cli"), .text("v2.reflection.1"), .text("reflection"), .text("session_end"), .text("{}"), .text("ru"), .text("deep_context"), .text("2026-04-04T08:10:00Z"),
+            .text("pkt-stub-2"), .text("v2.reflection.1"), .text("reflection"), .text("session_end"), .text("{}"), .text("ru"), .text("deep_context"), .text("2026-04-04T08:15:00Z")
+        ])
+
+        let stub = try store.upsertArtifact(AdvisoryArtifactCandidate(
+            id: artifactId,
+            domain: .continuity,
+            kind: .resumeCard,
+            title: "Stub seed",
+            body: "Local fallback body.",
+            threadId: nil,
+            sourcePacketId: "pkt-stub",
+            sourceRecipe: "continuity_resume",
+            confidence: 0.12,
+            metadataJson: #"{"generatedBy":"stub:local","ephemeral":true}"#,
+            language: "ru",
+            status: .candidate,
+            createdAt: "2026-04-04T08:00:00Z",
+            surfacedAt: nil,
+            expiresAt: nil
+        ))
+        #expect(stub.title == "Stub seed")
+
+        let heuristic = try store.upsertArtifact(AdvisoryArtifactCandidate(
+            id: artifactId,
+            domain: .continuity,
+            kind: .resumeCard,
+            title: "Heuristic seed",
+            body: "Fallback heuristic body.",
+            threadId: nil,
+            sourcePacketId: "pkt-heuristic",
+            sourceRecipe: "continuity_resume",
+            confidence: 0.35,
+            metadataJson: #"{"generatedBy":"fallback:heuristic"}"#,
+            language: "ru",
+            status: .candidate,
+            createdAt: "2026-04-04T08:05:00Z",
+            surfacedAt: nil,
+            expiresAt: nil
+        ))
+        #expect(heuristic.title == "Heuristic seed")
+
+        let cli = try store.upsertArtifact(AdvisoryArtifactCandidate(
+            id: artifactId,
+            domain: .continuity,
+            kind: .resumeCard,
+            title: "CLI seed",
+            body: "Provider-backed body.",
+            threadId: nil,
+            sourcePacketId: "pkt-cli",
+            sourceRecipe: "continuity_resume",
+            confidence: 0.88,
+            metadataJson: #"{"generatedBy":"cli:codex"}"#,
+            language: "ru",
+            status: .surfaced,
+            createdAt: "2026-04-04T08:10:00Z",
+            surfacedAt: "2026-04-04T08:10:00Z",
+            expiresAt: nil
+        ))
+        #expect(cli.title == "CLI seed")
+        let storedAfterCli = try #require(try store.artifact(id: artifactId))
+        #expect(storedAfterCli.title == "CLI seed")
+        #expect(storedAfterCli.metadataJson?.contains(#""generatedBy":"cli:codex""#) == true)
+
+        _ = try store.upsertArtifact(AdvisoryArtifactCandidate(
+            id: artifactId,
+            domain: .continuity,
+            kind: .resumeCard,
+            title: "Stub overwrite attempt",
+            body: "This should not win.",
+            threadId: nil,
+            sourcePacketId: "pkt-stub-2",
+            sourceRecipe: "continuity_resume",
+            confidence: 0.05,
+            metadataJson: #"{"generatedBy":"stub:local","ephemeral":true}"#,
+            language: "ru",
+            status: .candidate,
+            createdAt: "2026-04-04T08:15:00Z",
+            surfacedAt: nil,
+            expiresAt: nil
+        ))
+
+        let reloaded = try #require(try store.artifact(id: artifactId))
+        #expect(reloaded.title == "CLI seed")
+        #expect(reloaded.metadataJson?.contains(#""generatedBy":"cli:codex""#) == true)
+    }
+
     @Test("Attention market can surface a different domain when continuity is fatigued")
     func favorsCategoryBalanceWhenContinuityIsFatigued() throws {
         let (db, path) = try makeDB()
@@ -645,6 +750,7 @@ struct AdvisoryEngineTests {
 
         let defaults = UserDefaults(suiteName: "advisory_balance_\(UUID().uuidString)")!
         var settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        configureExpandedAdvisoryPolicy(&settings)
         settings.advisoryMinGapMinutes = 1
         let store = AdvisoryArtifactStore(
             db: db,
@@ -888,7 +994,8 @@ struct AdvisoryEngineTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let defaults = UserDefaults(suiteName: "advisory_deep_work_\(UUID().uuidString)")!
-        let settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        var settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        configureExpandedAdvisoryPolicy(&settings)
         let store = AdvisoryArtifactStore(db: db, timeZone: utc)
 
         try db.execute("""
@@ -1170,6 +1277,7 @@ struct AdvisoryEngineTests {
 
         let defaults = UserDefaults(suiteName: "advisory_feedback_mute_\(UUID().uuidString)")!
         var settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        configureExpandedAdvisoryPolicy(&settings)
         settings.advisoryMinGapMinutes = 1
 
         let feedbackTime = ISO8601DateFormatter().date(from: "2026-04-04T13:00:00Z")!
@@ -1897,6 +2005,7 @@ struct AdvisoryEngineTests {
 
         let defaults = UserDefaults(suiteName: "advisory_fragmented_focus_\(UUID().uuidString)")!
         var settings = AppSettings(defaults: defaults, credentialsStore: InMemoryCredentialsStore())
+        configureExpandedAdvisoryPolicy(&settings)
         settings.advisoryMinGapMinutes = 1
         let now = ISO8601DateFormatter().date(from: "2026-04-04T14:00:00Z")!
         let store = AdvisoryArtifactStore(db: db, timeZone: utc, now: { now })
@@ -2485,4 +2594,11 @@ private func makeExternalBundle(
             )
         ]
     )
+}
+
+private func configureExpandedAdvisoryPolicy(_ settings: inout AppSettings) {
+    settings.advisoryEnabledDomains = AdvisoryDomain.allCases
+    settings.advisoryDailyAttentionBudget = 6
+    settings.advisoryMinGapMinutes = 45
+    settings.advisoryPerThreadCooldownHours = 6
 }

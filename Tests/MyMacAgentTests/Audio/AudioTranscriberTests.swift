@@ -467,6 +467,34 @@ struct AudioTranscriberTests {
                 active -= 1
                 lock.unlock()
             }
+
+            func isActive() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                return active > 0
+            }
+        }
+
+        actor AsyncSignal {
+            private var fired = false
+            private var waiters: [CheckedContinuation<Void, Never>] = []
+
+            func wait() async {
+                if fired {
+                    return
+                }
+                await withCheckedContinuation { continuation in
+                    waiters.append(continuation)
+                }
+            }
+
+            func signal() {
+                guard !fired else { return }
+                fired = true
+                let continuations = waiters
+                waiters.removeAll()
+                continuations.forEach { $0.resume() }
+            }
         }
 
         let (db, path) = try makeDB()
@@ -495,12 +523,14 @@ struct AudioTranscriberTests {
         }
 
         let probe = ConcurrencyProbe()
+        let firstUploadStarted = AsyncSignal()
         let transcriber = AudioTranscriber(
             db: db,
             timeZone: utc,
             settingsProvider: settingsProvider,
             uploadTransport: { request, _ in
                 probe.begin()
+                await firstUploadStarted.signal()
                 defer { probe.end() }
                 try await Task.sleep(for: .milliseconds(150))
                 let response = HTTPURLResponse(
@@ -534,7 +564,16 @@ struct AudioTranscriberTests {
         )
 
         let firstDrain = Task { try await transcriber.drainQueuedTranscriptions(limit: 1) }
-        try await Task.sleep(for: .milliseconds(20))
+        await firstUploadStarted.wait()
+        var overlapObserved = false
+        for _ in 0..<20 {
+            if probe.isActive() {
+                overlapObserved = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(overlapObserved)
         let secondDrain = Task { try await transcriber.drainQueuedTranscriptions(limit: 1) }
 
         let results = try await [firstDrain.value, secondDrain.value].sorted()

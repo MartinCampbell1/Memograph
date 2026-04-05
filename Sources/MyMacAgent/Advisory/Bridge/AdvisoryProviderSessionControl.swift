@@ -103,7 +103,7 @@ enum AdvisoryProviderSessionControl {
     }
 
     /// Launch the plan and monitor for session recovery of the **target provider**.
-    /// Polls the target provider's account status every 3s via the accounts RPC.
+    /// Polls the target provider/account directly via the auth-check RPC.
     /// Calls completion(true) when the target provider has a verified/available account,
     /// or completion(false) on timeout.
     static func launchAndMonitorRecovery(
@@ -129,40 +129,26 @@ enum AdvisoryProviderSessionControl {
             while Date().timeIntervalSince(startTime) < timeout {
                 Thread.sleep(forTimeInterval: 3)
 
-                // Check the TARGET account's status via accounts RPC, not global
-                // health. Global health may already be "ok" (e.g. Claude is fine)
-                // while the provider being re-logged-in (e.g. Gemini) hasn't recovered.
-                // When accountName is specified, only that exact account counts.
-                guard let snapshot = try? bridge.accounts(forceRefresh: true) else {
-                    // Accounts RPC failed. Distinguish "sidecar is dead" from
-                    // "sidecar is alive but busy" before taking destructive action.
-                    let health = bridge.health(forceRefresh: false)
-                    let status = health.status.lowercased()
-                    if !sidecarRestarted && (status == "socket_missing" || status == "transport_failure") {
-                        // Sidecar truly unreachable — restart once to clear backoff
-                        bridge.restartSidecar()
-                        sidecarRestarted = true
-                    }
-                    // If sidecar is reachable but busy/slow, just keep polling
-                    continue
-                }
-
-                let providerAccounts = snapshot.accounts(for: providerName)
-                let targetRecovered: Bool
-                if let targetAccountName {
-                    // Specific account — only that one must be available
-                    targetRecovered = providerAccounts.contains {
-                        $0.accountName == targetAccountName && $0.available
-                    }
-                } else {
-                    // No specific account — any available account counts
-                    targetRecovered = providerAccounts.contains { $0.available }
-                }
-
-                if targetRecovered {
-                    let result = bridge.recoverAfterRelogin(provider: providerName)
+                let authCheck = bridge.checkProviderAuth(
+                    provider: providerName,
+                    accountName: targetAccountName,
+                    forceRefresh: true
+                )
+                if authCheck.verified {
+                    let result = bridge.recoverAfterRelogin(provider: providerName, accountName: targetAccountName)
                     completion(result.verified)
                     return
+                }
+
+                let status = authCheck.status.lowercased()
+                if !sidecarRestarted && (status == "socket_missing" || status == "transport_failure") {
+                    // Sidecar truly unreachable — restart once to clear backoff
+                    bridge.restartSidecar()
+                    sidecarRestarted = true
+                }
+                if status == "busy" || status == "timeout" {
+                    // The runtime is alive but not ready yet. Keep polling.
+                    continue
                 }
             }
             completion(false)
