@@ -1986,7 +1986,7 @@ final class JSONRPCAdvisoryBridgeServer: AdvisoryBridgeServerProtocol {
             let result: AdvisoryBridgeHealth = try call(
                 method: "advisor.health",
                 params: AdvisoryHealthParams(forceRefresh: forceRefresh),
-                timeoutSeconds: min(3, defaultTimeoutSeconds)
+                timeoutSeconds: forceRefresh ? max(15, defaultTimeoutSeconds) : min(3, defaultTimeoutSeconds)
             )
             return AdvisoryBridgeStatusInterpreter.health(
                 runtimeName: result.runtimeName,
