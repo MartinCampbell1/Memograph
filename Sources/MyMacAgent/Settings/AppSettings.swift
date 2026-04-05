@@ -590,7 +590,7 @@ struct AppSettings {
     var advisorySidecarMaxConsecutiveFailures: Int {
         get {
             let value = defaults.integer(forKey: "advisorySidecarMaxConsecutiveFailures")
-            return value > 0 ? value : 3
+            return value > 0 ? value : 50
         }
         set { defaults.set(newValue, forKey: "advisorySidecarMaxConsecutiveFailures") }
     }
@@ -603,7 +603,7 @@ struct AppSettings {
     var advisorySidecarProviderProbeTimeoutSeconds: Int {
         get {
             let value = defaults.integer(forKey: "advisorySidecarProviderProbeTimeoutSeconds")
-            return value > 0 ? value : 6
+            return value > 0 ? value : 20
         }
         set { defaults.set(newValue, forKey: "advisorySidecarProviderProbeTimeoutSeconds") }
     }

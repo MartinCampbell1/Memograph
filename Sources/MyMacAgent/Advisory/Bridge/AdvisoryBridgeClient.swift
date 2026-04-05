@@ -903,6 +903,13 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         let previousProcess: Process?
         let failureBudget: Int
         lock.lock()
+        // If process is currently running, don't even proceed — prevents race
+        // where two threads both read process=nil and both launch a new one
+        if let existing = process, existing.isRunning {
+            lastKnownStatus = "ok"
+            lock.unlock()
+            return
+        }
         runtimeStatus = self.runtimeStatus
         probeTimeoutSeconds = self.probeTimeoutSeconds
         environmentOverrides = self.environmentOverrides
