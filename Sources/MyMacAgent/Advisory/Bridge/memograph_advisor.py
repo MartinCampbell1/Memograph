@@ -1823,6 +1823,32 @@ class AdvisoryRuntime:
             health = self.provider_diagnostics.health()
         return str(health.get("activeProviderName") or "").strip().lower() or None
 
+    def _select_account_for_provider(self, provider: str) -> str | None:
+        """Select the best account for a provider, respecting cooldown and LRU rotation."""
+        with self.provider_diagnostics._lock:
+            profiles = self.provider_diagnostics._profile_directories(provider)
+            if not profiles:
+                return self.provider_diagnostics._selected_profile_name(provider)
+
+            now = time.time()
+            available: list[tuple[str, float]] = []
+            for profile_path in profiles:
+                acc_name = profile_path.name
+                state_key = self.provider_diagnostics._profile_account_key(provider, acc_name)
+                state = self.provider_diagnostics._account_state.get(state_key, {})
+                cooldown_until = float(state.get("cooldown_until", 0.0))
+                if now < cooldown_until:
+                    continue
+                last_used = float(state.get("last_used_at", 0.0))
+                available.append((acc_name, last_used))
+
+            if not available:
+                return None
+
+            # Prefer least-recently-used account
+            available.sort(key=lambda x: x[1])
+            return available[0][0]
+
     def _select_provider_for_recipe(
         self,
         recipe_name: str,
@@ -1905,10 +1931,11 @@ class AdvisoryRuntime:
             if not provider_name:
                 break
 
+            account_name = self._select_account_for_provider(provider_name)
             routing_type = "recipe_preferred" if provider_name in self._recipe_routing.get(recipe_name, [])[:1] else "fallback"
             logger.info(
-                "recipe=%s provider=%s attempt=%d routing=%s",
-                recipe_name, provider_name, attempt + 1, routing_type,
+                "recipe=%s provider=%s account=%s attempt=%d routing=%s",
+                recipe_name, provider_name, account_name, attempt + 1, routing_type,
             )
 
             failure = self.provider_diagnostics._consume_fake_run_failure(provider_name)
