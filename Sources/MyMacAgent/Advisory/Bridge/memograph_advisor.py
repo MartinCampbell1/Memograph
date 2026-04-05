@@ -1758,6 +1758,58 @@ class AdvisoryRuntime:
             "snapshot": self.provider_diagnostics.accounts(force_refresh=force_refresh),
         }
 
+    def _call_provider_cli(
+        self,
+        provider: str,
+        prompt: str,
+        timeout_seconds: int = 60,
+    ) -> str | None:
+        """Call the active CLI provider with a prompt and return its output.
+
+        Uses the provider's CLI binary. Returns None if the call fails.
+        """
+        binary = shutil.which(self.provider_diagnostics._provider_binary(provider))
+        if not binary:
+            return None
+
+        if provider == "claude":
+            cmd = [binary, "-p", prompt, "--no-input"]
+        elif provider == "gemini":
+            cmd = [binary, "-p", prompt]
+        elif provider == "codex":
+            cmd = [binary, "-p", prompt, "--quiet"]
+        else:
+            return None
+
+        env = dict(os.environ)
+        config_dir = self.provider_diagnostics._provider_config_dir(provider)
+        if config_dir:
+            if provider == "claude":
+                env["CLAUDE_CONFIG_DIR"] = config_dir
+            elif provider == "codex":
+                env["CODEX_HOME"] = config_dir
+
+        try:
+            result = subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            return None
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+
+    def _current_provider_name(self) -> str | None:
+        """Return the currently active provider name from cached health."""
+        health = self.provider_diagnostics._quick_provider_check()
+        if health is None:
+            health = self.provider_diagnostics.health()
+        return str(health.get("activeProviderName") or "").strip().lower() or None
+
     def run_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
         run_id = str(request.get("runId", "")).strip()
         with self._lock:
@@ -1867,25 +1919,53 @@ class AdvisoryRuntime:
         decision_text = next((item.get("body") for item in items if item.get("kind") == "decision" and item.get("body")), None)
         continuations = self._suggested_continuations(thread, items, packet.get("salientSessions", []))
 
-        lines = [f"Я заметил, что главная нить сейчас: {thread['title']}."]
-        if thread.get("summary"):
-            lines.append(f"Где остановился: {thread['summary']}")
-        lines.append(f"Похоже, незакрытый узел здесь: {open_loop}.")
-        if decision_text:
-            lines.append(f"Что уже решено: {self._clean_snippet(decision_text, 160)}")
-        if note:
-            lines.append(
-                f"Из заметок здесь уже держится опора: «{note.get('title', 'заметка')}» — {note.get('snippet', '')}"
+        # Try provider CLI for richer generation
+        provider = self._current_provider_name()
+        generated_by = "local_heuristic"
+        provider_output: str | None = None
+        if provider:
+            context_parts = [
+                f"Thread: {thread['title']}",
+                f"Summary: {thread.get('summary', 'N/A')}",
+                f"Open loop: {open_loop}",
+            ]
+            if decision_text:
+                context_parts.append(f"Decision: {self._clean_snippet(decision_text, 160)}")
+            if note:
+                context_parts.append(f"Note: {note.get('title', '')} — {note.get('snippet', '')}")
+            prompt = (
+                "You are a personal continuity advisor. Based on the context below, "
+                "write a warm, concise resume card (3-5 sentences in Russian) helping the user "
+                "return to their main thread. Include 3 concrete re-entry points.\n\n"
+                + "\n".join(context_parts)
             )
-        if reminder:
-            lines.append(f"Есть и внешний anchor: {self._enrichment_anchor(reminder)}.")
-        elif calendar:
-            lines.append(f"Есть и внешний anchor: {self._enrichment_anchor(calendar)}.")
-        if timing_window:
-            lines.append(f"По timing fit мягче всего возвращаться {timing_window}.")
-        lines.append("Если хочешь продолжить, вот 3 хороших входа:")
-        for index, option in enumerate(continuations[:3], start=1):
-            lines.append(f"{index}. {option}")
+            provider_output = self._call_provider_cli(provider, prompt)
+            if provider_output:
+                generated_by = "provider_cli"
+
+        if provider_output:
+            body = provider_output
+        else:
+            lines = [f"Я заметил, что главная нить сейчас: {thread['title']}."]
+            if thread.get("summary"):
+                lines.append(f"Где остановился: {thread['summary']}")
+            lines.append(f"Похоже, незакрытый узел здесь: {open_loop}.")
+            if decision_text:
+                lines.append(f"Что уже решено: {self._clean_snippet(decision_text, 160)}")
+            if note:
+                lines.append(
+                    f"Из заметок здесь уже держится опора: «{note.get('title', 'заметка')}» — {note.get('snippet', '')}"
+                )
+            if reminder:
+                lines.append(f"Есть и внешний anchor: {self._enrichment_anchor(reminder)}.")
+            elif calendar:
+                lines.append(f"Есть и внешний anchor: {self._enrichment_anchor(calendar)}.")
+            if timing_window:
+                lines.append(f"По timing fit мягче всего возвращаться {timing_window}.")
+            lines.append("Если хочешь продолжить, вот 3 хороших входа:")
+            for index, option in enumerate(continuations[:3], start=1):
+                lines.append(f"{index}. {option}")
+            body = "\n".join(lines)
 
         return [
             self._artifact(
@@ -1893,7 +1973,7 @@ class AdvisoryRuntime:
                 domain="continuity",
                 kind="resume_card",
                 title=f"Вернуться в {thread['title']}",
-                body="\n".join(lines),
+                body=body,
                 recipe_name=recipe_name,
                 thread_id=thread.get("id"),
                 confidence=max(0.55, min(0.95, float(thread.get("confidence", 0.75)))),
@@ -1911,6 +1991,8 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(note, calendar, reminder),
                     enrichment_sources=self._enrichment_sources(note, calendar, reminder),
                     timing_window=timing_window,
+                    generated_by=generated_by,
+                    provider=provider,
                 ),
             )
         ]
@@ -2107,33 +2189,59 @@ class AdvisoryRuntime:
             "timingWindow": timing_window,
         }
 
-        lines = [
-            self._thread_writing_opening(kind, thread),
-            f"Persona: {persona}",
-            f"Angle: {primary_angle}.",
-            f"Evidence pack: {', '.join(evidence_pack)}.",
-            f"Alternative angles: {' | '.join(alternative_angles)}.",
-        ]
-        if voice_examples:
-            lines.append(f"Voice examples: {' | '.join(voice_examples)}.")
-        if avoid_topics:
-            lines.append(f"Avoid topics: {', '.join(avoid_topics)}.")
-        if continuity_state.get("suggestedEntryPoint"):
-            lines.append(f"Continuity anchor: {continuity_state['suggestedEntryPoint']}")
-        if note:
-            lines.append(f"Note anchor: {note.get('title', 'заметка')} — {note.get('snippet', '')}")
-        if web_research:
-            lines.append(f"Context anchor: {self._enrichment_anchor(web_research)}")
-        if timing_window:
-            lines.append(f"Timing: {timing_window}")
-        lines.extend(self._thread_writing_structure(kind, packet, primary_angle, alternative_angles))
+        # Try provider CLI for richer generation
+        tweet_provider = self._current_provider_name()
+        generated_by = "local_heuristic"
+        provider_output: str | None = None
+        if tweet_provider:
+            prompt = (
+                "You are a tweet ghostwriter. Based on the context below, suggest 3 tweet angles "
+                "grounded in the thread evidence. Each angle: one sentence + a draft tweet (280 chars max). "
+                "Write in the user's voice (examples below). Output in Russian.\n\n"
+                f"Thread: {thread.get('title', '')}\n"
+                f"Angle: {primary_angle}\n"
+                f"Evidence: {', '.join(evidence_pack)}\n"
+            )
+            if voice_examples:
+                prompt += f"Voice examples: {' | '.join(voice_examples)}\n"
+            provider_output = self._call_provider_cli(tweet_provider, prompt)
+            if provider_output:
+                generated_by = "provider_cli"
+
+        if provider_output:
+            body = provider_output
+        else:
+            lines = [
+                self._thread_writing_opening(kind, thread),
+                f"Persona: {persona}",
+                f"Angle: {primary_angle}.",
+                f"Evidence pack: {', '.join(evidence_pack)}.",
+                f"Alternative angles: {' | '.join(alternative_angles)}.",
+            ]
+            if voice_examples:
+                lines.append(f"Voice examples: {' | '.join(voice_examples)}.")
+            if avoid_topics:
+                lines.append(f"Avoid topics: {', '.join(avoid_topics)}.")
+            if continuity_state.get("suggestedEntryPoint"):
+                lines.append(f"Continuity anchor: {continuity_state['suggestedEntryPoint']}")
+            if note:
+                lines.append(f"Note anchor: {note.get('title', 'заметка')} — {note.get('snippet', '')}")
+            if web_research:
+                lines.append(f"Context anchor: {self._enrichment_anchor(web_research)}")
+            if timing_window:
+                lines.append(f"Timing: {timing_window}")
+            lines.extend(self._thread_writing_structure(kind, packet, primary_angle, alternative_angles))
+            body = "\n".join(lines)
+
+        metadata["generatedBy"] = generated_by
+        metadata["provider"] = tweet_provider
         return [
             self._artifact(
                 packet=packet,
                 domain="writing_expression",
                 kind=kind,
                 title=self._writing_title(kind, thread),
-                body="\n".join(lines),
+                body=body,
                 recipe_name=recipe_name,
                 thread_id=thread.get("id"),
                 confidence=self._thread_writing_confidence(kind, packet, thread),
@@ -2240,35 +2348,61 @@ class AdvisoryRuntime:
             "Оставить один return point на следующую неделю.",
         ]
 
-        lines = [
-            "Неделя уже выглядит достаточно собранной, чтобы оставить один мягкий weekly anchor.",
-            "Это не попытка закрыть всё разом, а способ вернуть себе быстрый вход в основные нити в начале следующей недели.",
-            f"Главная несущая нить недели: {dominant_thread.get('title', 'главная нить')}.",
-        ]
-        if top_pattern:
-            lines.append(f"Самый заметный паттерн: {top_pattern.get('summary', top_pattern.get('title', 'паттерн недели'))}")
-        if note:
-            lines.append(f"Из заметок неделя уже держится через: «{note.get('title', 'заметка')}» — {note.get('snippet', '')}")
-        if web_research:
-            lines.append(f"Во внешнем контексте тоже тянется: {self._enrichment_anchor(web_research)}")
-        if reminder:
-            lines.append(f"На следующую неделю уже виден мягкий anchor: {self._enrichment_anchor(reminder)}.")
-        elif calendar:
-            lines.append(f"На следующую неделю уже виден мягкий anchor: {self._enrichment_anchor(calendar)}.")
-        if timing_window:
-            lines.append(f"Если оставить return point мягко, лучше делать это {timing_window}.")
-        if continuity_items:
-            lines.append("Открытые loops, которые стоит не потерять:")
-            for index, item in enumerate(continuity_items[:3], start=1):
-                lines.append(f"{index}. {item.get('title', 'continuity item')}")
-        lines.extend(
-            [
-                "Если захочешь зафиксировать неделю коротко:",
-                f"1. {action_steps[0]}",
-                f"2. {action_steps[1]}",
-                f"3. {action_steps[2]}",
+        # Try provider CLI for richer weekly synthesis
+        weekly_provider = self._current_provider_name()
+        generated_by = "local_heuristic"
+        provider_output: str | None = None
+        if weekly_provider:
+            thread_titles = [t.get("title", "") for t in thread_rollup[:5]]
+            prompt = (
+                "You are a weekly reflection advisor. Synthesize this week's thread movement into "
+                "a warm weekly review (5-8 sentences in Russian). Include: which threads moved, "
+                "what stalled, emerging lines, and one return point for next week.\n\n"
+                f"Threads: {', '.join(thread_titles)}\n"
+                f"Dominant thread: {dominant_thread.get('title', '')}\n"
+            )
+            if top_pattern:
+                prompt += f"Top pattern: {top_pattern.get('summary', top_pattern.get('title', ''))}\n"
+            if continuity_items:
+                open_loops = [item.get("title", "") for item in continuity_items[:3]]
+                prompt += f"Open loops: {', '.join(open_loops)}\n"
+            provider_output = self._call_provider_cli(weekly_provider, prompt)
+            if provider_output:
+                generated_by = "provider_cli"
+
+        if provider_output:
+            body = provider_output
+        else:
+            lines = [
+                "Неделя уже выглядит достаточно собранной, чтобы оставить один мягкий weekly anchor.",
+                "Это не попытка закрыть всё разом, а способ вернуть себе быстрый вход в основные нити в начале следующей недели.",
+                f"Главная несущая нить недели: {dominant_thread.get('title', 'главная нить')}.",
             ]
-        )
+            if top_pattern:
+                lines.append(f"Самый заметный паттерн: {top_pattern.get('summary', top_pattern.get('title', 'паттерн недели'))}")
+            if note:
+                lines.append(f"Из заметок неделя уже держится через: «{note.get('title', 'заметка')}» — {note.get('snippet', '')}")
+            if web_research:
+                lines.append(f"Во внешнем контексте тоже тянется: {self._enrichment_anchor(web_research)}")
+            if reminder:
+                lines.append(f"На следующую неделю уже виден мягкий anchor: {self._enrichment_anchor(reminder)}.")
+            elif calendar:
+                lines.append(f"На следующую неделю уже виден мягкий anchor: {self._enrichment_anchor(calendar)}.")
+            if timing_window:
+                lines.append(f"Если оставить return point мягко, лучше делать это {timing_window}.")
+            if continuity_items:
+                lines.append("Открытые loops, которые стоит не потерять:")
+                for index, item in enumerate(continuity_items[:3], start=1):
+                    lines.append(f"{index}. {item.get('title', 'continuity item')}")
+            lines.extend(
+                [
+                    "Если захочешь зафиксировать неделю коротко:",
+                    f"1. {action_steps[0]}",
+                    f"2. {action_steps[1]}",
+                    f"3. {action_steps[2]}",
+                ]
+            )
+            body = "\n".join(lines)
 
         return [
             self._artifact(
@@ -2276,7 +2410,7 @@ class AdvisoryRuntime:
                 domain="continuity",
                 kind="weekly_review",
                 title="Weekly review: собрать несущие нити недели",
-                body="\n".join(lines),
+                body=body,
                 recipe_name=recipe_name,
                 thread_id=dominant_thread.get("id"),
                 confidence=min(0.88, 0.52 + self._signal(packet, "continuity_pressure") * 0.18 + self._signal(packet, "thread_density") * 0.14),
@@ -2293,6 +2427,8 @@ class AdvisoryRuntime:
                     source_anchors=self._source_anchors(note, web_research, calendar, reminder),
                     enrichment_sources=self._enrichment_sources(note, web_research, calendar, reminder),
                     timing_window=timing_window,
+                    generated_by=generated_by,
+                    provider=weekly_provider,
                 ),
             )
         ]
@@ -2724,6 +2860,8 @@ class AdvisoryRuntime:
         source_anchors: list[str] | None = None,
         enrichment_sources: list[str] | None = None,
         timing_window: str | None = None,
+        generated_by: str | None = None,
+        provider: str | None = None,
     ) -> str:
         metadata = {
             "summary": summary,
@@ -2742,6 +2880,8 @@ class AdvisoryRuntime:
             "sourceAnchors": [str(item).strip() for item in (source_anchors or []) if str(item).strip()],
             "enrichmentSources": [str(item).strip() for item in (enrichment_sources or []) if str(item).strip()],
             "timingWindow": timing_window,
+            "generatedBy": generated_by,
+            "provider": provider,
         }
         return json.dumps(metadata, ensure_ascii=False)
 
