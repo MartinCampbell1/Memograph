@@ -6,21 +6,12 @@ struct MyMacAgentApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        WindowGroup("Timeline", id: "timeline") {
-            if let db = appDelegate.databaseManager {
-                TimelineView(db: db)
-            } else {
-                Text("Database not ready")
-            }
+        // App windows are managed explicitly from AppDelegate via AppKit.
+        // Keeping scene-restored SwiftUI windows around caused stale Timeline
+        // windows to reopen with "Database not ready" before the delegate
+        // finished initialization.
+        Settings {
+            EmptyView()
         }
-
-        Window("Settings", id: "settings") {
-            SettingsView()
-        }
-        .defaultSize(width: 920, height: 760)
-        .windowResizability(.contentSize)
-
-        // Accounts now opens the main Settings window with tab 6 via notification
-        // No separate window needed — prevents "stuck with no back button" issue
     }
 }

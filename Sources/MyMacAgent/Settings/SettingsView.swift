@@ -1727,7 +1727,9 @@ struct SettingsView: View {
             return identity
         }
         if diagnostic.sessionDetected {
-            return "Runtime sees an imported session, but the CLI does not expose account identity."
+            return diagnostic.status == "ok"
+                ? "Session active. This CLI does not expose email/user identity."
+                : "Session detected. This CLI does not expose email/user identity."
         }
         return "Runtime does not see an imported session."
     }
