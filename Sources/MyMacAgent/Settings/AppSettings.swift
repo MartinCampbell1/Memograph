@@ -769,9 +769,10 @@ struct AppSettings {
 
     var advisoryEnabledDomains: [AdvisoryDomain] {
         get {
-            let stored = readList(forKey: "advisoryEnabledDomains", defaultValue: AdvisoryDomain.allCases.map(\.rawValue))
+            let v1DefaultDomains: [AdvisoryDomain] = [.continuity, .writingExpression]
+            let stored = readList(forKey: "advisoryEnabledDomains", defaultValue: v1DefaultDomains.map(\.rawValue))
             let domains = stored.compactMap(AdvisoryDomain.init(rawValue:))
-            return domains.isEmpty ? AdvisoryDomain.allCases : domains
+            return domains.isEmpty ? v1DefaultDomains : domains
         }
         set {
             let rawValues = newValue.isEmpty ? AdvisoryDomain.allCases.map(\.rawValue) : newValue.map(\.rawValue)

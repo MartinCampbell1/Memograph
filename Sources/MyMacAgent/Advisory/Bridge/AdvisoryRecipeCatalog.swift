@@ -18,19 +18,24 @@ struct AdvisoryManualRecipeSpec: Equatable, Identifiable {
 }
 
 enum AdvisoryRecipeCatalog {
-    static let all: [AdvisoryRecipeSpec] = [
+    static let v1Core: [AdvisoryRecipeSpec] = [
         AdvisoryRecipeSpec(name: "continuity_resume", domain: .continuity, minimumSignal: 0.22, userInvokedBonus: true),
+        AdvisoryRecipeSpec(name: "tweet_from_thread", domain: .writingExpression, minimumSignal: 0.28, userInvokedBonus: true),
+        AdvisoryRecipeSpec(name: "weekly_reflection", domain: .continuity, minimumSignal: 0.3, userInvokedBonus: true)
+    ]
+
+    static let extended: [AdvisoryRecipeSpec] = [
         AdvisoryRecipeSpec(name: "thread_maintenance", domain: .continuity, minimumSignal: 0.3, userInvokedBonus: true),
         AdvisoryRecipeSpec(name: "writing_seed", domain: .writingExpression, minimumSignal: 0.34, userInvokedBonus: true),
-        AdvisoryRecipeSpec(name: "tweet_from_thread", domain: .writingExpression, minimumSignal: 0.28, userInvokedBonus: true),
         AdvisoryRecipeSpec(name: "research_direction", domain: .research, minimumSignal: 0.32, userInvokedBonus: false),
-        AdvisoryRecipeSpec(name: "weekly_reflection", domain: .continuity, minimumSignal: 0.3, userInvokedBonus: true),
         AdvisoryRecipeSpec(name: "focus_reflection", domain: .focus, minimumSignal: 0.36, userInvokedBonus: true),
         AdvisoryRecipeSpec(name: "social_signal", domain: .social, minimumSignal: 0.42, userInvokedBonus: true),
         AdvisoryRecipeSpec(name: "health_pulse", domain: .health, minimumSignal: 0.48, userInvokedBonus: false),
         AdvisoryRecipeSpec(name: "decision_review", domain: .decisions, minimumSignal: 0.28, userInvokedBonus: true),
         AdvisoryRecipeSpec(name: "life_admin_review", domain: .lifeAdmin, minimumSignal: 0.24, userInvokedBonus: true)
     ]
+
+    static let all: [AdvisoryRecipeSpec] = v1Core + extended
 
     static let manualDomainActions: [AdvisoryManualRecipeSpec] = [
         AdvisoryManualRecipeSpec(
