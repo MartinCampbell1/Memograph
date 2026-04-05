@@ -141,7 +141,7 @@ enum AdvisoryProviderSessionControl {
                 }
 
                 let status = authCheck.status.lowercased()
-                if !sidecarRestarted && (status == "socket_missing" || status == "transport_failure") {
+                if !sidecarRestarted && (status == "socket_missing" || status == "transport_failure" || status == "unavailable") {
                     // Sidecar truly unreachable — restart once to clear backoff
                     bridge.restartSidecar()
                     sidecarRestarted = true

@@ -104,7 +104,14 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
         queue.async { [weak self] in
             let bridge = AdvisoryBridgeClient(settings: AppSettings())
             bridge.restartSidecar()
-            self?.refresh()
+            var runtimeSnapshot = bridge.runtimeSnapshot(forceRefresh: false)
+            if Self.restartGraceStatuses.contains(runtimeSnapshot.effectiveStatus) {
+                Thread.sleep(forTimeInterval: 2)
+                runtimeSnapshot = bridge.runtimeSnapshot(forceRefresh: false)
+            }
+            DispatchQueue.main.async {
+                self?.publish(AdvisoryHealthSnapshot(runtimeSnapshot: runtimeSnapshot))
+            }
         }
     }
 
@@ -120,11 +127,12 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
     /// The completion is always called on the main queue.
     func recoverAfterRelogin(
         provider: String,
-        completion: @escaping @Sendable (Bool, Date) -> Void
+        accountName: String? = nil,
+        completion: @MainActor @escaping (Bool, Date) -> Void
     ) {
         queue.async { [weak self] in
             let bridge = AdvisoryBridgeClient(settings: AppSettings())
-            let result = bridge.recoverAfterRelogin(provider: provider)
+            let result = bridge.recoverAfterRelogin(provider: provider, accountName: accountName)
             let verified = result.verified
             let verifiedAt = result.lastVerifiedAt
             let runtimeSnapshot = bridge.runtimeSnapshot()
@@ -139,11 +147,12 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
     /// The completion is always called on the main queue.
     func checkProviderAuth(
         provider: String,
-        completion: @escaping @Sendable (Bool, Date) -> Void
+        accountName: String? = nil,
+        completion: @MainActor @escaping (Bool, Date) -> Void
     ) {
         queue.async { [weak self] in
             let bridge = AdvisoryBridgeClient(settings: AppSettings())
-            let result = bridge.checkProviderAuth(provider: provider)
+            let result = bridge.checkProviderAuth(provider: provider, accountName: accountName)
             let verified = result.verified
             let verifiedAt = result.lastVerifiedAt
             let runtimeSnapshot = bridge.runtimeSnapshot()
@@ -177,4 +186,12 @@ final class AdvisoryHealthMonitor: ObservableObject, @unchecked Sendable {
             self?.refresh()
         }
     }
+
+    private static let restartGraceStatuses: Set<String> = [
+        "starting",
+        "socket_missing",
+        "transport_failure",
+        "unavailable",
+        "timeout"
+    ]
 }

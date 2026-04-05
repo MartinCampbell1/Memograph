@@ -259,12 +259,14 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
     /// Returns the post-recovery auth check result with per-provider verification.
     @discardableResult
     func recoverAfterRelogin(provider: String, accountName: String? = nil) -> AdvisoryProviderAuthCheckResult {
-        // Reset supervisor failure counters so the provider isn't blocked
         supervisor?.recordSuccess()
-        restartSidecar()
-        // Allow sidecar to restart before checking health
-        Thread.sleep(forTimeInterval: 2)
-        let authCheck = checkProviderAuth(provider: provider, accountName: accountName)
+        let currentRuntime = runtimeSnapshot(forceRefresh: false)
+        let normalizedStatus = AdvisoryBridgeStatusInterpreter.normalizedStatus(currentRuntime.effectiveStatus)
+        if runtimeRestartRequired(for: normalizedStatus) {
+            restartSidecar()
+            Thread.sleep(forTimeInterval: 2)
+        }
+        let authCheck = checkProviderAuth(provider: provider, accountName: accountName, forceRefresh: true)
         if authCheck.verified {
             supervisor?.recordSuccess()
         }
@@ -327,6 +329,15 @@ final class AdvisoryBridgeClient: @unchecked Sendable {
             return diagnostic.status == "ok"
         }
         return health.status == "ok"
+    }
+
+    private func runtimeRestartRequired(for status: String) -> Bool {
+        switch status {
+        case "socket_missing", "transport_failure", "unavailable":
+            return true
+        default:
+            return false
+        }
     }
 
     static func shutdownAllManagedSidecars() {
@@ -1006,9 +1017,12 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
 
     func shutdown() {
         let runningProcess: Process?
+        let externalPID: pid_t?
         lock.lock()
         runningProcess = process
         process = nil
+        externalPID = readLivePIDFromPidfile(excluding: runningProcess?.processIdentifier)
+        lastStartAttemptAt = nil
         lastKnownStatus = "socket_missing"
         lastError = nil
         consecutiveFailures = 0
@@ -1019,12 +1033,17 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
             _ = waitForExit(of: runningProcess, timeoutSeconds: 2)
             if runningProcess.isRunning {
                 runningProcess.interrupt()
+                _ = waitForExit(of: runningProcess, timeoutSeconds: 1)
             }
+            if runningProcess.isRunning {
+                _ = Darwin.kill(runningProcess.processIdentifier, SIGKILL)
+            }
+        } else if let externalPID {
+            terminateExternalPID(externalPID)
         }
         if FileManager.default.fileExists(atPath: socketPath) {
             try? FileManager.default.removeItem(atPath: socketPath)
         }
-        // Clean up pidfile
         try? FileManager.default.removeItem(atPath: pidfilePath)
     }
 
@@ -1083,7 +1102,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         let socketPresent = FileManager.default.fileExists(atPath: socketPath)
         lock.lock()
         defer { lock.unlock() }
-        guard autoStart else {
+        guard autoStart || force else {
             return false
         }
         if let process, process.isRunning {
@@ -1100,7 +1119,9 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         if !force && consecutiveFailures >= maxConsecutiveFailures {
             return false
         }
-        if let lastStartAttemptAt, now.timeIntervalSince(lastStartAttemptAt) < Double(healthCheckIntervalSeconds) {
+        if !force,
+           let lastStartAttemptAt,
+           now.timeIntervalSince(lastStartAttemptAt) < Double(healthCheckIntervalSeconds) {
             return false
         }
         return true
@@ -1346,6 +1367,33 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
             process.terminationHandler = nil
         }
         return !process.isRunning
+    }
+
+    private func readLivePIDFromPidfile(excluding managedPID: pid_t?) -> pid_t? {
+        guard
+            let pidString = try? String(contentsOfFile: pidfilePath, encoding: .utf8),
+            let pid = Int32(pidString.trimmingCharacters(in: .whitespacesAndNewlines)),
+            pid > 0,
+            managedPID != pid,
+            processIsAlive(pid)
+        else {
+            return nil
+        }
+        return pid
+    }
+
+    private func terminateExternalPID(_ pid: pid_t, timeoutSeconds: TimeInterval = 2) {
+        _ = Darwin.kill(pid, SIGTERM)
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            guard processIsAlive(pid) else { return }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        _ = Darwin.kill(pid, SIGKILL)
+    }
+
+    private func processIsAlive(_ pid: pid_t) -> Bool {
+        Darwin.kill(pid, 0) == 0 || errno == EPERM
     }
 
     private func countsAsFailureStatus(_ status: String) -> Bool {

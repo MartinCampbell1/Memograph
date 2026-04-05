@@ -166,6 +166,7 @@ struct SettingsView: View {
     @State private var advisoryAccountsBusyKey = ""
     @State private var advisoryAccountGlobalFeedback = ""
     @State private var pendingTerminalProvider = ""
+    @State private var pendingTerminalAccountName: String?
     @State private var isRefreshingAccounts = false
     @State private var advisoryAccountLabelDrafts: [String: String] = [:]
     @State private var advisoryAccountActionFeedback: [String: String] = [:]
@@ -173,6 +174,7 @@ struct SettingsView: View {
     @State private var providerAuthCheckInFlight: Set<String> = []
     @State private var advisoryCLIProfilesPath = ""
     @State private var advisoryProviderProfiles: [String: [AdvisoryCLIAccountProfile]] = [:]
+    @State private var pendingProfilesPathPersistWorkItem: DispatchWorkItem?
 
     @State private var operatingMode: AppOperatingMode = .localOnly
     @State private var externalProviderName = ""
@@ -677,6 +679,12 @@ struct SettingsView: View {
                     HStack(spacing: 8) {
                         TextField("~/.cli-profiles", text: $advisoryCLIProfilesPath)
                             .textFieldStyle(.roundedBorder)
+                            .onSubmit {
+                                persistProfilesPath(restartSidecar: true)
+                            }
+                            .onChange(of: advisoryCLIProfilesPath) { _, _ in
+                                debouncedPersistProfilesPath()
+                            }
                         Button("Open") {
                             openFolder(path: advisoryCLIProfilesPath)
                         }
@@ -689,21 +697,7 @@ struct SettingsView: View {
 
                 HStack(spacing: 8) {
                     Button {
-                        isRefreshingAccounts = true
-                        // Full auth check cycle:
-                        // 1. Refresh filesystem profiles
-                        refreshAdvisoryProviderProfiles()
-                        // 2. Force-refresh sidecar health (verifies account snapshots + provider runnable state)
-                        advisoryHealthMonitor.refresh(forceRefresh: true)
-                        // 3. Rebind sidecar if it was stopped or degraded
-                        if advisoryHealthMonitor.snapshot.isDegraded {
-                            advisoryHealthMonitor.restartSidecar()
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                            // 4. Post-check profile refresh to pick up any changes from sidecar
-                            refreshAdvisoryProviderProfiles()
-                            isRefreshingAccounts = false
-                        }
+                        runFullAuthCheck()
                     } label: {
                         HStack(spacing: 4) {
                             if isRefreshingAccounts {
@@ -839,23 +833,25 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Action opened in Terminal")
                     .font(.subheadline.weight(.semibold))
-                Text("Complete the flow in Terminal for \(pendingTerminalProvider.capitalized). Status will refresh automatically when the session is detected.")
+                Text("Complete the flow in Terminal for \(pendingTerminalTargetDescription()). Status will refresh automatically when the session is detected.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Button {
                 let provider = pendingTerminalProvider
+                let accountName = pendingTerminalAccountName
                 isRefreshingAccounts = true
                 providerAuthCheckInFlight.insert(provider)
-                advisoryHealthMonitor.recoverAfterRelogin(provider: provider) { verified, verifiedAt in
+                advisoryHealthMonitor.recoverAfterRelogin(provider: provider, accountName: accountName) { verified, verifiedAt in
                     providerAuthVerifications[provider] = (verified: verified, verifiedAt: verifiedAt)
                     providerAuthCheckInFlight.remove(provider)
                     isRefreshingAccounts = false
                     refreshAdvisoryProviderProfiles()
-                    let outcome = verified ? "Auth verified for \(provider.capitalized)." : "Session still expired for \(provider.capitalized). Try re-login again."
+                    let target = authCheckTargetLabel(provider: provider, accountName: accountName)
+                    let outcome = verified ? "Auth verified for \(target)." : "Session still expired for \(target). Try re-login again."
                     advisoryAccountActionFeedback[provider] = outcome
-                    pendingTerminalProvider = ""
+                    clearPendingTerminalRecovery()
                 }
             } label: {
                 HStack(spacing: 4) {
@@ -872,7 +868,7 @@ struct SettingsView: View {
             .disabled(isRefreshingAccounts)
 
             Button("Dismiss") {
-                pendingTerminalProvider = ""
+                clearPendingTerminalRecovery()
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -1738,14 +1734,16 @@ struct SettingsView: View {
     private func handleRunAuthCheck(for diagnostic: AdvisoryProviderDiagnostic) {
         let provider = diagnostic.providerName
         guard !providerAuthCheckInFlight.contains(provider) else { return }
+        let accountName = selectedAdvisoryAccountName(for: provider)
         providerAuthCheckInFlight.insert(provider)
-        advisoryAccountActionFeedback[provider] = "Running auth check for \(diagnostic.displayName)…"
-        advisoryHealthMonitor.checkProviderAuth(provider: provider) { verified, verifiedAt in
+        advisoryAccountActionFeedback[provider] = "Running auth check for \(authCheckTargetLabel(provider: provider, accountName: accountName))…"
+        advisoryHealthMonitor.checkProviderAuth(provider: provider, accountName: accountName) { verified, verifiedAt in
             providerAuthVerifications[provider] = (verified: verified, verifiedAt: verifiedAt)
             providerAuthCheckInFlight.remove(provider)
+            let target = authCheckTargetLabel(provider: provider, accountName: accountName)
             let outcome = verified
-                ? "Auth check passed — \(diagnostic.displayName) session is active."
-                : "Auth check failed — \(diagnostic.displayName) session appears expired. Try re-login."
+                ? "Auth check passed — \(target) session is active."
+                : "Auth check failed — \(target) session appears expired. Try re-login."
             advisoryAccountActionFeedback[provider] = outcome
         }
     }
@@ -1783,6 +1781,7 @@ struct SettingsView: View {
         case .terminalCommand:
             let providerName = diagnostic.providerName
             pendingTerminalProvider = providerName
+            pendingTerminalAccountName = plan.accountName
             advisoryAccountActionFeedback[providerName] = plan.guidance
 
             let bridge = AdvisoryBridgeClient(settings: AppSettings())
@@ -1791,7 +1790,7 @@ struct SettingsView: View {
                 bridge: bridge
             ) { recovered in
                 DispatchQueue.main.async {
-                    pendingTerminalProvider = ""
+                    clearPendingTerminalRecovery()
                     if recovered {
                         advisoryAccountActionFeedback[providerName] = "\(diagnostic.displayName) session recovered successfully."
                     } else {
@@ -1862,6 +1861,7 @@ struct SettingsView: View {
             )
 
             pendingTerminalProvider = providerName
+            pendingTerminalAccountName = profile.accountName
             refreshAdvisoryProviderProfiles()
             advisoryAccountActionFeedback[providerName] = plan.guidance
 
@@ -1871,7 +1871,7 @@ struct SettingsView: View {
                 bridge: bridge
             ) { recovered in
                 DispatchQueue.main.async {
-                    pendingTerminalProvider = ""
+                    clearPendingTerminalRecovery()
                     if recovered {
                         advisoryAccountActionFeedback[providerName] = "\(providerName.capitalized) \(profile.accountName) session established successfully."
                     } else {
@@ -1916,6 +1916,7 @@ struct SettingsView: View {
         )
 
         pendingTerminalProvider = providerName
+        pendingTerminalAccountName = profile.accountName
         advisoryAccountActionFeedback[providerName] = plan.guidance
 
         let bridge = AdvisoryBridgeClient(settings: AppSettings())
@@ -1924,7 +1925,7 @@ struct SettingsView: View {
             bridge: bridge
         ) { recovered in
             DispatchQueue.main.async {
-                pendingTerminalProvider = ""
+                clearPendingTerminalRecovery()
                 if recovered {
                     advisoryAccountActionFeedback[providerName] = "\(providerName.capitalized) \(profile.accountName) session recovered successfully."
                 } else {
@@ -1951,10 +1952,97 @@ struct SettingsView: View {
     }
 
     private func persistProfilesPath() {
+        persistProfilesPath(restartSidecar: false)
+    }
+
+    private func persistProfilesPath(restartSidecar: Bool) {
         let normalized = normalizedProfilesPath()
         advisoryCLIProfilesPath = normalized
         var settings = AppSettings()
+        let pathChanged = settings.advisoryCLIProfilesPath != normalized
         settings.advisoryCLIProfilesPath = normalized
+        refreshAdvisoryProviderProfiles()
+        if restartSidecar, pathChanged {
+            advisoryHealthMonitor.restartSidecar()
+        } else if pathChanged {
+            advisoryHealthMonitor.refresh(forceRefresh: false)
+        }
+        if pathChanged {
+            NotificationCenter.default.post(name: .settingsDidChange, object: nil)
+        }
+    }
+
+    private func debouncedPersistProfilesPath() {
+        pendingProfilesPathPersistWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [advisoryCLIProfilesPath] in
+            guard self.advisoryCLIProfilesPath == advisoryCLIProfilesPath else { return }
+            self.persistProfilesPath(restartSidecar: true)
+        }
+        pendingProfilesPathPersistWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: workItem)
+    }
+
+    private func clearPendingTerminalRecovery() {
+        pendingTerminalProvider = ""
+        pendingTerminalAccountName = nil
+    }
+
+    private func selectedAdvisoryAccountName(for provider: String) -> String? {
+        advisoryProviderProfiles[provider.lowercased()]?.first(where: { $0.isSelected })?.accountName
+    }
+
+    private func authCheckTargetLabel(provider: String, accountName: String?) -> String {
+        if let accountName, !accountName.isEmpty {
+            return "\(provider.capitalized) \(accountName)"
+        }
+        return provider.capitalized
+    }
+
+    private func pendingTerminalTargetDescription() -> String {
+        authCheckTargetLabel(provider: pendingTerminalProvider, accountName: pendingTerminalAccountName)
+    }
+
+    private func runFullAuthCheck() {
+        guard !isRefreshingAccounts else { return }
+        isRefreshingAccounts = true
+        persistProfilesPath()
+        refreshAdvisoryProviderProfiles()
+        let selectedAccounts = Dictionary(
+            uniqueKeysWithValues: advisoryProviderProfiles.map { provider, profiles in
+                (provider, profiles.first(where: { $0.isSelected })?.accountName)
+            }
+        )
+
+        DispatchQueue.global(qos: .utility).async {
+            let bridge = AdvisoryBridgeClient(settings: AppSettings())
+            var verifications: [String: (verified: Bool, verifiedAt: Date)] = [:]
+            for provider in ["claude", "gemini", "codex"] {
+                let result = bridge.checkProviderAuth(
+                    provider: provider,
+                    accountName: selectedAccounts[provider] ?? nil,
+                    forceRefresh: true
+                )
+                verifications[provider] = (verified: result.verified, verifiedAt: result.lastVerifiedAt)
+            }
+
+            let runtimeSnapshot = bridge.runtimeSnapshot(forceRefresh: false)
+            let runtimeNeedsRestart = ["socket_missing", "transport_failure", "unavailable"].contains(
+                runtimeSnapshot.effectiveStatus
+            )
+
+            DispatchQueue.main.async {
+                for (provider, verification) in verifications {
+                    providerAuthVerifications[provider] = verification
+                }
+                refreshAdvisoryProviderProfiles()
+                if runtimeNeedsRestart {
+                    advisoryHealthMonitor.restartSidecar()
+                } else {
+                    advisoryHealthMonitor.refresh(forceRefresh: false)
+                }
+                isRefreshingAccounts = false
+            }
+        }
     }
 
     private func normalizedProfilesPath() -> String {

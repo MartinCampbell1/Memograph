@@ -357,16 +357,34 @@ class ProviderDiagnostics:
                 self._refresh_in_progress = False
 
     def _do_synchronous_refresh(self) -> dict[str, Any]:
-        claimed_refresh_slot = False
+        requested_at = time.time()
         deadline = time.time() + min(1.0, max(0.25, self.probe_timeout_seconds * 0.25))
+        claimed_refresh_slot = False
+
         while True:
             with self._snapshot_lock:
+                cached = dict(self._cached_health) if self._cached_health is not None else None
+                checked_at = self._checked_at
                 if not self._refresh_in_progress:
+                    if cached is not None and checked_at >= requested_at:
+                        cached["isStale"] = False
+                        cached["refreshInProgress"] = False
+                        cached["stalenessSeconds"] = 0
+                        return cached
                     self._refresh_in_progress = True
                     claimed_refresh_slot = True
                     break
+
+            if cached is not None:
+                cached["isStale"] = True
+                cached["refreshInProgress"] = True
+                cached["stalenessSeconds"] = int(max(0, time.time() - checked_at)) if checked_at else 0
+                return cached
+
             if time.time() >= deadline:
-                break
+                now = time.time()
+                return self._starting_health_snapshot(now=now, refresh_in_progress=True)
+
             time.sleep(0.02)
 
         try:

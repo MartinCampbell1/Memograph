@@ -262,6 +262,97 @@ struct AdvisoryBridgeClientTests {
         #expect(server.refreshHealthCallCount == 0)
     }
 
+    @Test("Stop sidecar terminates an externally owned pidfile process")
+    func stopSidecarTerminatesExternalPidOwner() throws {
+        let context = try makeSettingsContext(mode: .requireSidecar)
+        defer { context.cleanup() }
+
+        let socketPath = AdvisorySidecarSocketPathResolver.resolve(context.settings.advisorySidecarSocketPath)
+        let launched = try ExternalSidecarHandle(
+            socketPath: socketPath,
+            environment: ["MEMOGRAPH_ADVISOR_FAKE_PROVIDER": "claude"]
+        )
+        defer { launched.cleanup() }
+
+        let client = AdvisoryBridgeClient(
+            settings: context.settings,
+            fallbackServer: LocalAdvisoryBridgeStub(),
+            sidecarEnvironmentOverrides: ["MEMOGRAPH_ADVISOR_FAKE_PROVIDER": "claude"]
+        )
+
+        let externalPID = try #require(launched.pid)
+        client.stopSidecar()
+
+        let stopped = waitUntil(timeoutSeconds: 5) {
+            !processIsAlive(externalPID) && readLivePID(from: launched.pidfilePath) == nil
+        }
+
+        #expect(stopped)
+    }
+
+    @Test("Restart sidecar replaces an externally owned pidfile process")
+    func restartSidecarReplacesExternalPidOwner() throws {
+        let context = try makeSettingsContext(mode: .requireSidecar)
+        defer { context.cleanup() }
+
+        let socketPath = AdvisorySidecarSocketPathResolver.resolve(context.settings.advisorySidecarSocketPath)
+        let launched = try ExternalSidecarHandle(
+            socketPath: socketPath,
+            environment: ["MEMOGRAPH_ADVISOR_FAKE_PROVIDER": "claude"]
+        )
+        defer { launched.cleanup() }
+
+        let client = AdvisoryBridgeClient(
+            settings: context.settings,
+            fallbackServer: LocalAdvisoryBridgeStub(),
+            sidecarEnvironmentOverrides: ["MEMOGRAPH_ADVISOR_FAKE_PROVIDER": "claude"]
+        )
+
+        let oldPID = try #require(launched.pid)
+        client.restartSidecar()
+
+        let replaced = waitUntil(timeoutSeconds: 8) {
+            guard let currentPID = readLivePID(from: launched.pidfilePath) else { return false }
+            return currentPID != oldPID
+                && !processIsAlive(oldPID)
+                && client.runtimeSnapshot().effectiveStatus == "ready"
+        }
+
+        #expect(replaced)
+    }
+
+    @Test("Recover after re-login keeps a live sidecar instead of forcing restart")
+    func recoverAfterReloginKeepsLiveRuntime() throws {
+        let context = try makeSettingsContext(mode: .requireSidecar)
+        defer { context.cleanup() }
+
+        let profilesRoot = try makeAdvisoryProfilesFixture(provider: "claude", accountName: "acc1")
+        defer { try? FileManager.default.removeItem(at: profilesRoot) }
+
+        var settings = context.settings
+        settings.advisoryCLIProfilesPath = profilesRoot.path
+
+        let client = AdvisoryBridgeClient(
+            settings: settings,
+            fallbackServer: LocalAdvisoryBridgeStub(),
+            sidecarEnvironmentOverrides: ["MEMOGRAPH_ADVISOR_FAKE_PROVIDER": "claude"]
+        )
+        defer { client.stopSidecar() }
+
+        let ready = waitUntil(timeoutSeconds: 5) {
+            client.runtimeSnapshot().effectiveStatus == "ready"
+        }
+        #expect(ready)
+
+        let pidfilePath = AdvisorySidecarSocketPathResolver.resolve(settings.advisorySidecarSocketPath) + ".pid"
+        let beforePID = try #require(readLivePID(from: pidfilePath))
+        let result = client.recoverAfterRelogin(provider: "claude", accountName: "acc1")
+        let afterPID = try #require(readLivePID(from: pidfilePath))
+
+        #expect(beforePID == afterPID)
+        #expect(result.accountName == "acc1")
+    }
+
     @Test("Stub continuity resume uses external enrichment anchors and timing")
     func stubContinuityResumeUsesExternalEnrichmentAnchors() throws {
         let client = AdvisoryBridgeClient(
@@ -2822,6 +2913,89 @@ private func temporarySocketPath() -> String {
     "/tmp/memograph-advisor-\(UUID().uuidString).sock"
 }
 
+private final class ExternalSidecarHandle {
+    let socketPath: String
+    let pidfilePath: String
+    private let process: Process
+
+    init(socketPath: String, environment: [String: String]) throws {
+        self.socketPath = socketPath
+        self.pidfilePath = socketPath + ".pid"
+
+        guard case let .ready(runtime) = AdvisorySidecarRuntimeResolver.resolve() else {
+            throw NSError(
+                domain: "AdvisoryBridgeClientTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Python runtime for memograph-advisor is unavailable."]
+            )
+        }
+
+        try? FileManager.default.removeItem(atPath: socketPath)
+        try? FileManager.default.removeItem(atPath: pidfilePath)
+
+        let process = Process()
+        process.executableURL = runtime.executableURL
+        process.arguments = runtime.launchArgumentsPrefix + [
+            runtime.scriptPath,
+            "--socket",
+            socketPath,
+            "--probe-timeout-seconds",
+            "1"
+        ]
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(runtime.baseEnvironment) { _, new in new }
+            .merging(environment) { _, new in new }
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        self.process = process
+
+        let ready = waitUntil(timeoutSeconds: 5) {
+            FileManager.default.fileExists(atPath: socketPath) && readLivePID(from: self.pidfilePath) != nil
+        }
+        guard ready else {
+            cleanup()
+            throw NSError(
+                domain: "AdvisoryBridgeClientTests",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Externally launched sidecar did not become ready in time."]
+            )
+        }
+    }
+
+    var pid: pid_t? {
+        readLivePID(from: pidfilePath)
+    }
+
+    func cleanup() {
+        if process.isRunning {
+            process.terminate()
+            _ = waitUntil(timeoutSeconds: 2) {
+                !process.isRunning
+            }
+            if process.isRunning {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        try? FileManager.default.removeItem(atPath: socketPath)
+        try? FileManager.default.removeItem(atPath: pidfilePath)
+    }
+}
+
+private func makeAdvisoryProfilesFixture(provider: String, accountName: String) throws -> URL {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("advisory-profiles-\(UUID().uuidString)", isDirectory: true)
+    let providerRoot = root.appendingPathComponent(provider, isDirectory: true)
+    let accountRoot = providerRoot.appendingPathComponent(accountName, isDirectory: true)
+    let homeRoot = accountRoot.appendingPathComponent("home", isDirectory: true)
+    let claudeRoot = homeRoot.appendingPathComponent(".claude", isDirectory: true)
+
+    try FileManager.default.createDirectory(at: claudeRoot, withIntermediateDirectories: true)
+    let credentialsURL = claudeRoot.appendingPathComponent(".credentials.json")
+    try #"{"claudeAiOauth":{"email":"person@example.com"}}"#.write(to: credentialsURL, atomically: true, encoding: .utf8)
+    return root
+}
+
 private func makeStaleUnixSocketFile(at path: String) throws {
     try? FileManager.default.removeItem(atPath: path)
 
@@ -2874,4 +3048,20 @@ private func waitUntil(timeoutSeconds: TimeInterval, check: () -> Bool) -> Bool 
         Thread.sleep(forTimeInterval: 0.1)
     }
     return check()
+}
+
+private func readLivePID(from pidfilePath: String) -> pid_t? {
+    guard
+        let pidString = try? String(contentsOfFile: pidfilePath, encoding: .utf8),
+        let pid = Int32(pidString.trimmingCharacters(in: .whitespacesAndNewlines)),
+        pid > 0,
+        processIsAlive(pid)
+    else {
+        return nil
+    }
+    return pid
+}
+
+private func processIsAlive(_ pid: pid_t) -> Bool {
+    Darwin.kill(pid, 0) == 0 || errno == EPERM
 }
