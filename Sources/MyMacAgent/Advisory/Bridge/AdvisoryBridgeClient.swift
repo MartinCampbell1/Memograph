@@ -229,12 +229,21 @@ final class AdvisoryBridgeClient {
         supervisor?.restart()
     }
 
-    /// Called after a re-login action completes. Restarts sidecar
-    /// and triggers a lightweight health refresh to pick up new credentials.
-    func recoverAfterRelogin(provider: String) async {
+    /// Called after a re-login action completes. Resets failure state for the
+    /// provider, restarts sidecar, and verifies health recovery.
+    /// Returns the post-recovery health status.
+    @discardableResult
+    func recoverAfterRelogin(provider: String) -> AdvisoryBridgeHealth {
+        // Reset supervisor failure counters so the provider isn't blocked
+        supervisor?.recordSuccess()
         restartSidecar()
-        try? await Task.sleep(for: .seconds(2))
-        _ = health(forceRefresh: true)
+        // Allow sidecar to restart before checking health
+        Thread.sleep(forTimeInterval: 2)
+        let recoveredHealth = health(forceRefresh: true)
+        if recoveredHealth.status == "ok" {
+            supervisor?.recordSuccess()
+        }
+        return recoveredHealth
     }
 
     static func shutdownAllManagedSidecars() {

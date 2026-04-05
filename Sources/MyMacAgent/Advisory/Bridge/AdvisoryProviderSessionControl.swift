@@ -107,11 +107,8 @@ enum AdvisoryProviderSessionControl {
 
                 let health = bridge.health(forceRefresh: true)
                 if health.status == "ok" {
-                    bridge.restartSidecar()
-                    // Allow sidecar to restart before final refresh
-                    Thread.sleep(forTimeInterval: 2)
-                    _ = bridge.health(forceRefresh: true)
-                    completion(true)
+                    let recovered = bridge.recoverAfterRelogin(provider: providerName)
+                    completion(recovered.status == "ok")
                     return
                 }
             }
