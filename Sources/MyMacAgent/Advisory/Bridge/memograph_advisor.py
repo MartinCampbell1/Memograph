@@ -527,6 +527,8 @@ class ProviderDiagnostics:
         available_providers: list[str] | None = None,
         provider_statuses: list[dict[str, Any]] | None = None,
         checked_at: str | None = None,
+        runtime_health_tier: str = "ok",
+        provider_health_tier: str | None = None,
     ) -> dict[str, Any]:
         return {
             "runtimeName": "memograph-advisor",
@@ -541,6 +543,8 @@ class ProviderDiagnostics:
             "availableProviders": available_providers or [],
             "providerStatuses": provider_statuses or [],
             "checkedAt": checked_at,
+            "runtimeHealthTier": runtime_health_tier,
+            "providerHealthTier": provider_health_tier or ("ok" if status == "ok" else status),
         }
 
     def _provider_snapshot(
@@ -662,6 +666,8 @@ class ProviderDiagnostics:
                 available_providers=available_providers,
                 provider_statuses=provider_statuses,
                 checked_at=checked_at,
+                runtime_health_tier="ok",
+                provider_health_tier="ok",
             )
 
         summary_status, summary_detail = self._summarize_provider_failures(provider_statuses)
@@ -674,6 +680,8 @@ class ProviderDiagnostics:
             available_providers=available_providers,
             provider_statuses=provider_statuses,
             checked_at=checked_at,
+            runtime_health_tier="ok",
+            provider_health_tier="no_runnable",
         )
 
     def _profile_provider_snapshot(self, provider: str, priority: int, now: float, checked_at: str) -> tuple[dict[str, Any], bool]:
@@ -1769,7 +1777,11 @@ class AdvisoryRuntime:
             last_health = health
             if health["status"] != "ok":
                 detail = str(health.get("statusDetail") or health["status"]).strip()
-                raise JsonRPCMethodError(-32001, f"Advisory sidecar is unavailable ({health['status']}): {detail}")
+                runtime_tier = health.get("runtimeHealthTier", "ok")
+                provider_tier = health.get("providerHealthTier", health["status"])
+                if runtime_tier != "ok":
+                    raise JsonRPCMethodError(-32001, f"Advisory runtime unavailable ({runtime_tier}): {detail}")
+                raise JsonRPCMethodError(-32002, f"Advisory provider unavailable ({provider_tier}): {detail}")
 
             provider_name = str(health.get("activeProviderName") or "").strip().lower()
             if not provider_name:
@@ -1811,7 +1823,7 @@ class AdvisoryRuntime:
             failure_detail = str(last_health.get("statusDetail") or last_health.get("lastError") or failure_status)
         else:
             failure_detail = "No provider available"
-        raise JsonRPCMethodError(-32001, f"Advisory sidecar is unavailable ({failure_status}): {failure_detail}")
+        raise JsonRPCMethodError(-32002, f"Advisory provider exhausted ({failure_status}): {failure_detail}")
 
     def _continuity_resume(self, packet: dict[str, Any], recipe_name: str) -> list[dict[str, Any]]:
         thread = self._primary_thread(packet)

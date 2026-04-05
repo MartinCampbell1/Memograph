@@ -652,7 +652,9 @@ private enum AdvisoryBridgeStatusInterpreter {
         providerOrder: [String] = [],
         availableProviders: [String] = [],
         providerStatuses: [AdvisoryProviderDiagnostic] = [],
-        checkedAt: String? = nil
+        checkedAt: String? = nil,
+        runtimeHealthTier: String? = nil,
+        providerHealthTier: String? = nil
     ) -> AdvisoryBridgeHealth {
         let normalized = normalizedStatus(rawStatus)
         return AdvisoryBridgeHealth(
@@ -667,7 +669,9 @@ private enum AdvisoryBridgeStatusInterpreter {
             providerOrder: providerOrder,
             availableProviders: availableProviders,
             providerStatuses: providerStatuses,
-            checkedAt: checkedAt
+            checkedAt: checkedAt,
+            runtimeHealthTier: runtimeHealthTier,
+            providerHealthTier: providerHealthTier
         )
     }
 
@@ -2056,7 +2060,9 @@ final class JSONRPCAdvisoryBridgeServer: AdvisoryBridgeServerProtocol {
                 providerOrder: result.providerOrder,
                 availableProviders: result.availableProviders,
                 providerStatuses: result.providerStatuses,
-                checkedAt: result.checkedAt
+                checkedAt: result.checkedAt,
+                runtimeHealthTier: result.runtimeHealthTier,
+                providerHealthTier: result.providerHealthTier
             )
         } catch {
             return AdvisoryBridgeStatusInterpreter.health(

@@ -125,6 +125,8 @@ struct AdvisoryBridgeHealth: Codable, Equatable {
     let availableProviders: [String]
     let providerStatuses: [AdvisoryProviderDiagnostic]
     let checkedAt: String?
+    let runtimeHealthTier: String?       // "ok" | "degraded" | "unavailable"
+    let providerHealthTier: String?      // "ok" | "no_runnable" | "session_expired" | "cooldown"
 
     init(
         runtimeName: String,
@@ -138,7 +140,9 @@ struct AdvisoryBridgeHealth: Codable, Equatable {
         providerOrder: [String] = [],
         availableProviders: [String] = [],
         providerStatuses: [AdvisoryProviderDiagnostic] = [],
-        checkedAt: String? = nil
+        checkedAt: String? = nil,
+        runtimeHealthTier: String? = nil,
+        providerHealthTier: String? = nil
     ) {
         self.runtimeName = runtimeName
         self.status = status
@@ -152,6 +156,8 @@ struct AdvisoryBridgeHealth: Codable, Equatable {
         self.availableProviders = availableProviders
         self.providerStatuses = providerStatuses
         self.checkedAt = checkedAt
+        self.runtimeHealthTier = runtimeHealthTier
+        self.providerHealthTier = providerHealthTier
     }
 }
 
