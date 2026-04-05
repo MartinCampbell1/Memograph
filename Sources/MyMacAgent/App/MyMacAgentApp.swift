@@ -31,10 +31,7 @@ struct MyMacAgentApp: App {
         .defaultSize(width: 920, height: 760)
         .windowResizability(.contentSize)
 
-        Window("Accounts & Sessions", id: "accounts") {
-            SettingsView(initialTab: 6)
-        }
-        .defaultSize(width: 920, height: 760)
-        .windowResizability(.contentSize)
+        // Accounts now opens the main Settings window with tab 6 via notification
+        // No separate window needed — prevents "stuck with no back button" issue
     }
 }

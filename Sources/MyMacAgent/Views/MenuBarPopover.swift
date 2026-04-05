@@ -241,7 +241,10 @@ struct MenuBarPopover: View {
 
     private func openAccounts() {
         NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: "accounts")
+        openWindow(id: "settings")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NotificationCenter.default.post(name: .settingsSwitchToTab, object: nil, userInfo: ["tab": 6])
+        }
     }
 
     private func loadResumeSurfaceIfNeeded(force: Bool = false) {

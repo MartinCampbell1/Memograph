@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    static let settingsSwitchToTab = Notification.Name("settingsSwitchToTab")
+}
+
 struct SettingsPreviewState {
     let operatingMode: AppOperatingMode
     let externalProviderName: String
@@ -290,6 +294,11 @@ struct SettingsView: View {
                 permissionsManager.checkAll()
             }
             refreshAdvisoryProviderProfiles()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .settingsSwitchToTab)) { notification in
+            if let tab = notification.userInfo?["tab"] as? Int {
+                selectedTab = tab
+            }
         }
         .alert("Delete all local data?", isPresented: $showDeleteDataAlert) {
             Button("Delete", role: .destructive) { deleteAllData() }
