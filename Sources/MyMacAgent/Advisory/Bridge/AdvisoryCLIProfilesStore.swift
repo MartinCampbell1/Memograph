@@ -137,7 +137,7 @@ enum AdvisoryCLIProfilesStore {
             let target = destinationRoot.appendingPathComponent("home/.claude", isDirectory: true)
             try replaceDirectory(from: source, to: target, fileManager: fileManager)
         case "gemini":
-            let candidates = [".config/gemini", ".gemini"]
+            let candidates = [".gemini", ".config/gemini"]
             var copied = false
             for candidate in candidates {
                 let source = sourceRoot.appendingPathComponent(candidate, isDirectory: true)
@@ -306,8 +306,8 @@ enum AdvisoryCLIProfilesStore {
         case "claude":
             return fileManager.fileExists(atPath: home.appendingPathComponent(".claude", isDirectory: true).path)
         case "gemini":
-            return fileManager.fileExists(atPath: home.appendingPathComponent(".config/gemini", isDirectory: true).path)
-                || fileManager.fileExists(atPath: home.appendingPathComponent(".gemini", isDirectory: true).path)
+            return fileManager.fileExists(atPath: home.appendingPathComponent(".gemini", isDirectory: true).path)
+                || fileManager.fileExists(atPath: home.appendingPathComponent(".config/gemini", isDirectory: true).path)
         default:
             return false
         }
@@ -392,8 +392,8 @@ enum AdvisoryCLIProfilesStore {
         case "claude":
             return fileManager.fileExists(atPath: accountURL.appendingPathComponent("home/.claude").path)
         case "gemini":
-            return fileManager.fileExists(atPath: accountURL.appendingPathComponent("home/.config/gemini").path)
-                || fileManager.fileExists(atPath: accountURL.appendingPathComponent("home/.gemini").path)
+            return fileManager.fileExists(atPath: accountURL.appendingPathComponent("home/.gemini").path)
+                || fileManager.fileExists(atPath: accountURL.appendingPathComponent("home/.config/gemini").path)
         default:
             return false
         }
@@ -406,11 +406,15 @@ enum AdvisoryCLIProfilesStore {
         case "claude":
             return accountURL.appendingPathComponent("home/.claude").path
         case "gemini":
-            let preferred = accountURL.appendingPathComponent("home/.config/gemini").path
-            if FileManager.default.fileExists(atPath: preferred) {
-                return preferred
+            let primary = accountURL.appendingPathComponent("home/.gemini").path
+            if FileManager.default.fileExists(atPath: primary) {
+                return primary
             }
-            return accountURL.appendingPathComponent("home/.gemini").path
+            let xdg = accountURL.appendingPathComponent("home/.config/gemini").path
+            if FileManager.default.fileExists(atPath: xdg) {
+                return xdg
+            }
+            return primary
         default:
             return accountURL.path
         }

@@ -178,13 +178,13 @@ class ProviderDiagnostics:
         if provider == "claude":
             return str(profile_path / "home" / ".claude")
         if provider == "gemini":
-            preferred = profile_path / "home" / ".config" / "gemini"
-            legacy = profile_path / "home" / ".gemini"
-            if preferred.exists():
-                return str(preferred)
-            if legacy.exists():
-                return str(legacy)
-            return str(preferred)
+            primary = profile_path / "home" / ".gemini"
+            xdg = profile_path / "home" / ".config" / "gemini"
+            if primary.exists():
+                return str(primary)
+            if xdg.exists():
+                return str(xdg)
+            return str(primary)
         return str(profile_path)
 
     def _profile_has_session_marker(self, provider: str, profile_path: Path) -> bool:
@@ -193,7 +193,7 @@ class ProviderDiagnostics:
         if provider == "claude":
             return (profile_path / "home" / ".claude").exists()
         if provider == "gemini":
-            return (profile_path / "home" / ".config" / "gemini").exists() or (profile_path / "home" / ".gemini").exists()
+            return (profile_path / "home" / ".gemini").exists() or (profile_path / "home" / ".config" / "gemini").exists()
         return False
 
     def _profile_identity_hint(self, provider: str, profile_path: Path) -> str:
@@ -1340,13 +1340,13 @@ class ProviderDiagnostics:
             if provider == "claude":
                 return str(selected_profile / "home" / ".claude")
             if provider == "gemini":
-                preferred = selected_profile / "home" / ".config" / "gemini"
-                legacy = selected_profile / "home" / ".gemini"
-                if preferred.exists():
-                    return str(preferred)
-                if legacy.exists():
-                    return str(legacy)
-                return str(preferred)
+                primary = selected_profile / "home" / ".gemini"
+                xdg = selected_profile / "home" / ".config" / "gemini"
+                if primary.exists():
+                    return str(primary)
+                if xdg.exists():
+                    return str(xdg)
+                return str(primary)
 
         home = self.source_home()
         if provider == "codex":
@@ -1354,13 +1354,13 @@ class ProviderDiagnostics:
         if provider == "claude":
             return str(home / ".claude")
         if provider == "gemini":
-            preferred = home / ".config" / "gemini"
-            legacy = home / ".gemini"
-            if preferred.exists():
-                return str(preferred)
-            if legacy.exists():
-                return str(legacy)
-            return str(preferred)
+            primary = home / ".gemini"
+            xdg = home / ".config" / "gemini"
+            if primary.exists():
+                return str(primary)
+            if xdg.exists():
+                return str(xdg)
+            return str(primary)
         return None
 
     def _provider_supported_actions(self, provider: str) -> list[str]:
@@ -1386,7 +1386,7 @@ class ProviderDiagnostics:
             if provider == "claude":
                 return (selected_profile / "home" / ".claude").exists()
             if provider == "gemini":
-                return (selected_profile / "home" / ".config" / "gemini").exists() or (selected_profile / "home" / ".gemini").exists()
+                return (selected_profile / "home" / ".gemini").exists() or (selected_profile / "home" / ".config" / "gemini").exists()
 
         home = self.source_home()
         if provider == "codex":
@@ -1394,7 +1394,7 @@ class ProviderDiagnostics:
         if provider == "claude":
             return (home / ".claude").exists()
         if provider == "gemini":
-            return (home / ".config" / "gemini").exists() or (home / ".gemini").exists()
+            return (home / ".gemini").exists() or (home / ".config" / "gemini").exists()
         return False
 
     def _probe_provider(self, provider: str, env: dict[str, str] | None = None) -> dict[str, str]:
@@ -1571,14 +1571,26 @@ class ProviderDiagnostics:
         try:
             return json.loads(stripped)
         except json.JSONDecodeError:
-            for line in stripped.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    return json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+            pass
+        # Gemini CLI may emit non-JSON warnings to stdout before the JSON
+        # payload (e.g. "MCP issues detected. ...{").  Scan for the first
+        # top-level '{' and try to parse from that offset.
+        brace_index = stripped.find("{")
+        if brace_index > 0:
+            candidate = stripped[brace_index:]
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+        # Fall back to line-by-line parsing for other edge cases.
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
         return None
 
 

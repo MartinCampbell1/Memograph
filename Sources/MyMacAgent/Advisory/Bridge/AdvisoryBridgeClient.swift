@@ -924,6 +924,18 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         }
 
         do {
+            // If we already have a running process, trust it — do not probe,
+            // delete the socket, or launch a competing process.  The previous
+            // probe-based path could time out when the sidecar was merely busy
+            // (e.g. handling a long-running forceRefresh), leading to a race
+            // where the socket was deleted and a second sidecar launched.
+            if let previousProcess, previousProcess.isRunning {
+                lock.lock()
+                lastKnownStatus = "ok"
+                lock.unlock()
+                return
+            }
+
             let parentDirectory = (socketPath as NSString).deletingLastPathComponent
             if !parentDirectory.isEmpty {
                 try FileManager.default.createDirectory(

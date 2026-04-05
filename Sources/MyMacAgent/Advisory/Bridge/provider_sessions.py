@@ -29,7 +29,7 @@ def provider_has_logged_in_session(provider: str, home: Path | None = None) -> b
     if provider == "claude":
         return (source / ".claude").exists()
     if provider == "gemini":
-        return (source / ".config" / "gemini").exists() or (source / ".gemini").exists()
+        return (source / ".gemini").exists() or (source / ".config" / "gemini").exists()
     raise ValueError(f"Unsupported provider: {provider}")
 
 
@@ -89,7 +89,7 @@ def import_current_session(
         shutil.copytree(source / ".claude", home_dir / ".claude")
         return name
 
-    for candidate in (".config/gemini", ".gemini"):
+    for candidate in (".gemini", ".config/gemini"):
         source_path = source / candidate
         if source_path.exists():
             destination_path = home_dir / candidate

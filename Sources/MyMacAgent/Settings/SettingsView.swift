@@ -161,6 +161,8 @@ struct SettingsView: View {
     @State private var advisoryAccountsSnapshot = AdvisoryProviderAccountsSnapshot.empty
     @State private var advisoryAccountsBusyKey = ""
     @State private var advisoryAccountGlobalFeedback = ""
+    @State private var pendingTerminalProvider = ""
+    @State private var isRefreshingAccounts = false
     @State private var advisoryAccountLabelDrafts: [String: String] = [:]
     @State private var advisoryAccountActionFeedback: [String: String] = [:]
     @State private var advisoryCLIProfilesPath = ""
@@ -658,6 +660,10 @@ struct SettingsView: View {
 
     private var accountsTab: some View {
         settingsScroll {
+            if !pendingTerminalProvider.isEmpty {
+                pendingTerminalBanner
+            }
+
             settingsCard(
                 "Accounts & Sessions",
                 subtitle: "Control plane for advisory CLI providers. Profiles are stored in the same isolated account tree used by multi-agent."
@@ -687,11 +693,25 @@ struct SettingsView: View {
                 }
 
                 HStack(spacing: 8) {
-                    Button("Run full auth check") {
+                    Button {
+                        isRefreshingAccounts = true
                         advisoryHealthMonitor.refresh(forceRefresh: true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            isRefreshingAccounts = false
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            if isRefreshingAccounts {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .scaleEffect(0.7)
+                            }
+                            Text("Run full auth check")
+                        }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabled(isRefreshingAccounts)
 
                     Button("Restart sidecar") {
                         advisoryHealthMonitor.restartSidecar()
@@ -729,6 +749,49 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var pendingTerminalBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "terminal")
+                .font(.title3)
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Action opened in Terminal")
+                    .font(.subheadline.weight(.semibold))
+                Text("Finish the flow in Terminal for \(pendingTerminalProvider.capitalized), then click Refresh to update status.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Refresh") {
+                isRefreshingAccounts = true
+                advisoryHealthMonitor.refresh(forceRefresh: true)
+                refreshAdvisoryProviderProfiles()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    isRefreshingAccounts = false
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(isRefreshingAccounts)
+
+            Button("Dismiss") {
+                pendingTerminalProvider = ""
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.blue.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.blue.opacity(0.18), lineWidth: 1)
+        )
     }
 
     private var captureTab: some View {
@@ -1389,10 +1452,29 @@ struct SettingsView: View {
             }
 
             if let feedback = advisoryAccountActionFeedback[diagnostic.providerName], !feedback.isEmpty {
-                Text(feedback)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                    Text(feedback)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button {
+                        advisoryAccountActionFeedback[diagnostic.providerName] = ""
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.blue.opacity(0.06))
+                )
             }
         }
         .padding(14)
@@ -1519,7 +1601,11 @@ struct SettingsView: View {
         switch plan.kind {
         case .refreshOnly:
             advisoryAccountActionFeedback[diagnostic.providerName] = plan.guidance
+            isRefreshingAccounts = true
             advisoryHealthMonitor.refresh(forceRefresh: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                isRefreshingAccounts = false
+            }
         case .openDirectory:
             do {
                 try AdvisoryProviderSessionControl.launch(plan)
@@ -1530,6 +1616,7 @@ struct SettingsView: View {
         case .terminalCommand:
             do {
                 try AdvisoryProviderSessionControl.launch(plan)
+                pendingTerminalProvider = diagnostic.providerName
                 advisoryAccountActionFeedback[diagnostic.providerName] = plan.guidance
                 scheduleAdvisoryHealthRefresh()
             } catch {
@@ -1588,6 +1675,7 @@ struct SettingsView: View {
                     profilePath: profile.path
                 )
             )
+            pendingTerminalProvider = providerName
             refreshAdvisoryProviderProfiles()
             advisoryAccountActionFeedback[providerName] = "Opened isolated login flow for \(providerName.capitalized) \(profile.accountName). Finish auth in Terminal, then run auth check."
             scheduleAdvisoryHealthRefresh()
@@ -1619,7 +1707,8 @@ struct SettingsView: View {
                     profilePath: profile.path
                 )
             )
-            advisoryAccountActionFeedback[profile.providerName] = "Opened re-login flow for \(profile.providerName.capitalized) \(profile.accountName)."
+            pendingTerminalProvider = profile.providerName
+            advisoryAccountActionFeedback[profile.providerName] = "Opened re-login flow for \(profile.providerName.capitalized) \(profile.accountName). Finish auth in Terminal, then click Refresh above."
             scheduleAdvisoryHealthRefresh()
         } catch {
             advisoryAccountActionFeedback[profile.providerName] = error.localizedDescription
