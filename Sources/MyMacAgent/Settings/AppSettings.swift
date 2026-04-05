@@ -650,7 +650,7 @@ struct AppSettings {
     var advisoryDailyAttentionBudget: Int {
         get {
             let value = defaults.integer(forKey: "advisoryDailyAttentionBudget")
-            return value > 0 ? value : 6
+            return value > 0 ? value : 2
         }
         set { defaults.set(newValue, forKey: "advisoryDailyAttentionBudget") }
     }
@@ -658,7 +658,7 @@ struct AppSettings {
     var advisoryMinGapMinutes: Int {
         get {
             let value = defaults.integer(forKey: "advisoryMinGapMinutes")
-            return value > 0 ? value : 45
+            return value > 0 ? value : 90
         }
         set { defaults.set(newValue, forKey: "advisoryMinGapMinutes") }
     }
@@ -666,7 +666,7 @@ struct AppSettings {
     var advisoryPerThreadCooldownHours: Int {
         get {
             let value = defaults.integer(forKey: "advisoryPerThreadCooldownHours")
-            return value > 0 ? value : 6
+            return value > 0 ? value : 12
         }
         set { defaults.set(newValue, forKey: "advisoryPerThreadCooldownHours") }
     }
@@ -825,7 +825,7 @@ struct AppSettings {
             allowProactiveAdvice: advisoryEnabled && advisoryProactivityMode == .ambient,
             proactivityMode: advisoryProactivityMode,
             dailyAttentionBudget: advisoryDailyAttentionBudget,
-            hardDailyCap: 10,
+            hardDailyCap: 4,
             minGapMinutes: advisoryMinGapMinutes,
             perThreadCooldownHours: advisoryPerThreadCooldownHours,
             perKindFatigueCooldownHours: 3,
