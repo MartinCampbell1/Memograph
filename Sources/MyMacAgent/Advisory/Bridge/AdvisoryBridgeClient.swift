@@ -1050,6 +1050,16 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
             lock.unlock()
             _ = waitForSocketReady(timeoutSeconds: 3)
             logger.info("Attempted to auto-start advisory sidecar at \(self.socketPath, privacy: .public)")
+            // Give sidecar time to complete initial provider probes before
+            // the first health check. Without this, the 3s non-forceRefresh
+            // timeout hits before probes finish → false "degraded" state.
+            if probeExistingSocketIsResponsive() {
+                lock.lock()
+                lastKnownStatus = "ok"
+                lastError = nil
+                consecutiveFailures = 0
+                lock.unlock()
+            }
         } catch {
             lock.lock()
             consecutiveFailures = min(failureBudget, consecutiveFailures + 1)
