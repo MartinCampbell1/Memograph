@@ -741,11 +741,10 @@ struct SettingsView: View {
                     .controlSize(.small)
                 }
 
-                if runtimeSnapshot.bridgeHealth.providerStatuses.isEmpty {
-                    Text("Provider sessions are not available yet. Switch advisory bridge mode away from stub-only and run an auth check.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
+                // Provider cards: show from sidecar diagnostics when available,
+                // otherwise show static cards from filesystem profiles so accounts
+                // are ALWAYS visible regardless of sidecar state.
+                if !runtimeSnapshot.bridgeHealth.providerStatuses.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(runtimeSnapshot.bridgeHealth.providerStatuses.sorted { $0.priority < $1.priority }) { diagnostic in
                             providerSessionCard(
@@ -755,6 +754,82 @@ struct SettingsView: View {
                             )
                         }
                     }
+                } else {
+                    // Sidecar offline — show filesystem-based account cards
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(["claude", "gemini", "codex"], id: \.self) { provider in
+                            let profiles = advisoryProviderProfiles[provider] ?? []
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text(provider.capitalized)
+                                        .font(.headline)
+                                    Spacer()
+                                    Text(profiles.isEmpty ? "no accounts" : "\(profiles.count) account(s)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if profiles.isEmpty {
+                                    HStack(spacing: 8) {
+                                        Button("Import current session") {
+                                            handleImportProviderSession(provider)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        Button("Add account") {
+                                            handleAddProviderAccount(provider)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                    }
+                                } else {
+                                    ForEach(profiles) { profile in
+                                        providerAccountRow(profile)
+                                    }
+                                    HStack(spacing: 8) {
+                                        Button("Import current session") {
+                                            handleImportProviderSession(provider)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        Button("Add account") {
+                                            handleAddProviderAccount(provider)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                    }
+                                }
+                                if let feedback = advisoryAccountActionFeedback[provider], !feedback.isEmpty {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "info.circle")
+                                            .foregroundStyle(.blue)
+                                        Text(feedback)
+                                            .font(.caption)
+                                        Spacer()
+                                        Button { advisoryAccountActionFeedback[provider] = nil } label: {
+                                            Image(systemName: "xmark")
+                                                .font(.caption2)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(8)
+                                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.06)))
+                                }
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color.primary.opacity(0.03))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                            )
+                        }
+                    }
+                    Text("Sidecar is offline. Accounts above are from the filesystem. Start sidecar for full diagnostics.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
