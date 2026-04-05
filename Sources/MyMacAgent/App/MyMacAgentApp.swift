@@ -13,7 +13,11 @@ struct MyMacAgentApp: App {
                 db: appDelegate.databaseManager
             )
         } label: {
-            MemographGlyph()
+            HStack(spacing: 4) {
+                MemographGlyph()
+                Text("Mem")
+                    .font(.caption2.weight(.semibold))
+            }
         }
         .menuBarExtraStyle(.window)
 
