@@ -1227,7 +1227,7 @@ private final class AdvisorySidecarSupervisor: @unchecked Sendable {
         }
         if socketPresent {
             if !force {
-                return false
+                return restartableStatus(lastKnownStatus)
             }
             if !restartableStatus(lastKnownStatus) {
                 return false

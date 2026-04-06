@@ -407,6 +407,44 @@ struct AdvisoryBridgeClientTests {
         #expect(recovered)
     }
 
+    @Test("Health refresh recovers from a stale socket without manual restart")
+    func healthRefreshRecoversFromStaleSocket() throws {
+        let context = try makeSettingsContext(mode: .requireSidecar)
+        defer { context.cleanup() }
+
+        let socketPath = AdvisorySidecarSocketPathResolver.resolve(context.settings.advisorySidecarSocketPath)
+        try makeStaleUnixSocketFile(at: socketPath)
+
+        let stalePidfilePayload = """
+        {
+          "pid": 99999,
+          "socket_path": "\(socketPath)",
+          "started_at": "2026-04-05T18:47:44Z",
+          "instance_id": "stale-test-instance"
+        }
+        """
+        try stalePidfilePayload.write(
+            toFile: socketPath + ".pid",
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let client = AdvisoryBridgeClient(
+            settings: context.settings,
+            fallbackServer: LocalAdvisoryBridgeStub(),
+            sidecarEnvironmentOverrides: [
+                "MEMOGRAPH_ADVISOR_FAKE_PROVIDER": "claude"
+            ]
+        )
+        defer { client.stopSidecar() }
+
+        let recovered = waitUntil(timeoutSeconds: 8) {
+            client.runtimeSnapshot(forceRefresh: true).effectiveStatus == "ready"
+        }
+
+        #expect(recovered)
+    }
+
     @Test("Stub continuity resume uses external enrichment anchors and timing")
     func stubContinuityResumeUsesExternalEnrichmentAnchors() throws {
         let client = AdvisoryBridgeClient(
